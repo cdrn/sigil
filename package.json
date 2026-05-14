@@ -1,0 +1,27 @@
+{
+  "name": "sigil",
+  "version": "0.0.1",
+  "description": "Claude can sign, but never see. Local signing daemon that keeps private keys out of LLM context.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cdrn/sigil.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test 'dist/test/**/*.test.js'",
+    "test:watch": "node --watch --test 'dist/test/**/*.test.js'"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^1.2.0",
+    "@noble/hashes": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
