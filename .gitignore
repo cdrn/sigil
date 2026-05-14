@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+
+# Anything resembling a key or local state should never enter git
+.env
+.env.*
+*.pem
+*.key
+*.keystore
+keystore/
+.sigil/
+~/.sigil/
