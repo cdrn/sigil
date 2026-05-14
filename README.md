@@ -4,7 +4,7 @@
 
 `sigil` is a local signing daemon and Claude Code integration that lets agentic coding tools use private keys without ever putting key material in the model's context window.
 
-**Status:** pre-alpha. Threat model is being written before the code. Do not use this with real funds yet.
+**Status:** pre-alpha. Threat model is committed before the code. Do not use this with real funds yet. Build plan and current progress live in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
 
 ## What it is
 
