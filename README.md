@@ -67,4 +67,4 @@ See [THREAT_MODEL.md](./THREAT_MODEL.md). Read it before trusting this with anyt
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](./LICENSE).
