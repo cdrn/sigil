@@ -10,7 +10,7 @@
 
 Three components that work together:
 
-1. **`sigild`** — a long-running local daemon that holds unlocked keys in mlock'd memory and exposes signing operations over a Unix socket. Keys at rest are encrypted with libsodium secretbox.
+1. **`sigild`** — a long-running local daemon that holds unlocked keys in process memory (zeroized on shutdown; mlock against swap is planned, see [THREAT_MODEL.md](./THREAT_MODEL.md)) and exposes signing operations over a Unix socket. Keys at rest are encrypted with XChaCha20-Poly1305 and an Argon2id-derived key.
 2. **`sigil-mcp`** — an MCP server that Claude (or any agentic tool) talks to. It forwards signing requests to `sigild` and returns signatures. Claude never sees key material — only opaque handles like `eth:executor`.
 3. **Hooks (the wards)** — `sigil init` installs PreToolUse and PostToolUse hooks into `.claude/settings.json` that block `Read` and `Bash` from touching key paths, and redact key-shaped strings from tool output.
 

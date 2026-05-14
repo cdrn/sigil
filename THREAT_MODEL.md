@@ -24,7 +24,7 @@ In order of value:
 The primary threat. Failure mode: a private key ends up in the agent's context window, then in transcripts, prompt caches, cloud logs, or attacker-controlled exfiltration paths.
 
 Defenses:
-- Keys live in `sigild`'s memory only, unlocked from encrypted at-rest storage.
+- Keys live in `sigild`'s memory only, unlocked from encrypted at-rest storage. Plaintext is zeroized on shutdown. mlock against swap is planned (requires a native module distributed as bundled prebuilds, see Known limitations).
 - The MCP interface exposes only opaque handles (`eth:executor`), never key bytes.
 - PreToolUse hooks block `Read` and `Bash` access to `~/.sigil/**`, `*.pem`, `**/.env*`, `**/keystore*`, and a configurable extra list.
 - PostToolUse output filter redacts hex-encoded 32-byte blobs, PEM blocks, and bip39-shaped strings from tool output before it reaches the model.
@@ -76,6 +76,7 @@ Given the 2026 npm threat landscape, a compromised release of `sigil` would be c
 - The hook-based path blocker is best-effort: it covers `Read` and `Bash`, but a sufficiently creative agent could still ask another tool to do the read. The defense in depth is that even if a key file is read, its contents are redacted by the output filter before reaching the model.
 - The output redaction filter has false negatives (keys with non-standard encoding) and false positives (legitimate hex blobs). It is not a replacement for the path blocker; it's a second line.
 - The MCP socket is currently unauthenticated within the user's session. Any process running as `$USER` can connect to it. This is consistent with the threat model (we don't defend against local user compromise) but worth stating explicitly.
+- **mlock is not yet implemented.** Plaintext key material lives in a regular `Buffer` that is zeroized on daemon shutdown or unlock-failure. This means keys are vulnerable to being paged to swap on a memory-pressured system. mlock requires a native module, which we will ship as bundled prebuilds (no install scripts) rather than via a compile-on-install dependency. Tracked as a planned layer.
 - Out-of-band confirmation depends on a working push channel. If the push provider is down, high-value signs are denied, not approved.
 
 ## Reporting issues
