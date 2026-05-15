@@ -1,0 +1,60 @@
+import * as secp from '@noble/secp256k1';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { hmac } from '@noble/hashes/hmac.js';
+
+// One-time wiring: noble/secp256k1 v3 keeps itself dep-free and expects the
+// caller to plug in sha256/hmac-sha256 implementations. The cast through
+// `unknown` papers over noble's stricter `Uint8Array<ArrayBuffer>` vs
+// `Uint8Array<ArrayBufferLike>` typing — semantically the functions match.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Hashes = typeof secp.hashes;
+(secp.hashes as Hashes).sha256 = sha256 as unknown as Hashes['sha256'];
+(secp.hashes as Hashes).hmacSha256 = ((key: Uint8Array, msg: Uint8Array) =>
+  hmac(sha256, key, msg)) as unknown as Hashes['hmacSha256'];
+
+export interface EthSignature {
+  r: Buffer;
+  s: Buffer;
+  recovery: 0 | 1;
+}
+
+export function getPublicKeyUncompressed(privateKey: Buffer | Uint8Array): Buffer {
+  return Buffer.from(secp.getPublicKey(privateKey, false));
+}
+
+/**
+ * Signs a 32-byte digest and returns the Ethereum-shaped components.
+ * The noble v3 recovered format is `recovery || r || s` (recovery is byte 0).
+ */
+export function signDigest(digest: Buffer | Uint8Array, privateKey: Buffer | Uint8Array): EthSignature {
+  if (digest.length !== 32) throw new Error(`digest must be 32 bytes, got ${digest.length}`);
+  const sigR = secp.sign(digest, privateKey, { format: 'recovered' });
+  const recovery = sigR[0];
+  if (recovery !== 0 && recovery !== 1) {
+    throw new Error(`unexpected recovery byte: ${recovery}`);
+  }
+  return {
+    recovery,
+    r: Buffer.from(sigR.slice(1, 33)),
+    s: Buffer.from(sigR.slice(33, 65)),
+  };
+}
+
+/**
+ * Recover the 65-byte uncompressed public key (with 0x04 prefix) from a digest and signature.
+ * Used in tests and address derivation from signature.
+ */
+export function recoverPublicKey(
+  digest: Buffer | Uint8Array,
+  sig: EthSignature,
+): Buffer {
+  if (digest.length !== 32) throw new Error(`digest must be 32 bytes, got ${digest.length}`);
+  const sigR = new Uint8Array(65);
+  sigR[0] = sig.recovery;
+  sigR.set(sig.r, 1);
+  sigR.set(sig.s, 33);
+  const compressed = secp.recoverPublicKey(sigR, digest);
+  // recoverPublicKey returns compressed (33 bytes) — convert to uncompressed.
+  const point = secp.Point.fromBytes(compressed);
+  return Buffer.from(point.toBytes(false));
+}
