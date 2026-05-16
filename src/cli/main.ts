@@ -1,5 +1,6 @@
 import { readPassphrase } from '../daemon/passphrase.js';
 import type { KdfParams } from '../crypto/index.js';
+import { type InitScope, installInto } from '../hooks/install.js';
 import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
 import { portalAdd, portalListFromDisk, portalRemove } from './portal.js';
@@ -8,11 +9,14 @@ import { status } from './status.js';
 const USAGE = `sigil — local signing daemon control
 
 Usage:
+  sigil init [--user]
   sigil status
   sigil portal add <handle> --key-file <path> [--no-remove-source]
   sigil portal list
   sigil portal remove <handle>
 
+"sigil init" writes the MCP server registration + tool hooks into
+.claude/settings.json (or ~/.claude/settings.json with --user).
 Run "sigild" directly to start the daemon (foreground).
 Set SIGIL_HOME to override ~/.sigil.
 `;
@@ -55,6 +59,16 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
 
   try {
     const [head, ...rest] = opts.argv;
+    if (head === 'init') {
+      const sub = parseSubcommand(['init', ...rest], {
+        init: { options: { user: { type: 'boolean' } } },
+      });
+      const scope: InitScope = sub.options['user'] === true ? 'user' : 'project';
+      const result = installInto({ scope });
+      if (result.changed) out.write(`updated ${result.settingsPath}\n`);
+      else out.write(`${result.settingsPath} is already up to date\n`);
+      return { code: 0 };
+    }
     if (head === 'status') {
       const report = await status(paths);
       out.write(JSON.stringify(report, null, 2) + '\n');
