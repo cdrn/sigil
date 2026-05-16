@@ -1,5 +1,5 @@
 {
-  "name": "sigil",
+  "name": "@cdrn/sigil",
   "version": "0.0.1",
   "description": "Claude can sign, but never see. Local signing daemon that keeps private keys out of LLM context.",
   "license": "Apache-2.0",
