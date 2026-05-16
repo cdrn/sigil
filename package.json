@@ -30,6 +30,7 @@
   ],
   "type": "module",
   "bin": {
+    "sigil": "dist/src/bin/sigil.js",
     "sigild": "dist/src/bin/sigild.js",
     "sigil-mcp": "dist/src/bin/sigil-mcp.js"
   },
