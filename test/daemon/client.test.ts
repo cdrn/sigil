@@ -143,7 +143,10 @@ test('DaemonClient: pending calls reject when underlying socket is destroyed ser
     // Let the call's write reach the server before we destroy.
     await new Promise<void>((r) => setImmediate(r));
     for (const s of serverSockets) s.destroy();
-    await rejects(pending, /closed/);
+    // Different OSes surface this differently: macOS sees a clean close
+    // ("daemon socket closed"), Linux sees ECONNRESET. Either is fine —
+    // the point is the pending call rejects rather than hanging.
+    await rejects(pending);
     c.close();
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
