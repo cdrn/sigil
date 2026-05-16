@@ -3,10 +3,31 @@
   "version": "0.0.1",
   "description": "Claude can sign, but never see. Local signing daemon that keeps private keys out of LLM context.",
   "license": "Apache-2.0",
+  "author": "Chris Doran",
+  "homepage": "https://github.com/cdrn/sigil#readme",
+  "bugs": {
+    "url": "https://github.com/cdrn/sigil/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cdrn/sigil.git"
   },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "agent",
+    "mcp",
+    "model-context-protocol",
+    "signing",
+    "ethereum",
+    "eip-1559",
+    "eip-712",
+    "eip-191",
+    "key-management",
+    "wallet-security",
+    "supply-chain"
+  ],
   "type": "module",
   "bin": {
     "sigild": "dist/src/bin/sigild.js"
@@ -15,6 +36,7 @@
     "dist/src/**/*",
     "README.md",
     "THREAT_MODEL.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "engines": {
