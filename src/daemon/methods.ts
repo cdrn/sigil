@@ -11,12 +11,18 @@ import {
   signTypedData,
   type TypedData,
 } from '../eth/index.js';
-import {
-  RPC_INVALID_PARAMS,
-  RPC_METHOD_NOT_FOUND,
-  RPC_PORTAL_NOT_FOUND,
-} from './rpc.js';
 import { type HandleTable } from './handles.js';
+
+// Error codes — these match JSON-RPC 2.0 standard error codes plus a
+// sigil-specific range (-32000..-32099). They flow through the MCP wire
+// unchanged so the client sees the exact diagnosis.
+export const RPC_INVALID_PARAMS = -32602;
+export const RPC_METHOD_NOT_FOUND = -32601;
+// Sigil-specific:
+export const RPC_PORTAL_NOT_FOUND = -32000;
+export const RPC_POLICY_DENIED = -32001;
+export const RPC_INVALID_PAYLOAD = -32002;
+export const RPC_DAEMON_LOCKED = -32003;
 
 export class RpcMethodError extends Error {
   readonly code: number;

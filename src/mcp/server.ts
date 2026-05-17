@@ -1,5 +1,5 @@
 import { findTool, ToolError, TOOLS } from './tools.js';
-import type { DaemonClient } from '../daemon/client.js';
+import type { MethodContext } from '../daemon/methods.js';
 import {
   encodeError,
   encodeSuccess,
@@ -16,7 +16,11 @@ import {
 } from './protocol.js';
 
 export interface McpServerOpts {
-  daemon: DaemonClient;
+  /**
+   * In-process method context: handles + audit. The MCP server invokes
+   * sign methods directly against this — no cross-process IPC.
+   */
+  context: MethodContext;
   /**
    * Optional log sink for protocol-level events. Defaults to a no-op.
    * The default binary entrypoint writes log events to stderr so they don't
@@ -36,10 +40,7 @@ export type McpLogEvent =
  * Returns either a response string to send back, or `null` if the line was a
  * notification (no response expected).
  */
-export async function handleLine(
-  line: string,
-  opts: McpServerOpts,
-): Promise<string | null> {
+export function handleLine(line: string, opts: McpServerOpts): string | null {
   const parsed = parseMessage(line);
   const log = (e: McpLogEvent): void => opts.onLog?.(e);
 
@@ -61,7 +62,7 @@ export async function handleLine(
   const req = parsed.request;
   log({ kind: 'recv', method: req.method, id: req.id });
   try {
-    const result = await dispatch(req, opts);
+    const result = dispatch(req, opts);
     log({ kind: 'send_ok', id: req.id });
     return encodeSuccess(req.id, result);
   } catch (err) {
@@ -75,7 +76,7 @@ export async function handleLine(
   }
 }
 
-async function dispatch(req: McpRequest, opts: McpServerOpts): Promise<unknown> {
+function dispatch(req: McpRequest, opts: McpServerOpts): unknown {
   switch (req.method) {
     case 'initialize':
       return {
@@ -86,7 +87,7 @@ async function dispatch(req: McpRequest, opts: McpServerOpts): Promise<unknown> 
     case 'tools/list':
       return { tools: TOOLS.map((t) => t.definition) };
     case 'tools/call':
-      return await invokeTool(req.params, opts);
+      return invokeTool(req.params, opts);
     case 'ping':
       return {};
     default:
@@ -94,7 +95,7 @@ async function dispatch(req: McpRequest, opts: McpServerOpts): Promise<unknown> 
   }
 }
 
-async function invokeTool(params: unknown, opts: McpServerOpts): Promise<unknown> {
+function invokeTool(params: unknown, opts: McpServerOpts): unknown {
   if (typeof params !== 'object' || params === null || Array.isArray(params)) {
     throw new ToolError(MCP_INVALID_PARAMS, 'tools/call: params must be an object');
   }
@@ -108,7 +109,7 @@ async function invokeTool(params: unknown, opts: McpServerOpts): Promise<unknown
     throw new ToolError(MCP_METHOD_NOT_FOUND, `unknown tool: ${name}`);
   }
   const args = obj['arguments'] ?? {};
-  return await tool.handler(args, { daemon: opts.daemon });
+  return tool.handler(args, opts.context);
 }
 
 // ---------------------------------------------------------------------------
@@ -129,11 +130,7 @@ export function runMcpStdio(opts: McpStdioOpts): Promise<void> {
   stdin.setEncoding?.('utf8');
   return new Promise((resolve, reject) => {
     let buf = '';
-    let inflight = 0;
     let stdinEnded = false;
-    const tryResolve = (): void => {
-      if (stdinEnded && inflight === 0) resolve();
-    };
     stdin.on('data', (chunk) => {
       buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
       let nl: number;
@@ -141,24 +138,13 @@ export function runMcpStdio(opts: McpStdioOpts): Promise<void> {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (line.length === 0) continue;
-        inflight++;
-        void handleLine(line, opts)
-          .then((resp) => {
-            if (resp !== null) stdout.write(resp + '\n');
-          })
-          .catch((err) => {
-            // handleLine itself should never throw — but if it does, fail loudly.
-            reject(err);
-          })
-          .finally(() => {
-            inflight--;
-            tryResolve();
-          });
+        const resp = handleLine(line, opts);
+        if (resp !== null) stdout.write(resp + '\n');
       }
     });
     stdin.on('end', () => {
       stdinEnded = true;
-      tryResolve();
+      if (stdinEnded) resolve();
     });
     stdin.on('error', reject);
   });

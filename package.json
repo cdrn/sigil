@@ -31,7 +31,6 @@
   "type": "module",
   "bin": {
     "sigil": "dist/src/bin/sigil.js",
-    "sigild": "dist/src/bin/sigild.js",
     "sigil-mcp": "dist/src/bin/sigil-mcp.js",
     "sigil-hook-pre": "dist/src/bin/sigil-hook-pre.js",
     "sigil-hook-post": "dist/src/bin/sigil-hook-post.js"
