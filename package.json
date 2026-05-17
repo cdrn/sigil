@@ -1,7 +1,8 @@
 {
   "name": "sigild",
-  "version": "0.0.1",
-  "description": "Claude can sign, but never see. Local signing daemon that keeps private keys out of LLM context.",
+  "version": "0.0.2",
+  "mcpName": "io.github.cdrn/sigil",
+  "description": "Claude can sign, but never see. MCP server + CLI that keeps private keys out of the LLM's context window.",
   "license": "Apache-2.0",
   "author": "Chris Doran",
   "homepage": "https://github.com/cdrn/sigil#readme",
@@ -32,6 +33,7 @@
   "bin": {
     "sigil": "dist/src/bin/sigil.js",
     "sigil-mcp": "dist/src/bin/sigil-mcp.js",
+    "sigild": "dist/src/bin/sigil-mcp.js",
     "sigil-hook-pre": "dist/src/bin/sigil-hook-pre.js",
     "sigil-hook-post": "dist/src/bin/sigil-hook-post.js"
   },

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.cdrn/sigil",
+  "description": "Claude can sign, but never see. MCP server + CLI that lets agentic coding tools use private keys without ever putting key material in the model's context window. Encrypted-at-rest keyfiles (Argon2id + XChaCha20-Poly1305); explicit out-of-band unlock via `sigil unlock` so the agent has no path to trigger key loading; hash-chained audit log; PreToolUse/PostToolUse hooks that block reads of common key paths and redact key-shaped strings from tool output. Signs EIP-191 personal_sign, EIP-1559 + legacy transactions, EIP-712 typed data.",
+  "repository": {
+    "url": "https://github.com/cdrn/sigil",
+    "source": "github"
+  },
+  "version": "0.0.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "sigild",
+      "version": "0.0.2",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SIGIL_HOME",
+          "description": "Override the default ~/.sigil directory for keyfiles, audit log, and control socket.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "SIGIL_CONTROL_SOCK",
+          "description": "Override the default control socket path (~/.sigil/control.sock).",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
