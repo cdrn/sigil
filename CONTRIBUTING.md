@@ -37,3 +37,28 @@ Never commit:
 The repo `.gitignore` covers these patterns. Double-check `git status` before committing.
 
 For security issues in sigil itself, open a private GitHub Security Advisory rather than a public issue.
+
+## Releasing (maintainer only)
+
+`sigild` publishes to npm via OIDC trusted-publisher auth — there is no long-lived `NPM_TOKEN`. The release workflow at [`.github/workflows/release.yml`](./.github/workflows/release.yml) is the only thing allowed to publish; it triggers on tags matching `v*`.
+
+To cut a new release:
+
+1. Land a PR that bumps `package.json` `version` and `server.json` `version` + the inner `packages[0].version` (both must match). Get it into `main`.
+2. Pull `main` locally so your working tree matches the merged commit.
+3. Tag and push:
+   ```sh
+   git tag v0.0.4 && git push --tags
+   ```
+4. The workflow runs: installs, tests, verifies the tag matches `package.json`, then `npm publish --access public --provenance`. If anything fails, no publish happens.
+5. Optionally: also publish to the MCP registry. `mcp-publisher login github` (if your local token expired) then `mcp-publisher publish`. There's no automated path for the MCP registry yet.
+
+One-time setup on `npmjs.com` (already done — listed here for documentation):
+
+- Package settings → Trusted publishers → Add → GitHub Actions
+- Organization or user: `cdrn`
+- Repository: `sigil`
+- Workflow filename: `release.yml`
+- Environment name: `release`
+
+If that config is ever lost or rotated, every step above will fail with an OIDC auth error until it's recreated. No fallback token by design.

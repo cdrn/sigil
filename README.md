@@ -153,11 +153,27 @@ Key-management libraries die from supply chain compromise, not from clever attac
   All by paulmillr, audited, zero transitive deps.
 - **No MCP SDK.** The official `@modelcontextprotocol/sdk` pulls 92 transitive deps (ajv, hono, cors, cross-spawn, etc) — unacceptable surface. We implement the MCP wire protocol directly in ~200 lines.
 - **No Bun.** Plain Node only. Bun is currently being weaponized by Mini Shai-Hulud as an evasion layer; we will not give that pattern any cover.
-- **Planned for v0.1.0** (the real release, not this 0.0.1 placeholder):
-  - Provenance attestations on every npm publish via GitHub Actions trusted publishing (OIDC, no long-lived tokens)
+- **Provenance attestations on every npm publish.** Starting v0.0.4, releases are built by [a GitHub Actions workflow](./.github/workflows/release.yml) under OIDC trusted-publisher auth, signed with a Sigstore attestation. No long-lived npm token; tampered or out-of-band publishes fail signature verification.
+- **Still planned for v0.1.0:**
   - SBOM (CycloneDX) attached to every release
   - Signed standalone binaries from GitHub Releases for users who'd rather not touch npm
   - Action SHA pinning rotation via Dependabot
+  - CI guard that fails the build if any dep in the resolved tree declares `postinstall` / `preinstall` / `prepare`
+
+## Verifying a release
+
+You can confirm a `sigild` tarball was built by the public workflow at the commit it claims to come from:
+
+```sh
+# Validates every package in your install tree:
+npm audit signatures
+
+# Inspect the attestation for a specific sigild version:
+npm view sigild@<version> dist.attestations
+# → shows the workflow filename, the commit SHA, and the Sigstore signing cert
+```
+
+What the attestation tells you: this tarball was built by `cdrn/sigil`'s `.github/workflows/release.yml`, at a specific commit on `main`, at a specific time. It does *not* tell you that commit is non-malicious — for that, read the diff between the version you trust and the version you're upgrading to. But it does mean an attacker who steals an npm token can't publish a malicious `sigild` under our name; they'd need to compromise the GitHub repo + push a tag, which leaves an audit trail.
 
 ## Threat model
 
