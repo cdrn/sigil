@@ -169,7 +169,7 @@ test('runCli: portal remove — success and not-found cases', async () => {
   }
 });
 
-test('runCli: status — daemon down, no keys', async () => {
+test('runCli: status — empty home reports zero keyfiles, mcp not running', async () => {
   const home = mkTmpHome();
   try {
     const cap = capture();
@@ -179,8 +179,8 @@ test('runCli: status — daemon down, no keys', async () => {
       env: { SIGIL_HOME: home },
     });
     equal(r.code, 0);
-    const parsed = JSON.parse(cap.out()) as { daemonRunning: boolean; keyfilesOnDisk: number };
-    equal(parsed.daemonRunning, false);
+    const parsed = JSON.parse(cap.out()) as { mcpRunning: boolean; keyfilesOnDisk: number };
+    equal(parsed.mcpRunning, false);
     equal(parsed.keyfilesOnDisk, 0);
   } finally {
     rmSync(home, { recursive: true });

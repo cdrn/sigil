@@ -70,7 +70,7 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
       return { code: 0 };
     }
     if (head === 'status') {
-      const report = await status(paths);
+      const report = status(paths);
       out.write(JSON.stringify(report, null, 2) + '\n');
       return { code: 0 };
     }

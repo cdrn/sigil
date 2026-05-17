@@ -1,12 +1,9 @@
-import type { DaemonClient } from '../daemon/client.js';
-import { DaemonRpcError } from '../daemon/client.js';
-import { MCP_INTERNAL_ERROR, MCP_INVALID_PARAMS, type ToolDefinition, type ToolResult } from './protocol.js';
+import { dispatch, type MethodContext, RpcMethodError } from '../daemon/methods.js';
+import { MCP_INTERNAL_ERROR, type ToolDefinition, type ToolResult } from './protocol.js';
 
-export interface ToolHandlerCtx {
-  daemon: DaemonClient;
-}
+export type ToolHandlerCtx = MethodContext;
 
-export type ToolHandler = (args: unknown, ctx: ToolHandlerCtx) => Promise<ToolResult>;
+export type ToolHandler = (args: unknown, ctx: ToolHandlerCtx) => ToolResult;
 
 export interface Tool {
   definition: ToolDefinition;
@@ -21,13 +18,10 @@ const listPortals: Tool = {
   definition: {
     name: 'sigil_list_portals',
     description:
-      'List the signing portals currently loaded in sigild. Returns each portal handle (e.g. "eth:executor"), its kind, and the public address it controls.',
+      'List the signing portals currently loaded in sigil. Returns each portal handle (e.g. "eth:executor"), its kind, and the public address it controls.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
-  handler: async (_args, ctx) => {
-    const result = await callDaemon(ctx.daemon, 'sigil_list_portals', {});
-    return textResult(result);
-  },
+  handler: (args, ctx) => callMethod('sigil_list_portals', args, ctx),
 };
 
 const ethSignMessage: Tool = {
@@ -45,11 +39,7 @@ const ethSignMessage: Tool = {
       additionalProperties: false,
     },
   },
-  handler: async (args, ctx) => {
-    const params = ensureObject(args, 'sigil_eth_sign_message');
-    const result = await callDaemon(ctx.daemon, 'sigil_eth_sign_message', params);
-    return textResult(result);
-  },
+  handler: (args, ctx) => callMethod('sigil_eth_sign_message', args, ctx),
 };
 
 const ethSignTransaction: Tool = {
@@ -71,11 +61,7 @@ const ethSignTransaction: Tool = {
       additionalProperties: false,
     },
   },
-  handler: async (args, ctx) => {
-    const params = ensureObject(args, 'sigil_eth_sign_transaction');
-    const result = await callDaemon(ctx.daemon, 'sigil_eth_sign_transaction', params);
-    return textResult(result);
-  },
+  handler: (args, ctx) => callMethod('sigil_eth_sign_transaction', args, ctx),
 };
 
 const ethSignTypedData: Tool = {
@@ -96,11 +82,7 @@ const ethSignTypedData: Tool = {
       additionalProperties: false,
     },
   },
-  handler: async (args, ctx) => {
-    const params = ensureObject(args, 'sigil_eth_sign_typed_data');
-    const result = await callDaemon(ctx.daemon, 'sigil_eth_sign_typed_data', params);
-    return textResult(result);
-  },
+  handler: (args, ctx) => callMethod('sigil_eth_sign_typed_data', args, ctx),
 };
 
 export const TOOLS: readonly Tool[] = Object.freeze([
@@ -129,28 +111,26 @@ export class ToolError extends Error {
   }
 }
 
-function ensureObject(args: unknown, name: string): Record<string, unknown> {
-  if (typeof args !== 'object' || args === null || Array.isArray(args)) {
-    throw new ToolError(MCP_INVALID_PARAMS, `${name}: arguments must be an object`);
-  }
-  return args as Record<string, unknown>;
-}
-
-async function callDaemon(client: DaemonClient, method: string, params: unknown): Promise<unknown> {
+/**
+ * Call into the in-process method dispatcher and wrap the result for MCP.
+ * Maps `RpcMethodError` (raised by the dispatcher on user errors or
+ * not-found method) into `ToolError` with the same code, so the original
+ * error semantics flow through to the MCP client unchanged.
+ */
+function callMethod(methodName: string, args: unknown, ctx: MethodContext): ToolResult {
   try {
-    return await client.call(method, params);
+    const result = dispatch(methodName, args, ctx);
+    return textResult(result);
   } catch (err) {
-    if (err instanceof DaemonRpcError) {
-      // Forward the daemon's error code unchanged so the client sees the
-      // exact diagnosis (PORTAL_NOT_FOUND, INVALID_PARAMS, etc).
+    if (err instanceof RpcMethodError) {
       throw new ToolError(err.code, err.message, err.data);
     }
-    throw new ToolError(MCP_INTERNAL_ERROR, `daemon error: ${(err as Error).message}`);
+    throw new ToolError(MCP_INTERNAL_ERROR, `internal: ${(err as Error).message}`);
   }
 }
 
 function textResult(payload: unknown): ToolResult {
-  // JSON-serialize the daemon's response into the MCP text content slot.
+  // JSON-serialize the response into the MCP text content slot.
   // We also include structuredContent so MCP clients that support it can
   // access the typed payload directly without re-parsing.
   return {
