@@ -31,13 +31,21 @@ export class HandleLoadError extends Error {
 /**
  * In-memory registry of handle → unlocked SecretBuffer.
  *
- * The expectation is that this is constructed once at daemon startup, populated
- * via loadFromDir (or addEntry from tests), and disposed once at shutdown.
- * After dispose() any further get/list calls throw.
+ * Lifecycle inside sigil-mcp:
+ *   - Constructed empty + locked at startup.
+ *   - `sigil unlock` calls loadFromDir / addEntry → table becomes unlocked.
+ *   - `sigil lock` calls lock() → entries zeroed + cleared, table re-lockable.
+ *   - Process exit calls dispose() → final teardown, no further use.
+ *
+ * The unlocked flag is tracked separately from entry count so that an unlock
+ * with zero portals on disk still distinguishes "no portals exist" (handle
+ * lookup → PORTAL_NOT_FOUND) from "never unlocked" (handle lookup →
+ * DAEMON_LOCKED).
  */
 export class HandleTable {
   // Wrapped in a private map; not exposed.
   readonly #entries = new Map<string, { secret: SecretBuffer; info: PortalInfo }>();
+  #unlocked = false;
   #disposed = false;
 
   static parseHandle(handle: string): { kind: 'eth'; name: string } {
@@ -55,10 +63,15 @@ export class HandleTable {
 
   /**
    * Load every keyfile in `dir` named `<handle>.sigil`, decrypting each with
-   * the same passphrase. Throws HandleLoadError on any failure.
+   * the same passphrase. Throws HandleLoadError on any failure; on failure
+   * the table is left locked with any partially-loaded entries zeroized.
    *
    * Order: deterministic by sorted filename, so audit logs and list_portals
    * output are stable across restarts.
+   *
+   * Marks the table as unlocked on success — even if the directory was
+   * empty (zero portals to load). After that, sign calls see PORTAL_NOT_FOUND
+   * instead of DAEMON_LOCKED.
    */
   loadFromDir(dir: string, passphrase: Buffer): void {
     if (this.#disposed) throw new Error('HandleTable is disposed');
@@ -66,35 +79,47 @@ export class HandleTable {
     try {
       entries = readdirSync(dir).sort();
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.#unlocked = true;
+        return;
+      }
       throw new HandleLoadError(`failed to read keys directory ${dir}`, err);
     }
-    for (const filename of entries) {
-      const handle = HandleTable.handleFromFilename(filename);
-      if (handle === null) continue; // ignore non-keyfiles
-      const path = join(dir, filename);
-      let blob: Buffer;
-      try {
-        blob = readFileSync(path);
-      } catch (err) {
-        throw new HandleLoadError(`failed to read keyfile ${path}`, err);
-      }
-      let secret: SecretBuffer;
-      try {
-        secret = unsealKey(blob, passphrase);
-      } catch (err) {
-        if (err instanceof WrongPassphraseError) {
-          throw new HandleLoadError(`wrong passphrase or tampered keyfile: ${path}`, err);
+    try {
+      for (const filename of entries) {
+        const handle = HandleTable.handleFromFilename(filename);
+        if (handle === null) continue;
+        const path = join(dir, filename);
+        let blob: Buffer;
+        try {
+          blob = readFileSync(path);
+        } catch (err) {
+          throw new HandleLoadError(`failed to read keyfile ${path}`, err);
         }
-        throw new HandleLoadError(`failed to unseal keyfile ${path}`, err);
+        let secret: SecretBuffer;
+        try {
+          secret = unsealKey(blob, passphrase);
+        } catch (err) {
+          if (err instanceof WrongPassphraseError) {
+            throw new HandleLoadError(`wrong passphrase or tampered keyfile: ${path}`, err);
+          }
+          throw new HandleLoadError(`failed to unseal keyfile ${path}`, err);
+        }
+        this.addEntry(handle, secret);
       }
-      this.addEntry(handle, secret);
+      this.#unlocked = true;
+    } catch (err) {
+      this.lock();
+      throw err;
     }
   }
 
   /**
    * Add a handle directly (for tests or for non-file-backed key sources).
-   * Takes ownership of the SecretBuffer; dispose() will zeroize it.
+   * Takes ownership of the SecretBuffer; lock()/dispose() will zeroize it.
+   * Does NOT flip the unlocked flag — loadFromDir does that once after a
+   * successful pass. Tests that want an unlocked table should call
+   * markUnlocked() explicitly.
    */
   addEntry(handle: string, secret: SecretBuffer): void {
     if (this.#disposed) throw new Error('HandleTable is disposed');
@@ -108,6 +133,16 @@ export class HandleTable {
       secret,
       info: { handle, kind: 'eth', address },
     });
+  }
+
+  /**
+   * Explicitly mark the table as unlocked without loading anything. Useful
+   * for tests that pre-populate via addEntry and want sign methods to
+   * succeed.
+   */
+  markUnlocked(): void {
+    if (this.#disposed) throw new Error('HandleTable is disposed');
+    this.#unlocked = true;
   }
 
   has(handle: string): boolean {
@@ -129,13 +164,32 @@ export class HandleTable {
     return Array.from(this.#entries.values()).map((e) => ({ ...e.info }));
   }
 
+  isUnlocked(): boolean {
+    if (this.#disposed) return false;
+    return this.#unlocked;
+  }
+
   /**
-   * Zeroize every key and mark the table unusable. Idempotent.
+   * Zeroize every entry and re-lock the table. The table remains usable —
+   * a subsequent unlock can repopulate it. Idempotent.
+   */
+  lock(): void {
+    if (this.#disposed) return;
+    for (const e of this.#entries.values()) e.secret.dispose();
+    this.#entries.clear();
+    this.#unlocked = false;
+  }
+
+  /**
+   * Final teardown: zeroize every key and mark the table unusable. After
+   * dispose(), get/has/list/lock/markUnlocked/addEntry/loadFromDir throw.
+   * Idempotent.
    */
   dispose(): void {
     if (this.#disposed) return;
     for (const e of this.#entries.values()) e.secret.dispose();
     this.#entries.clear();
+    this.#unlocked = false;
     this.#disposed = true;
   }
 

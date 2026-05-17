@@ -69,6 +69,12 @@ function hexToBuf(s: string, methodName: string, key: string): Buffer {
 }
 
 function requirePortal(handles: HandleTable, handle: string): Buffer {
+  if (!handles.isUnlocked()) {
+    throw new RpcMethodError(
+      RPC_DAEMON_LOCKED,
+      'sigil is locked — run "sigil unlock" in a terminal to load keys',
+    );
+  }
   const sb = handles.get(handle);
   if (!sb) {
     throw new RpcMethodError(RPC_PORTAL_NOT_FOUND, `portal "${handle}" not found`);

@@ -19,6 +19,7 @@ import {
   dispatch,
   HandleTable,
   type MethodContext,
+  RPC_DAEMON_LOCKED,
   RPC_INVALID_PARAMS,
   RPC_METHOD_NOT_FOUND,
   RPC_PORTAL_NOT_FOUND,
@@ -38,6 +39,7 @@ function makeCtx(): { ctx: MethodContext; cleanup: () => void; auditPath: string
   const auditPath = join(dir, 'audit.log');
   const handles = new HandleTable();
   handles.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  handles.markUnlocked();
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(auditPath, { now: () => ++now });
   return {
@@ -347,4 +349,105 @@ test('portal-not-found errors short-circuit before audit (current behavior, will
     // No audit entries were written.
     equal(ctx.audit.head.nextSeq, 0);
   } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// DAEMON_LOCKED
+// ---------------------------------------------------------------------------
+
+test('sign methods throw DAEMON_LOCKED when the handle table is locked', () => {
+  const dir = mkTmp();
+  try {
+    const handles = new HandleTable();
+    // Note: NOT calling markUnlocked() — table starts locked.
+    const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => 1 });
+    const ctx: MethodContext = { handles, audit };
+    const calls: { method: string; params: unknown }[] = [
+      { method: 'sigil_eth_sign_message', params: { portal: 'eth:bot', message: '0xff' } },
+      {
+        method: 'sigil_eth_sign_transaction',
+        params: {
+          portal: 'eth:bot',
+          tx: {
+            type: 'legacy', chainId: 1, nonce: 0, gasPrice: 1, gasLimit: 21000,
+            to: '0x' + '11'.repeat(20), value: 0, data: '0x',
+          },
+        },
+      },
+      {
+        method: 'sigil_eth_sign_typed_data',
+        params: {
+          portal: 'eth:bot',
+          typedData: {
+            types: { EIP712Domain: [{ name: 'name', type: 'string' }], Mail: [{ name: 'msg', type: 'string' }] },
+            primaryType: 'Mail',
+            domain: { name: 'x' },
+            message: { msg: 'hi' },
+          },
+        },
+      },
+    ];
+    try {
+      for (const { method, params } of calls) {
+        let err: RpcMethodError | null = null;
+        try { dispatch(method, params, ctx); }
+        catch (e) { err = e as RpcMethodError; }
+        ok(err instanceof RpcMethodError, `${method} should throw RpcMethodError`);
+        equal(err!.code, RPC_DAEMON_LOCKED, `${method} should return DAEMON_LOCKED`);
+        ok(/sigil unlock/.test(err!.message), `${method} error message should mention "sigil unlock"`);
+      }
+    } finally {
+      audit.close();
+      handles.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('list_portals works while locked (returns empty list)', () => {
+  const dir = mkTmp();
+  try {
+    const handles = new HandleTable();
+    const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => 1 });
+    const ctx: MethodContext = { handles, audit };
+    try {
+      const result = dispatch('sigil_list_portals', null, ctx) as { portals: unknown[] };
+      equal(result.portals.length, 0);
+    } finally {
+      audit.close();
+      handles.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('unknown-portal vs locked-table are reported as distinct error codes', () => {
+  // Locked → DAEMON_LOCKED. Unlocked-but-handle-missing → PORTAL_NOT_FOUND.
+  const dir = mkTmp();
+  try {
+    const handles = new HandleTable();
+    const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => 1 });
+    const ctx: MethodContext = { handles, audit };
+    try {
+      // Locked.
+      let err: RpcMethodError | null = null;
+      try { dispatch('sigil_eth_sign_message', { portal: 'eth:x', message: '0xff' }, ctx); }
+      catch (e) { err = e as RpcMethodError; }
+      equal(err!.code, RPC_DAEMON_LOCKED);
+
+      // Now unlock with zero portals on disk → still no eth:x.
+      handles.markUnlocked();
+      err = null;
+      try { dispatch('sigil_eth_sign_message', { portal: 'eth:x', message: '0xff' }, ctx); }
+      catch (e) { err = e as RpcMethodError; }
+      equal(err!.code, RPC_PORTAL_NOT_FOUND);
+    } finally {
+      audit.close();
+      handles.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });

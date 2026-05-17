@@ -5,8 +5,9 @@ import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
 import { portalAdd, portalListFromDisk, portalRemove } from './portal.js';
 import { status } from './status.js';
+import { formatResult, lock, unlock } from './unlock.js';
 
-const USAGE = `sigil — local signing daemon control
+const USAGE = `sigil — local signing control for Claude Code
 
 Usage:
   sigil init [--user]
@@ -14,10 +15,13 @@ Usage:
   sigil portal add <handle> --key-file <path> [--no-remove-source]
   sigil portal list
   sigil portal remove <handle>
+  sigil unlock
+  sigil lock
 
 "sigil init" writes the MCP server registration + tool hooks into
 .claude/settings.json (or ~/.claude/settings.json with --user).
-Run "sigild" directly to start the daemon (foreground).
+"sigil unlock" prompts for the passphrase and pushes it to the running
+sigil-mcp process (spawned by Claude Code) over the control socket.
 Set SIGIL_HOME to override ~/.sigil.
 `;
 
@@ -70,9 +74,26 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
       return { code: 0 };
     }
     if (head === 'status') {
-      const report = status(paths);
+      const report = await status(paths);
       out.write(JSON.stringify(report, null, 2) + '\n');
       return { code: 0 };
+    }
+    if (head === 'unlock') {
+      const passphrase = await askPassphrase();
+      try {
+        const result = await unlock({ paths, passphrase });
+        const { message, code } = formatResult('unlock', result);
+        (code === 0 ? out : err).write(message + '\n');
+        return { code };
+      } finally {
+        passphrase.fill(0);
+      }
+    }
+    if (head === 'lock') {
+      const result = await lock({ paths });
+      const { message, code } = formatResult('lock', result);
+      (code === 0 ? out : err).write(message + '\n');
+      return { code };
     }
     if (head === 'portal') {
       const sub = parseSubcommand(rest, {
