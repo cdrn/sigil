@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   const audit = new AuditWriter(paths.auditLog);
 
   let controlClosed = false;
-  let control;
+  let control: Awaited<ReturnType<typeof startControlServer>> | null = null;
   try {
     control = await startControlServer({
       socketPath: paths.controlSocket,
@@ -42,15 +42,25 @@ async function main(): Promise<void> {
       onLog: (e) => process.stderr.write(`control: ${JSON.stringify(e)}\n`),
     });
   } catch (err) {
-    process.stderr.write(`sigil-mcp: failed to bind control socket: ${(err as Error).message}\n`);
-    handles.dispose();
-    audit.close();
-    process.exit(1);
+    // Another sigil-mcp already owns the control socket (or some other bind
+    // failure). Stay up without a control socket so the MCP stdio still
+    // works, but warn — this session will be permanently locked, since the
+    // primary sigil-mcp is what `sigil unlock` reaches.
+    process.stderr.write(
+      `sigil-mcp: control socket unavailable (${(err as Error).message}). ` +
+      `This session will stay locked; sign calls will return DAEMON_LOCKED. ` +
+      `Run "sigil unlock" against the primary sigil-mcp from your first ` +
+      `Claude session — phase C of #23 will lift this limitation.\n`,
+    );
   }
 
-  process.stderr.write(
-    `sigil-mcp: ready (locked; run "sigil unlock" to load keys from ${paths.keysDir})\n`,
-  );
+  if (control) {
+    process.stderr.write(
+      `sigil-mcp: ready (locked; run "sigil unlock" to load keys from ${paths.keysDir})\n`,
+    );
+  } else {
+    process.stderr.write(`sigil-mcp: ready (permanently locked — no control socket)\n`);
+  }
 
   const shutdown = (): void => {
     handles.dispose();
