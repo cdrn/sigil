@@ -1,0 +1,133 @@
+name: Lockfile diff
+
+# When a PR touches package-lock.json, post a summary of what packages
+# were added / removed / upgraded. The lockfile is GitHub's source of
+# truth for the dep tree, but its diff is enormous and reviewers
+# routinely scroll past it. This workflow surfaces the actually-
+# semantically-interesting change in a PR comment so we never miss a
+# silent transitive-dep shift.
+#
+# Does NOT block merges — it's an information signal. The install-
+# scripts guard in ci.yml is the hard block.
+
+on:
+  pull_request:
+    paths:
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: lockfile-diff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    name: Comment on PR with dep-tree diff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+
+      - name: Checkout PR base
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - name: Generate dep lists
+        # Walk the lockfile's `packages` object and emit "name@version" per
+        # installed dep. node_modules/-rooted keys; skip the empty root key.
+        run: |
+          set -euo pipefail
+          extract() {
+            node -e "
+              const lock = require('$1');
+              const pkgs = lock.packages || {};
+              const lines = [];
+              for (const [path, info] of Object.entries(pkgs)) {
+                if (path === '') continue;
+                const name = path.replace(/^node_modules\//, '').replace(/\/node_modules\//g, '/');
+                if (info.version) lines.push(name + '@' + info.version);
+              }
+              lines.sort();
+              for (const l of lines) console.log(l);
+            "
+          }
+          extract head/package-lock.json > head-deps.txt
+          extract base/package-lock.json > base-deps.txt
+
+      - name: Compute diff
+        id: diff
+        run: |
+          set -euo pipefail
+          added=$(comm -23 <(sort head-deps.txt) <(sort base-deps.txt) || true)
+          removed=$(comm -13 <(sort head-deps.txt) <(sort base-deps.txt) || true)
+
+          # Detect upgrades (same name, different version) by stripping versions
+          # and looking at name-only lines that appear in both — then matching them.
+          head_names=$(awk -F'@' '{ NF--; print $0 }' OFS='@' head-deps.txt | sort -u)
+          base_names=$(awk -F'@' '{ NF--; print $0 }' OFS='@' base-deps.txt | sort -u)
+          common_names=$(comm -12 <(echo "$head_names") <(echo "$base_names"))
+
+          upgrades=""
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            old=$(grep -F "$name@" base-deps.txt | head -1 | sed "s|^$name@||")
+            new=$(grep -F "$name@" head-deps.txt | head -1 | sed "s|^$name@||")
+            if [ "$old" != "$new" ]; then
+              upgrades="${upgrades}- \`${name}\`: \`${old}\` → \`${new}\`"$'\n'
+            fi
+          done <<< "$common_names"
+
+          {
+            echo 'body<<EOF'
+            echo '## Dep tree changes'
+            echo ''
+            if [ -n "$added" ]; then
+              echo '### Added'
+              echo '```'
+              echo "$added"
+              echo '```'
+            fi
+            if [ -n "$removed" ]; then
+              echo '### Removed'
+              echo '```'
+              echo "$removed"
+              echo '```'
+            fi
+            if [ -n "$upgrades" ]; then
+              echo '### Upgraded'
+              echo "$upgrades"
+            fi
+            if [ -z "$added" ] && [ -z "$removed" ] && [ -z "$upgrades" ]; then
+              echo '_Only lockfile metadata changed; no package additions, removals, or version bumps._'
+            fi
+            echo ''
+            echo '_Posted by [lockfile-diff workflow](../actions/workflows/lockfile-diff.yml)._'
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post / update PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          BODY: ${{ steps.diff.outputs.body }}
+        run: |
+          set -euo pipefail
+          # Find an existing comment by marker. The marker is the H2 header
+          # at the top of the body — there's only ever one of these.
+          MARKER='## Dep tree changes'
+          existing=$(gh api "repos/$REPO/issues/$PR_NUM/comments" --jq \
+            "[.[] | select(.body | startswith(\"$MARKER\"))] | first | .id // empty")
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$BODY"
+          else
+            gh pr comment "$PR_NUM" --repo "$REPO" --body "$BODY"
+          fi

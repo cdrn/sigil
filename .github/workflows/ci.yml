@@ -27,8 +27,14 @@ jobs:
           cache: 'npm'
       - name: Install dependencies
         # npm ci honors .npmrc (ignore-scripts=true) and the lockfile.
-        # No install scripts run; if any dep ever declares one, layer 8
-        # will add a separate CI guard that fails the build.
+        # The next step audits the tree for any dep declaring an install
+        # hook so we notice before a fresh user (without our .npmrc)
+        # would actually execute it.
         run: npm ci
+      - name: Audit dep tree for install scripts
+        # Fails the build if any package in node_modules declares
+        # preinstall / install / postinstall. See script header for the
+        # threat-model reasoning behind which hooks are checked.
+        run: node scripts/check-install-scripts.mjs
       - name: Run tests
         run: npm test
