@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { readPassphrase } from '../daemon/passphrase.js';
 import type { KdfParams } from '../crypto/index.js';
 import { type InitScope, installInto } from '../hooks/install.js';
+import { parsePolicy } from '../policy/index.js';
 import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
 import { portalAdd, portalListFromDisk, portalRemove } from './portal.js';
@@ -12,14 +15,17 @@ const USAGE = `sigil — local signing control for Claude Code
 Usage:
   sigil init [--user]
   sigil status
-  sigil portal add <handle> --key-file <path> [--no-remove-source]
+  sigil portal add <handle> --key-file <path> [--no-remove-source] [--strict]
   sigil portal list
   sigil portal remove <handle>
+  sigil policy show <handle>
   sigil unlock
   sigil lock
 
 "sigil init" writes the MCP server registration + tool hooks into
 .claude/settings.json (or ~/.claude/settings.json with --user).
+"sigil portal add" writes a permissive policy by default; pass --strict
+to get a locked-down template you fill in before any sign succeeds.
 "sigil unlock" prompts for the passphrase and pushes it to the running
 sigil-mcp process (spawned by Claude Code) over the control socket.
 Set SIGIL_HOME to override ~/.sigil.
@@ -101,6 +107,7 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
           options: {
             'key-file': { type: 'string' },
             'no-remove-source': { type: 'boolean' },
+            'strict': { type: 'boolean' },
           },
         },
         list: { options: {} },
@@ -113,16 +120,23 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         if (typeof keyFile !== 'string' || keyFile.length === 0) {
           throw new ArgsError('portal add: --key-file is required');
         }
+        const policyMode: 'permissive' | 'strict' =
+          sub.options['strict'] === true ? 'strict' : 'permissive';
         const passphrase = await askPassphrase();
         try {
-          const { address, keyfilePath } = portalAdd(paths, {
+          const { address, keyfilePath, policyPath } = portalAdd(paths, {
             handle,
             keyFile,
             passphrase,
+            policyMode,
             ...(sub.options['no-remove-source'] === true ? { removeSource: false } : {}),
             ...(opts.kdfParams ? { kdfParams: opts.kdfParams } : {}),
           });
           out.write(`added ${handle} (${address}) → ${keyfilePath}\n`);
+          out.write(`policy: ${policyMode} → ${policyPath}\n`);
+          if (policyMode === 'strict') {
+            out.write(`note: strict policy denies everything until you edit ${policyPath}\n`);
+          }
         } finally {
           passphrase.fill(0);
         }
@@ -149,6 +163,33 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         if (result.removed) out.write(`removed ${handle} (${result.path})\n`);
         else out.write(`portal "${handle}" not found at ${result.path}\n`);
         return { code: result.removed ? 0 : 1 };
+      }
+    }
+    if (head === 'policy') {
+      const sub = parseSubcommand(rest, { show: { options: {} } });
+      if (sub.command === 'show') {
+        const handle = sub.positionals[0];
+        if (!handle) throw new ArgsError('policy show: missing handle');
+        const policyPath = join(paths.policyDir, `${handle}.toml`);
+        let source: string;
+        try { source = readFileSync(policyPath, 'utf8'); }
+        catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+            err.write(`policy: no file at ${policyPath}\n`);
+            return { code: 1 };
+          }
+          throw e;
+        }
+        // Validate by parsing — surface schema errors as exit 1.
+        try { parsePolicy(source); }
+        catch (e) {
+          err.write(`policy: ${(e as Error).message}\n`);
+          err.write(`(file at ${policyPath} is on disk but doesn't parse — fix it before signing)\n`);
+          return { code: 1 };
+        }
+        out.write(source);
+        out.write(`# ${policyPath}\n`);
+        return { code: 0 };
       }
     }
     throw new ArgsError(`unknown subcommand "${head}"`);

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { AuditWriter } from '../../src/audit/index.js';
 import { SecretBuffer } from '../../src/crypto/index.js';
 import { HandleTable, type MethodContext } from '../../src/daemon/index.js';
+import { permissivePolicyResolver } from '../../src/policy/index.js';
 import { findTool, MCP_INVALID_PARAMS, ToolError, TOOLS } from '../../src/mcp/index.js';
 
 function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
@@ -25,7 +26,7 @@ function setUp(): H {
   handles.markUnlocked();
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => ++now });
-  return { dir, ctx: { handles, audit }, handles, audit };
+  return { dir, ctx: { handles, audit, policy: permissivePolicyResolver() }, handles, audit };
 }
 
 function tearDown(h: H): void {

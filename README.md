@@ -4,7 +4,7 @@
 
 `sigil` is a local signing tool and Claude Code integration that lets agentic coding tools use private keys without ever putting key material in the model's context window.
 
-**Status:** pre-alpha (v0.0.1 published as a name-stake placeholder). The MCP server, CLI, unlock flow, and ward hooks all work end-to-end. The policy engine and out-of-band confirmation gate are not yet implemented; until they land, sigil signs anything the agent asks once the keys are unlocked. **Do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
+**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, and policy engine (static checks) all work end-to-end. Out-of-band confirmation, rolling-window value caps, and EIP-712 domain allowlists are not yet implemented. Until they land — and until the supply-chain attestations promised for v0.1.0 ship — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
 
 ## What it is
 
@@ -22,7 +22,7 @@ Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transaction
 
 - Not a hardware wallet replacement. If you can use a Ledger or YubiKey, do that.
 - Not a custody solution. It runs on your laptop or VPS and protects you from one specific class of failure: leaking key material through an LLM agent.
-- Not yet a substitute for policy. The library prevents *ingestion* of keys; the policy engine (issue [#3](https://github.com/cdrn/sigil/issues/3)) will prevent *misuse* of signing authority. Both matter — see the threat model.
+- A first cut of *bounding signing authority* via the policy engine — but not the full thing. v1 covers static checks (chain ID, destination allowlist, per-tx value cap, function-selector allowlist, on/off toggles for personal_sign and EIP-712). Rolling-window caps, EIP-712 domain allowlists, and out-of-band human confirmation are tracked in [#3](https://github.com/cdrn/sigil/issues/3) + [#4](https://github.com/cdrn/sigil/issues/4) and will land incrementally.
 
 ## Install
 
@@ -43,7 +43,12 @@ sigil init
 # 2. Encrypt a private key into sigil's keystore. Source key is deleted by default.
 #    Accepts either 32 raw bytes or 64 hex chars (with optional 0x prefix).
 sigil portal add eth:bot --key-file ./bot.key
-# → prompts for a passphrase, derives the address, writes ~/.sigil/keys/eth:bot.sigil
+# → prompts for a passphrase, derives the address, writes
+#   ~/.sigil/keys/eth:bot.sigil  AND  ~/.sigil/policy/eth:bot.toml (permissive)
+#
+# Pass --strict to start with a locked-down policy template you fill in
+# before any sign succeeds:
+#   sigil portal add eth:bot --key-file ./bot.key --strict
 
 # 3. Open Claude Code. It spawns sigil-mcp automatically via your MCP config.
 #    sigil-mcp boots locked — the first sign attempt will return DAEMON_LOCKED.
@@ -68,11 +73,18 @@ sigil init [--user]
   .claude/settings.json. With --user, writes ~/.claude/settings.json
   instead. Idempotent — preserves your unrelated settings.
 
-sigil portal add <handle> --key-file <path> [--no-remove-source]
+sigil portal add <handle> --key-file <path> [--no-remove-source] [--strict]
   Encrypt the key with your passphrase and store it at
   ~/.sigil/keys/<handle>.sigil (mode 0600). Handle format is
   <kind>:<name> where kind is "eth". The source key file is deleted
   by default — pass --no-remove-source to keep it.
+  Also writes ~/.sigil/policy/<handle>.toml — permissive by default
+  (signs anything), or use --strict for a locked-down template you
+  fill in before signs succeed.
+
+sigil policy show <handle>
+  Print the current policy file for a portal. Validates schema; exits
+  1 if the file is missing or malformed.
 
 sigil portal list
   List the encrypted keyfiles on disk with their derived addresses.
@@ -104,6 +116,30 @@ Set `SIGIL_HOME` to override `~/.sigil`. Set `SIGIL_CONTROL_SOCK` to override th
 Each Claude Code window spawns its own `sigil-mcp`. They share the on-disk keyfiles + audit log but have separate in-memory handle tables — you `sigil unlock` once per window. (The first MCP to start owns `control.sock`; further sessions will get their own socket once flock-based per-instance sockets land in Phase C of [#23](https://github.com/cdrn/sigil/issues/23). Until then, only the first window's `sigil-mcp` is reachable from the CLI.)
 
 OS-keychain integration (planned, v0.3) will make unlock zero-touch for users who set it up.
+
+## Policy engine
+
+Once a portal is unlocked, signing authority over its key is real. To bound the blast radius of a successful prompt injection, every portal has a policy file at `~/.sigil/policy/<handle>.toml`. Two modes:
+
+**Permissive** (default for `sigil portal add`): no rules. Sign anything the agent asks. The key isolation guarantees still hold — your key never enters the agent's context — but the unlocked portal can be made to sign whatever an attacker can get the agent to ask for. Useful for: testnet bots, demo flows, anyone who only cares about the context-window protection.
+
+**Strict** (opt in with `--strict`): every sign request is checked. Generated template:
+
+```toml
+mode = "strict"
+
+chain_ids = [1]                           # allowed chain IDs
+allow_to = []                             # allowed destination addresses (lowercase 0x)
+max_value_wei = "0"                       # per-tx cap, in wei, as decimal string
+allowed_selectors = []                    # 4-byte function selectors, e.g. "0xa9059cbb"
+
+allow_message_signing = false             # EIP-191 personal_sign (e.g. SIWE)
+allow_typed_data = false                  # EIP-712 (Permit, OpenSea — can be financial)
+```
+
+A failed rule throws `POLICY_DENIED` (-32001) back to the agent with the human-readable reason ("tx denied — value X exceeds max_value_wei Y"), and the deny is appended to the hash-chained audit log alongside allows. Denies are forensically the more interesting half — they're the prompt-injection canary.
+
+What's deferred to follow-up PRs (still in [#3](https://github.com/cdrn/sigil/issues/3)): rolling-window value caps (e.g. 1 ETH/day per portal), EIP-712 domain + primary-type allowlists, decoded-calldata arg checks, and the `require_confirm_above_wei` outcome that hooks into the OOB push gate ([#4](https://github.com/cdrn/sigil/issues/4)).
 
 ## Supply chain posture
 

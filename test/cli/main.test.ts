@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -205,6 +205,100 @@ test('runCli: passphrase buffer is zeroed after portal add', async () => {
     // After the CLI returns, the original buffer should be zeroed.
     ok(passCopy.some((b) => b !== 0)); // sanity: was non-zero
     for (const b of pass) equal(b, 0);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Policy CLI surface
+// ---------------------------------------------------------------------------
+
+test('runCli: portal add — writes permissive policy by default', async () => {
+  const home = mkTmpHome();
+  try {
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    const cap = capture();
+    const r = await runCli({
+      argv: ['portal', 'add', 'eth:bot', '--key-file', srcKey],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    equal(r.code, 0);
+    ok(/policy: permissive/.test(cap.out()));
+    ok(existsSync(join(home, 'policy', 'eth:bot.toml')));
+    const pol = readFileSync(join(home, 'policy', 'eth:bot.toml'), 'utf8');
+    ok(/mode = "permissive"/.test(pol));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: portal add --strict writes the strict template', async () => {
+  const home = mkTmpHome();
+  try {
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    const cap = capture();
+    const r = await runCli({
+      argv: ['portal', 'add', 'eth:bot', '--key-file', srcKey, '--strict'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    equal(r.code, 0);
+    ok(/policy: strict/.test(cap.out()));
+    ok(/note: strict policy denies/.test(cap.out()));
+    const pol = readFileSync(join(home, 'policy', 'eth:bot.toml'), 'utf8');
+    ok(/mode = "strict"/.test(pol));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: policy show — prints the file contents', async () => {
+  const home = mkTmpHome();
+  try {
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    // Provision first.
+    await runCli({
+      argv: ['portal', 'add', 'eth:bot', '--key-file', srcKey, '--strict'],
+      stdout: new Writable({ write(_c, _e, cb) { cb(); } }),
+      stderr: new Writable({ write(_c, _e, cb) { cb(); } }),
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    // Now show.
+    const cap = capture();
+    const r = await runCli({
+      argv: ['policy', 'show', 'eth:bot'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+    });
+    equal(r.code, 0);
+    ok(/mode = "strict"/.test(cap.out()));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: policy show — exits 1 if file missing', async () => {
+  const home = mkTmpHome();
+  try {
+    const cap = capture();
+    const r = await runCli({
+      argv: ['policy', 'show', 'eth:nope'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+    });
+    equal(r.code, 1);
+    ok(/no file/.test(cap.err()));
   } finally {
     rmSync(home, { recursive: true });
   }

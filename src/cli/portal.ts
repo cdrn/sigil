@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { type KdfParams, sealKey, SecretBuffer, unsealKey } from '../crypto/index.js';
 import { addressFromPrivateKey } from '../eth/index.js';
 import { HandleTable } from '../daemon/handles.js';
+import { type PolicyMode, policyTemplate } from '../policy/index.js';
 import type { SigilPaths } from './paths.js';
 
 export interface PortalAddOpts {
@@ -21,6 +22,13 @@ export interface PortalAddOpts {
    * the suite fast. The CLI binary never sets this.
    */
   kdfParams?: KdfParams;
+  /**
+   * Policy template to write at provisioning time. Defaults to "permissive"
+   * (signs anything the agent asks — same UX as today, key still protected
+   * from context). Pass "strict" to write a locked-down template the user
+   * must edit before signing succeeds.
+   */
+  policyMode?: PolicyMode;
 }
 
 /**
@@ -32,13 +40,21 @@ export interface PortalAddOpts {
  *  - 32 raw bytes (binary)
  *  - 64 hex characters (optionally 0x-prefixed, optionally with trailing whitespace)
  */
-export function portalAdd(paths: SigilPaths, opts: PortalAddOpts): { address: string; keyfilePath: string } {
+export function portalAdd(
+  paths: SigilPaths,
+  opts: PortalAddOpts,
+): { address: string; keyfilePath: string; policyPath: string } {
   HandleTable.parseHandle(opts.handle); // validates format
   mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
 
   const destPath = join(paths.keysDir, `${opts.handle}.sigil`);
   if (existsSync(destPath)) {
     throw new Error(`portal "${opts.handle}" already exists at ${destPath}; remove it first`);
+  }
+  const policyPath = join(paths.policyDir, `${opts.handle}.toml`);
+  if (existsSync(policyPath)) {
+    throw new Error(`policy file for "${opts.handle}" already exists at ${policyPath}; remove it first`);
   }
 
   const raw = readFileSync(opts.keyFile);
@@ -54,12 +70,16 @@ export function portalAdd(paths: SigilPaths, opts: PortalAddOpts): { address: st
     priv.fill(0);
   }
 
+  // Write the policy file alongside the keyfile. Mode 0o600 — it's not secret
+  // per se, but it does describe what this key can sign, which is sensitive.
+  writeFileSync(policyPath, policyTemplate(opts.policyMode ?? 'permissive'), { mode: 0o600 });
+
   if (opts.removeSource !== false) {
     try { unlinkSync(opts.keyFile); }
     catch { /* best-effort cleanup; file may already be gone */ }
   }
 
-  return { address, keyfilePath: destPath };
+  return { address, keyfilePath: destPath, policyPath };
 }
 
 export interface PortalInfo {
@@ -99,9 +119,16 @@ export interface PortalRemoveResult {
 export function portalRemove(paths: SigilPaths, handle: string): PortalRemoveResult {
   HandleTable.parseHandle(handle); // validates format
   const destPath = join(paths.keysDir, `${handle}.sigil`);
-  if (!existsSync(destPath)) return { removed: false, path: destPath };
-  unlinkSync(destPath);
-  return { removed: true, path: destPath };
+  const policyPath = join(paths.policyDir, `${handle}.toml`);
+  const keyfileExisted = existsSync(destPath);
+  if (keyfileExisted) unlinkSync(destPath);
+  // Best-effort policy cleanup. We don't fail the remove if the keyfile is
+  // missing but the policy file isn't, or vice versa — better to err on the
+  // side of cleaning up orphans.
+  if (existsSync(policyPath)) {
+    try { unlinkSync(policyPath); } catch { /* ignore */ }
+  }
+  return { removed: keyfileExisted, path: destPath };
 }
 
 // ---------------------------------------------------------------------------
