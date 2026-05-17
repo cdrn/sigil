@@ -48,13 +48,24 @@ Defenses:
 
 A defended key still loses you money if the agent can be tricked into signing the wrong payload. Prompt injection through transaction calldata, web content, or repo files can redirect signing intent.
 
-Defenses (policy engine, per portal — planned, issue [#3](https://github.com/cdrn/sigil/issues/3)):
-- Destination allowlists (`allow_to`)
-- Per-tx and rolling-window value caps
-- Allowed function selectors (only `transfer`, `approve`, etc.)
-- Chain ID allowlists
-- Out-of-band human confirmation above a configurable value threshold (push to ntfy / Pushover / Telegram / Apple Push), issue [#4](https://github.com/cdrn/sigil/issues/4)
-- Append-only audit log with monotonic counter (already implemented)
+The policy engine (per-portal `~/.sigil/policy/<handle>.toml`) is the layer that bounds this. v1 ships static checks; further work is staged in [#3](https://github.com/cdrn/sigil/issues/3) and [#4](https://github.com/cdrn/sigil/issues/4).
+
+**Shipped (v1):**
+- Two-mode policy. `permissive` mode (default for `sigil portal add`) does no checks — useful for users who only want the key-isolation guarantee. `strict` mode enforces every rule below.
+- Destination allowlist (`allow_to`).
+- Chain ID allowlist (`chain_ids`).
+- Per-tx value cap (`max_value_wei`).
+- Function selector allowlist (`allowed_selectors`) — 4-byte selector match, no calldata decoding.
+- On/off toggles for personal_sign (`allow_message_signing`) and EIP-712 typed data (`allow_typed_data`).
+- Append-only hash-chained audit log records both allow AND deny decisions. Denies are the prompt-injection canary.
+- Runtime fail-closed when the policy file is missing for a portal — keys can't be used without an explicit decision.
+
+**Planned:**
+- Rolling-window value caps (`max_value_per_hour_wei`, etc.) backed by a per-portal ledger with flock for multi-instance safety.
+- EIP-712 domain + primary-type allowlists (today `allow_typed_data` is binary; OpenSea-style approvals deserve finer control).
+- Decoded-calldata arg checks ("allow `transfer(addr, amt)` only when `amt <= 100e18` and `addr in list`"). Needs a BYO-ABI registry per portal.
+- Out-of-band human confirmation above a configurable value threshold (push to ntfy / Pushover / Telegram / Apple Push), [#4](https://github.com/cdrn/sigil/issues/4).
+- `allow_contract_creation` toggle — currently strict mode always denies tx with `to: null`.
 
 ### 3. Supply chain compromise of `sigil` itself
 

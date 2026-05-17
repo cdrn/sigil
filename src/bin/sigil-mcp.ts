@@ -5,6 +5,7 @@ import { resolvePaths } from '../cli/paths.js';
 import { startControlServer } from '../control/index.js';
 import { HandleTable } from '../daemon/handles.js';
 import { runMcpStdio } from '../mcp/server.js';
+import { FileSystemPolicyResolver } from '../policy/index.js';
 
 /**
  * sigil-mcp: single-process MCP server for sigil. Spawned by Claude Code per
@@ -28,9 +29,11 @@ async function main(): Promise<void> {
   const paths = resolvePaths(process.env);
   mkdirSync(paths.home, { recursive: true, mode: 0o700 });
   mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
 
   const handles = new HandleTable();
   const audit = new AuditWriter(paths.auditLog);
+  const policy = new FileSystemPolicyResolver(paths.policyDir);
 
   let controlClosed = false;
   let control: Awaited<ReturnType<typeof startControlServer>> | null = null;
@@ -75,7 +78,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => process.exit(0));
 
   await runMcpStdio({
-    context: { handles, audit },
+    context: { handles, audit, policy },
     stdin: process.stdin,
     stdout: process.stdout,
     onLog: (e) => process.stderr.write(JSON.stringify(e) + '\n'),

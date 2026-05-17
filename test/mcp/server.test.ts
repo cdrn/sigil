@@ -7,6 +7,7 @@ import { Readable, Writable } from 'node:stream';
 import { AuditWriter } from '../../src/audit/index.js';
 import { SecretBuffer } from '../../src/crypto/index.js';
 import { HandleTable, type MethodContext } from '../../src/daemon/index.js';
+import { permissivePolicyResolver } from '../../src/policy/index.js';
 import {
   handleLine,
   MCP_INVALID_PARAMS,
@@ -33,7 +34,7 @@ function setUp(): H {
   handles.markUnlocked();
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => ++now });
-  return { dir, ctx: { handles, audit }, handles, audit };
+  return { dir, ctx: { handles, audit, policy: permissivePolicyResolver() }, handles, audit };
 }
 
 function tearDown(h: H): void {

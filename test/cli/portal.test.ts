@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, throws } from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { unsealKey } from '../../src/crypto/index.js';
@@ -238,6 +238,96 @@ test('portalRemove: rejects malformed handle', () => {
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     throws(() => portalRemove(paths, 'not-a-handle'));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Policy file integration
+// ---------------------------------------------------------------------------
+
+test('portalAdd: writes a permissive policy file by default', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    const result = portalAdd(paths, {
+      handle: 'eth:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    ok(existsSync(result.policyPath));
+    const source = readFileSync(result.policyPath, 'utf8');
+    ok(/mode = "permissive"/.test(source));
+    // 0o600 because the policy describes what this key can do
+    equal((statSync(result.policyPath).mode & 0o777), 0o600);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalAdd: --strict policyMode writes the strict template', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    const result = portalAdd(paths, {
+      handle: 'eth:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+      policyMode: 'strict',
+    });
+    const source = readFileSync(result.policyPath, 'utf8');
+    ok(/mode = "strict"/.test(source));
+    // Sanity: it includes the commented examples
+    ok(/ERC-20 transfer/.test(source));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalAdd: refuses if a policy file already exists at the target path', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    // Pre-plant a policy file at the target path.
+    mkdirSync(paths.policyDir, { recursive: true });
+    writeFileSync(join(paths.policyDir, 'eth:bot.toml'), '# pre-existing');
+    throws(() => portalAdd(paths, {
+      handle: 'eth:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    }), /policy file.*already exists/);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalRemove: removes the policy file alongside the keyfile', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    const added = portalAdd(paths, {
+      handle: 'eth:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    ok(existsSync(added.keyfilePath));
+    ok(existsSync(added.policyPath));
+    portalRemove(paths, 'eth:bot');
+    equal(existsSync(added.keyfilePath), false);
+    equal(existsSync(added.policyPath), false);
   } finally {
     rmSync(home, { recursive: true });
   }

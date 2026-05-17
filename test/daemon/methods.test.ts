@@ -22,9 +22,17 @@ import {
   RPC_DAEMON_LOCKED,
   RPC_INVALID_PARAMS,
   RPC_METHOD_NOT_FOUND,
+  RPC_POLICY_DENIED,
   RPC_PORTAL_NOT_FOUND,
   RpcMethodError,
 } from '../../src/daemon/index.js';
+import {
+  parsePolicy,
+  permissivePolicyResolver,
+  type Policy,
+  type PolicyResolver,
+  PolicyLoadError,
+} from '../../src/policy/index.js';
 
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), 'sigil-methods-'));
@@ -43,7 +51,7 @@ function makeCtx(): { ctx: MethodContext; cleanup: () => void; auditPath: string
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(auditPath, { now: () => ++now });
   return {
-    ctx: { handles, audit },
+    ctx: { handles, audit, policy: permissivePolicyResolver() },
     auditPath,
     cleanup: () => {
       audit.close();
@@ -361,7 +369,7 @@ test('sign methods throw DAEMON_LOCKED when the handle table is locked', () => {
     const handles = new HandleTable();
     // Note: NOT calling markUnlocked() — table starts locked.
     const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => 1 });
-    const ctx: MethodContext = { handles, audit };
+    const ctx: MethodContext = { handles, audit, policy: permissivePolicyResolver() };
     const calls: { method: string; params: unknown }[] = [
       { method: 'sigil_eth_sign_message', params: { portal: 'eth:bot', message: '0xff' } },
       {
@@ -410,7 +418,7 @@ test('list_portals works while locked (returns empty list)', () => {
   try {
     const handles = new HandleTable();
     const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => 1 });
-    const ctx: MethodContext = { handles, audit };
+    const ctx: MethodContext = { handles, audit, policy: permissivePolicyResolver() };
     try {
       const result = dispatch('sigil_list_portals', null, ctx) as { portals: unknown[] };
       equal(result.portals.length, 0);
@@ -429,7 +437,7 @@ test('unknown-portal vs locked-table are reported as distinct error codes', () =
   try {
     const handles = new HandleTable();
     const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => 1 });
-    const ctx: MethodContext = { handles, audit };
+    const ctx: MethodContext = { handles, audit, policy: permissivePolicyResolver() };
     try {
       // Locked.
       let err: RpcMethodError | null = null;
@@ -450,4 +458,128 @@ test('unknown-portal vs locked-table are reported as distinct error codes', () =
   } finally {
     rmSync(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Policy engine integration
+// ---------------------------------------------------------------------------
+
+function strictResolverFor(toml: string): PolicyResolver {
+  const p = parsePolicy(toml);
+  return { resolve: () => p };
+}
+
+function makeCtxWithPolicy(policy: PolicyResolver) {
+  const dir = mkTmp();
+  const handles = new HandleTable();
+  handles.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  handles.markUnlocked();
+  let now = 1_700_000_000_000;
+  const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => ++now });
+  return {
+    ctx: { handles, audit, policy } as MethodContext,
+    cleanup: () => { audit.close(); handles.dispose(); rmSync(dir, { recursive: true }); },
+    auditPath: join(dir, 'audit.log'),
+  };
+}
+
+test('policy: permissive resolver allows all sign methods through', () => {
+  const { ctx, cleanup } = makeCtxWithPolicy(permissivePolicyResolver());
+  try {
+    const r = dispatch('sigil_eth_sign_message', { portal: 'eth:bot', message: '0x68' }, ctx) as { signature: string };
+    ok(r.signature.startsWith('0x'));
+  } finally { cleanup(); }
+});
+
+test('policy: strict mode denies personal_sign when allow_message_signing=false', () => {
+  const policy = strictResolverFor(`
+    mode = "strict"
+    chain_ids = [1]
+    allow_message_signing = false
+  `);
+  const { ctx, cleanup } = makeCtxWithPolicy(policy);
+  try {
+    let err: RpcMethodError | null = null;
+    try { dispatch('sigil_eth_sign_message', { portal: 'eth:bot', message: '0xff' }, ctx); }
+    catch (e) { err = e as RpcMethodError; }
+    ok(err instanceof RpcMethodError);
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/personal_sign denied/.test(err!.message));
+  } finally { cleanup(); }
+});
+
+test('policy: strict mode denies tx with value over cap', () => {
+  const policy = strictResolverFor(`
+    mode = "strict"
+    chain_ids = [1]
+    allow_to = ["0x000000000000000000000000000000000000dead"]
+    max_value_wei = "100"
+  `);
+  const { ctx, cleanup } = makeCtxWithPolicy(policy);
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      dispatch('sigil_eth_sign_transaction', {
+        portal: 'eth:bot',
+        tx: {
+          type: 'legacy', chainId: 1, nonce: 0, gasPrice: 1, gasLimit: 21000,
+          to: '0x000000000000000000000000000000000000dead', value: 101, data: '0x',
+        },
+      }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    ok(err instanceof RpcMethodError);
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/exceeds max_value_wei/.test(err!.message));
+  } finally { cleanup(); }
+});
+
+test('policy: missing policy file → POLICY_DENIED + audit deny', () => {
+  // PolicyResolver that always throws — mimics the FileSystemPolicyResolver
+  // when the user's policy file doesn't exist.
+  const failing: PolicyResolver = {
+    resolve: () => { throw new PolicyLoadError('no policy file for portal "eth:bot"'); },
+  };
+  const { ctx, cleanup, auditPath } = makeCtxWithPolicy(failing);
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      dispatch('sigil_eth_sign_message', { portal: 'eth:bot', message: '0xff' }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/no policy file/.test(err!.message));
+
+    // Audit log should have a deny entry for this attempt.
+    const lines = readFileSync(auditPath, 'utf8').trim().split('\n');
+    equal(lines.length, 1);
+    const entry = JSON.parse(lines[0]!) as { decision: string; reason: string; kind: string };
+    equal(entry.decision, 'deny');
+    equal(entry.kind, 'eth_sign_message');
+    ok(/no policy file/.test(entry.reason));
+  } finally { cleanup(); }
+});
+
+test('policy: deny short-circuits sign — no signature, no allow entry in audit', () => {
+  const policy = strictResolverFor(`
+    mode = "strict"
+    chain_ids = [1]
+    allow_to = []
+    max_value_wei = "0"
+  `);
+  const { ctx, cleanup, auditPath } = makeCtxWithPolicy(policy);
+  try {
+    try {
+      dispatch('sigil_eth_sign_transaction', {
+        portal: 'eth:bot',
+        tx: {
+          type: 'legacy', chainId: 1, nonce: 0, gasPrice: 1, gasLimit: 21000,
+          to: '0x1111111111111111111111111111111111111111', value: 0, data: '0x',
+        },
+      }, ctx);
+    } catch { /* expected */ }
+    const lines = readFileSync(auditPath, 'utf8').trim().split('\n');
+    equal(lines.length, 1);
+    const entry = JSON.parse(lines[0]!) as { decision: string; sig?: string };
+    equal(entry.decision, 'deny');
+    equal(entry.sig, undefined);
+  } finally { cleanup(); }
 });

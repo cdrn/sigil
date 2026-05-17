@@ -11,6 +11,12 @@ import {
   signTypedData,
   type TypedData,
 } from '../eth/index.js';
+import {
+  evaluate,
+  PolicyLoadError,
+  type PolicyRequest,
+  type PolicyResolver,
+} from '../policy/index.js';
 import { type HandleTable } from './handles.js';
 
 // Error codes — these match JSON-RPC 2.0 standard error codes plus a
@@ -38,6 +44,12 @@ export class RpcMethodError extends Error {
 export interface MethodContext {
   handles: HandleTable;
   audit: AuditWriter;
+  /**
+   * Resolves the per-portal policy at evaluation time. Wrapped in an
+   * interface so tests can inject a constant policy without touching the
+   * filesystem.
+   */
+  policy: PolicyResolver;
 }
 
 export type MethodHandler = (params: unknown, ctx: MethodContext) => unknown;
@@ -82,6 +94,39 @@ function requirePortal(handles: HandleTable, handle: string): Buffer {
   return sb.bytes();
 }
 
+/**
+ * Resolve the portal's policy and evaluate the request. On Deny — or on any
+ * PolicyLoadError (missing file, malformed TOML) — appends a deny entry to
+ * the audit log AND throws RPC_POLICY_DENIED. Returns silently on Allow.
+ *
+ * The order is: require unlocked + portal first, then policy. That way the
+ * caller's mistakes (wrong handle, daemon locked) error before we touch the
+ * policy file at all.
+ */
+function gatePolicy(
+  ctx: MethodContext,
+  handle: string,
+  kind: string,
+  payload: unknown,
+  request: PolicyRequest,
+): void {
+  let reason: string;
+  try {
+    const policy = ctx.policy.resolve(handle);
+    const decision = evaluate(request, policy);
+    if (decision.allow) return;
+    reason = decision.reason;
+  } catch (err) {
+    if (err instanceof PolicyLoadError) {
+      reason = err.message;
+    } else {
+      throw err;
+    }
+  }
+  ctx.audit.append({ kind, portal: handle, payload, decision: 'deny', reason });
+  throw new RpcMethodError(RPC_POLICY_DENIED, reason);
+}
+
 // ---------------------------------------------------------------------------
 // Methods
 // ---------------------------------------------------------------------------
@@ -96,6 +141,9 @@ const sigil_eth_sign_message: MethodHandler = (params, ctx) => {
   const messageHex = asString(obj, 'message', 'eth_sign_message');
   const message = hexToBuf(messageHex, 'eth_sign_message', 'message');
   const priv = requirePortal(ctx.handles, portal);
+  gatePolicy(ctx, portal, 'eth_sign_message', { message: messageHex }, {
+    kind: 'message', messageBytes: message,
+  });
   const sig = personalSign(message, priv);
   const sigHex = ('0x' + sig.toString('hex')) as Hex;
   ctx.audit.append({
@@ -211,6 +259,7 @@ const sigil_eth_sign_transaction: MethodHandler = (params, ctx) => {
   }
   const tx = asTx(txObj as Record<string, unknown>);
   const priv = requirePortal(ctx.handles, portal);
+  gatePolicy(ctx, portal, 'eth_sign_transaction', { tx: txObj }, { kind: 'transaction', tx });
   const signed = signTransaction(tx, priv);
   ctx.audit.append({
     kind: 'eth_sign_transaction',
@@ -232,6 +281,9 @@ const sigil_eth_sign_typed_data: MethodHandler = (params, ctx) => {
   // We trust the typed-data shape minimally — sign-typed.ts will throw
   // on missing fields; we wrap that as INVALID_PARAMS for the caller.
   const priv = requirePortal(ctx.handles, portal);
+  gatePolicy(ctx, portal, 'eth_sign_typed_data', { typedData: td }, {
+    kind: 'typed_data', typedData: td as TypedData,
+  });
   let sig: Buffer;
   try {
     sig = signTypedData(td as TypedData, priv);
