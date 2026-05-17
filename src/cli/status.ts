@@ -1,4 +1,10 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
+import {
+  ControlClientError,
+  controlRequest,
+  isControlError,
+  type PortalSummary,
+} from '../control/index.js';
 import type { SigilPaths } from './paths.js';
 
 export interface StatusReport {
@@ -6,24 +12,55 @@ export interface StatusReport {
   keyfilesOnDisk: number;
   /** Path the audit log lives at. Useful for `tail`-ing during incidents. */
   auditLog: string;
-  /**
-   * Whether `sigil-mcp` appears to be running (control socket exists).
-   * Always false in phase A; populated in phase B when the control socket lands.
-   */
+  /** True if the control socket responded — i.e. sigil-mcp is alive. */
   mcpRunning: boolean;
+  /** Process ID of the running sigil-mcp; null when not running. */
+  mcpPid: number | null;
+  /** True if the HandleTable has been unlocked. False when mcp is down or locked. */
+  unlocked: boolean;
+  /** Portals currently loaded in the running sigil-mcp. Empty when locked or down. */
+  portals: PortalSummary[];
 }
 
 /**
- * Reports the on-disk state of sigil. Does NOT require the passphrase.
+ * Reports the on-disk + live state of sigil. Does NOT require the passphrase.
  *
- * Phase A scope: just counts keyfiles. Phase B will add probing the control
- * socket to determine whether sigil-mcp is alive, and whether it's unlocked.
+ * Disk side: counts encrypted keyfiles.
+ * Live side: probes the control socket. If the server is unreachable, marks
+ * mcpRunning=false; this is the common case when no Claude Code session is
+ * open. Any other client error is also treated as not-running — the user
+ * can re-run "sigil unlock" or check the socket file directly for more
+ * detailed diagnosis.
  */
-export function status(paths: SigilPaths): StatusReport {
+export async function status(paths: SigilPaths): Promise<StatusReport> {
+  const keyfilesOnDisk = countKeyfiles(paths.keysDir);
+  let mcpRunning = false;
+  let mcpPid: number | null = null;
+  let unlocked = false;
+  let portals: PortalSummary[] = [];
+  try {
+    const resp = await controlRequest({
+      socketPath: paths.controlSocket,
+      request: { method: 'status' },
+      timeoutMs: 1_000,
+    });
+    if (!isControlError(resp)) {
+      mcpRunning = true;
+      mcpPid = resp.pid;
+      unlocked = resp.unlocked;
+      portals = resp.portals;
+    }
+  } catch (err) {
+    if (!(err instanceof ControlClientError)) throw err;
+    // SERVER_DOWN / CONNECT_FAILED / TIMEOUT all → mcpRunning=false.
+  }
   return {
-    keyfilesOnDisk: countKeyfiles(paths.keysDir),
+    keyfilesOnDisk,
     auditLog: paths.auditLog,
-    mcpRunning: false,
+    mcpRunning,
+    mcpPid,
+    unlocked,
+    portals,
   };
 }
 

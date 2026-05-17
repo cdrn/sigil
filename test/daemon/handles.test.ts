@@ -205,3 +205,109 @@ test('loadFromDir on subdir of files (nested) ignores nested entries', () => {
     rmSync(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// lock / unlock state
+// ---------------------------------------------------------------------------
+
+test('fresh table reports isUnlocked() === false', () => {
+  const t = new HandleTable();
+  equal(t.isUnlocked(), false);
+  t.dispose();
+});
+
+test('addEntry alone does NOT flip unlocked (only markUnlocked / loadFromDir does)', () => {
+  const t = new HandleTable();
+  t.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  equal(t.isUnlocked(), false);
+  t.markUnlocked();
+  equal(t.isUnlocked(), true);
+  t.dispose();
+});
+
+test('loadFromDir on empty/missing dir marks the table unlocked anyway', () => {
+  const t = new HandleTable();
+  t.loadFromDir('/nonexistent/abc123', Buffer.from('p'));
+  equal(t.isUnlocked(), true);
+  equal(t.list().length, 0);
+  t.dispose();
+});
+
+test('loadFromDir on populated dir marks the table unlocked', () => {
+  const dir = mkTmp();
+  try {
+    const passphrase = Buffer.from('p');
+    writeFileSync(join(dir, 'eth:bot.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
+    const t = new HandleTable();
+    t.loadFromDir(dir, passphrase);
+    equal(t.isUnlocked(), true);
+    t.dispose();
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('loadFromDir failure leaves table locked + entries zeroized', () => {
+  const dir = mkTmp();
+  try {
+    writeFileSync(
+      join(dir, 'eth:bot.sigil'),
+      sealKey(priv(1), Buffer.from('right'), TEST_KDF),
+    );
+    const t = new HandleTable();
+    throws(() => t.loadFromDir(dir, Buffer.from('wrong')), /wrong passphrase|tampered/);
+    equal(t.isUnlocked(), false);
+    equal(t.list().length, 0);
+    t.dispose();
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('lock() zeroizes entries, clears them, and re-locks', () => {
+  const t = new HandleTable();
+  const sb = new SecretBuffer(priv(1));
+  t.addEntry('eth:bot', sb);
+  t.markUnlocked();
+  ok(t.isUnlocked());
+  equal(t.list().length, 1);
+
+  t.lock();
+  equal(t.isUnlocked(), false);
+  equal(t.list().length, 0);
+  ok(sb.isDisposed);
+
+  // Table is still usable — can be re-unlocked.
+  const sb2 = new SecretBuffer(priv(2));
+  t.addEntry('eth:bot', sb2);
+  t.markUnlocked();
+  equal(t.isUnlocked(), true);
+  equal(t.list().length, 1);
+  t.dispose();
+});
+
+test('lock() is idempotent on an empty / already-locked table', () => {
+  const t = new HandleTable();
+  t.lock(); // no entries, no-op
+  t.lock(); // still no-op
+  equal(t.isUnlocked(), false);
+  t.dispose();
+});
+
+test('isUnlocked() returns false after dispose()', () => {
+  const t = new HandleTable();
+  t.markUnlocked();
+  ok(t.isUnlocked());
+  t.dispose();
+  equal(t.isUnlocked(), false);
+});
+
+test('markUnlocked / lock / loadFromDir / addEntry throw after dispose', () => {
+  const t = new HandleTable();
+  t.dispose();
+  throws(() => t.markUnlocked(), /disposed/);
+  // lock() is intentionally a silent no-op after dispose (idempotent).
+  t.lock();
+  throws(() => t.loadFromDir('/tmp', Buffer.from('p')), /disposed/);
+  throws(() => t.addEntry('eth:x', new SecretBuffer(priv(1))), /disposed/);
+});

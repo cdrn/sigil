@@ -22,6 +22,7 @@ function setUp(): H {
   const dir = mkTmp();
   const handles = new HandleTable();
   handles.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  handles.markUnlocked();
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => ++now });
   return { dir, ctx: { handles, audit }, handles, audit };
