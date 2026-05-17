@@ -1,0 +1,70 @@
+name: Release
+
+# Publishes sigild to npm with a Sigstore provenance attestation. Triggered
+# by a tag matching v*; the tag's version must match package.json. No
+# long-lived NPM_TOKEN — authentication is GitHub Actions OIDC against a
+# trusted-publisher config on npmjs.com.
+#
+# Maintainer flow:
+#   1. bump package.json to N.N.N, commit, push to main (via PR)
+#   2. git tag vN.N.N && git push --tags
+#   3. this workflow runs, tests, publishes
+#
+# Verifying a published release (anyone):
+#   npm audit signatures
+#   npm view sigild@<version> dist.attestations
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  # Required for OIDC publish + Sigstore attestation signing.
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish sigild to npm
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify tag matches package.json version
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${PKG_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${PKG_VERSION}"
+            exit 1
+          fi
+          echo "Releasing sigild@${PKG_VERSION}"
+
+      - name: Install dependencies
+        # npm ci honors .npmrc (ignore-scripts=true) and the committed lockfile.
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Publish to npm with provenance
+        # No NODE_AUTH_TOKEN env var: npm 11+ + id-token:write permission +
+        # registry-url above is what triggers OIDC publish. The --provenance
+        # flag signs a Sigstore attestation linking this tarball back to
+        # this workflow run + commit.
+        run: npm publish --access public --provenance
