@@ -1,6 +1,6 @@
 {
   "name": "sigild",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "mcpName": "io.github.cdrn/sigil",
   "description": "Claude can sign, but never see. MCP server + CLI that keeps private keys out of the LLM's context window.",
   "license": "Apache-2.0",
