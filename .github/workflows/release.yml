@@ -20,7 +20,9 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  # contents: write so the job can create a GitHub Release and attach the
+  # SBOM as a release asset. (Without this, gh release create returns 403.)
+  contents: write
   # Required for OIDC publish + Sigstore attestation signing.
   id-token: write
 
@@ -73,3 +75,24 @@ jobs:
         # --provenance flag signs a Sigstore attestation linking this
         # tarball back to this workflow run + commit.
         run: npm publish --access public --provenance
+
+      - name: Generate CycloneDX SBOM
+        # Pinned via npx to keep cyclonedx-npm out of our package.json
+        # devDeps. Emits the full install tree so users can audit
+        # transitive deps without needing to clone + npm ci themselves.
+        run: |
+          npx --yes @cyclonedx/cyclonedx-npm@4.2.1 \
+            --output-format JSON \
+            --output-file sigild-${{ github.ref_name }}.cdx.json
+
+      - name: Create GitHub Release with SBOM attached
+        # --generate-notes pulls auto-generated PR summary since last tag.
+        # SBOM is attached as a release asset with a human-readable label.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            "sigild-${GITHUB_REF_NAME}.cdx.json#CycloneDX SBOM"

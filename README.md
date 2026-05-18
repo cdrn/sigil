@@ -154,11 +154,11 @@ Key-management libraries die from supply chain compromise, not from clever attac
 - **No MCP SDK.** The official `@modelcontextprotocol/sdk` pulls 92 transitive deps (ajv, hono, cors, cross-spawn, etc) — unacceptable surface. We implement the MCP wire protocol directly in ~200 lines.
 - **No Bun.** Plain Node only. Bun is currently being weaponized by Mini Shai-Hulud as an evasion layer; we will not give that pattern any cover.
 - **Provenance attestations on every npm publish.** Starting v0.0.4, releases are built by [a GitHub Actions workflow](./.github/workflows/release.yml) under OIDC trusted-publisher auth, signed with a Sigstore attestation. No long-lived npm token; tampered or out-of-band publishes fail signature verification.
+- **CycloneDX SBOM attached to every GitHub Release.** Full transitive dep tree enumerated at release time.
+- **Install-scripts CI guard.** Every PR fails if any package in the resolved tree declares `preinstall` / `install` / `postinstall`. `.npmrc` already has `ignore-scripts=true` so these never actually run for us; the guard catches new transitive deps that might run for a user without our `.npmrc`.
 - **Still planned for v0.1.0:**
-  - SBOM (CycloneDX) attached to every release
   - Signed standalone binaries from GitHub Releases for users who'd rather not touch npm
   - Action SHA pinning rotation via Dependabot
-  - CI guard that fails the build if any dep in the resolved tree declares `postinstall` / `preinstall` / `prepare`
 
 ## Verifying a release
 
@@ -174,6 +174,14 @@ npm view sigild@<version> dist.attestations
 ```
 
 What the attestation tells you: this tarball was built by `cdrn/sigil`'s `.github/workflows/release.yml`, at a specific commit on `main`, at a specific time. It does *not* tell you that commit is non-malicious — for that, read the diff between the version you trust and the version you're upgrading to. But it does mean an attacker who steals an npm token can't publish a malicious `sigild` under our name; they'd need to compromise the GitHub repo + push a tag, which leaves an audit trail.
+
+Every release also publishes a [CycloneDX SBOM](https://cyclonedx.org/) as a GitHub Release asset, enumerating every package (direct + transitive) in the install tree at the version pinned by `package-lock.json`:
+
+```sh
+# Download + inspect the SBOM for a specific release:
+gh release download v0.0.4 --repo cdrn/sigil --pattern '*.cdx.json'
+# → produces sigild-v0.0.4.cdx.json — feed to syft/grype/etc. for vuln scan
+```
 
 ## Threat model
 
