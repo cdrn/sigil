@@ -37,10 +37,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Setup Node 22
+      - name: Setup Node 24
+        # Node 22 ships npm 10 which doesn't support OIDC trusted-publisher
+        # auth, and `npm install -g npm@latest` to upgrade it in place is
+        # broken (missing transitive deps after self-upgrade). Node 24 ships
+        # npm 11.5+ directly. CI still runs on Node 22 since that matches
+        # our package.json engines.node minimum.
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
 
@@ -54,13 +59,6 @@ jobs:
             exit 1
           fi
           echo "Releasing sigild@${PKG_VERSION}"
-
-      - name: Upgrade npm
-        # OIDC trusted-publisher auth requires npm >= 11.5.1; Node 22's
-        # bundled npm is 10.x. Without this step npm falls back to
-        # token-based auth using setup-node's empty placeholder token and
-        # gets 404 on PUT.
-        run: npm install -g npm@latest
 
       - name: Install dependencies
         # npm ci honors .npmrc (ignore-scripts=true) and the committed lockfile.
