@@ -55,6 +55,13 @@ jobs:
           fi
           echo "Releasing sigild@${PKG_VERSION}"
 
+      - name: Upgrade npm
+        # OIDC trusted-publisher auth requires npm >= 11.5.1; Node 22's
+        # bundled npm is 10.x. Without this step npm falls back to
+        # token-based auth using setup-node's empty placeholder token and
+        # gets 404 on PUT.
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         # npm ci honors .npmrc (ignore-scripts=true) and the committed lockfile.
         run: npm ci
@@ -63,8 +70,8 @@ jobs:
         run: npm test
 
       - name: Publish to npm with provenance
-        # No NODE_AUTH_TOKEN env var: npm 11+ + id-token:write permission +
-        # registry-url above is what triggers OIDC publish. The --provenance
-        # flag signs a Sigstore attestation linking this tarball back to
-        # this workflow run + commit.
+        # No NODE_AUTH_TOKEN env var: npm 11.5+ + id-token:write permission
+        # + registry-url above is what triggers OIDC publish. The
+        # --provenance flag signs a Sigstore attestation linking this
+        # tarball back to this workflow run + commit.
         run: npm publish --access public --provenance
