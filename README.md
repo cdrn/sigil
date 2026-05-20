@@ -69,9 +69,13 @@ If you close Claude Code, `sigil-mcp` exits and its memory is wiped. Open a new 
 
 ```text
 sigil init [--user]
-  Write the MCP server registration and the ward hooks into
-  .claude/settings.json. With --user, writes ~/.claude/settings.json
-  instead. Idempotent — preserves your unrelated settings.
+  Project scope: writes the ward hooks to <cwd>/.claude/settings.json
+  and the MCP server registration to <cwd>/.mcp.json.
+  --user: writes hooks to ~/.claude/settings.json and the MCP server
+  registration to ~/.claude.json. (Claude Code CLI reads MCP configs
+  from .mcp.json / ~/.claude.json — not from settings.json.)
+  Idempotent — preserves your unrelated settings, and on upgrade
+  migrates any stale mcpServers.sigil entry out of settings.json.
 
 sigil portal add <handle> --key-file <path> [--no-remove-source] [--strict]
   Encrypt the key with your passphrase and store it at
@@ -85,6 +89,13 @@ sigil portal add <handle> --key-file <path> [--no-remove-source] [--strict]
 sigil policy show <handle>
   Print the current policy file for a portal. Validates schema; exits
   1 if the file is missing or malformed.
+
+sigil policy init <handle> [--strict]
+  Provision a policy file for an existing portal whose policy is
+  missing (e.g. a keyfile from an older sigil version, or one you
+  manually deleted). Refuses to overwrite — edit the file directly
+  or remove it first. Defaults to permissive; --strict writes the
+  locked-down template.
 
 sigil portal list
   List the encrypted keyfiles on disk with their derived addresses.

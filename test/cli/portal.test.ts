@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { unsealKey } from '../../src/crypto/index.js';
 import { addressFromPrivateKey } from '../../src/eth/index.js';
 import { resolvePaths } from '../../src/cli/paths.js';
-import { portalAdd, portalListFromDisk, portalRemove } from '../../src/cli/portal.js';
+import { policyInit, portalAdd, portalListFromDisk, portalRemove } from '../../src/cli/portal.js';
+import { parsePolicy } from '../../src/policy/index.js';
 
 function mkTmpHome(): string {
   return mkdtempSync(join(tmpdir(), 'sigil-cli-portal-'));
@@ -328,6 +329,71 @@ test('portalRemove: removes the policy file alongside the keyfile', () => {
     portalRemove(paths, 'eth:bot');
     equal(existsSync(added.keyfilePath), false);
     equal(existsSync(added.policyPath), false);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('policyInit: writes a permissive policy file for an existing portal', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    portalAdd(paths, { handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    // Wipe the policy file as if it never existed (older sigil version).
+    rmSync(join(paths.policyDir, 'eth:bot.toml'));
+
+    const result = policyInit(paths, 'eth:bot', 'permissive');
+    ok(existsSync(result.policyPath));
+    const parsed = parsePolicy(readFileSync(result.policyPath, 'utf8'));
+    equal(parsed.mode, 'permissive');
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('policyInit: --strict template parses and denies by default', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    portalAdd(paths, { handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    rmSync(join(paths.policyDir, 'eth:bot.toml'));
+
+    policyInit(paths, 'eth:bot', 'strict');
+    const parsed = parsePolicy(readFileSync(join(paths.policyDir, 'eth:bot.toml'), 'utf8'));
+    equal(parsed.mode, 'strict');
+    // Strict template defaults — empty allow_to, zero cap, signing disabled.
+    deepEqual(parsed.allowTo, []);
+    equal(parsed.maxValueWei, 0n);
+    equal(parsed.allowMessageSigning, false);
+    equal(parsed.allowTypedData, false);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('policyInit: refuses to clobber an existing policy file', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    portalAdd(paths, { handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    // policy file is already there from portalAdd.
+    throws(() => policyInit(paths, 'eth:bot', 'permissive'), /policy already exists/);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('policyInit: refuses if the portal keyfile does not exist', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    throws(() => policyInit(paths, 'eth:absent', 'permissive'), /portal "eth:absent" not found/);
   } finally {
     rmSync(home, { recursive: true });
   }

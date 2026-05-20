@@ -181,7 +181,10 @@ test('FileSystemPolicyResolver: missing file → PolicyLoadError with helpful me
     try { r.resolve('eth:absent'); } catch (e) { err = e as PolicyLoadError; }
     ok(err instanceof PolicyLoadError);
     ok(/no policy file/.test(err!.message));
-    ok(/sigil portal add/.test(err!.message));
+    // Error should steer users to the right command for an existing
+    // portal — not "sigil portal add", which would clobber the keyfile.
+    ok(/sigil policy init/.test(err!.message));
+    ok(!/portal add/.test(err!.message));
   } finally {
     rmSync(dir, { recursive: true });
   }

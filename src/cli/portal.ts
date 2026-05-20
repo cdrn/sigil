@@ -116,6 +116,31 @@ export interface PortalRemoveResult {
   path: string;
 }
 
+/**
+ * Provision a policy file for an existing portal whose keyfile is on disk
+ * but whose policy got lost (older sigil versions, manual deletion, etc).
+ * Refuses to overwrite an existing policy — that's what the file is for.
+ * Refuses to create one for a non-existent portal — fail loud.
+ */
+export function policyInit(
+  paths: SigilPaths,
+  handle: string,
+  mode: PolicyMode,
+): { policyPath: string; mode: PolicyMode } {
+  HandleTable.parseHandle(handle); // validates format
+  const keyfilePath = join(paths.keysDir, `${handle}.sigil`);
+  if (!existsSync(keyfilePath)) {
+    throw new Error(`portal "${handle}" not found at ${keyfilePath}; run "sigil portal add" first`);
+  }
+  mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
+  const policyPath = join(paths.policyDir, `${handle}.toml`);
+  if (existsSync(policyPath)) {
+    throw new Error(`policy already exists at ${policyPath}; edit it directly or remove it first`);
+  }
+  writeFileSync(policyPath, policyTemplate(mode), { mode: 0o600 });
+  return { policyPath, mode };
+}
+
 export function portalRemove(paths: SigilPaths, handle: string): PortalRemoveResult {
   HandleTable.parseHandle(handle); // validates format
   const destPath = join(paths.keysDir, `${handle}.sigil`);

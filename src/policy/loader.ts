@@ -122,7 +122,7 @@ export class FileSystemPolicyResolver implements PolicyResolver {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new PolicyLoadError(
-          `policy: no policy file for portal "${handle}" at ${path} — run "sigil portal add" to provision`,
+          `policy: no policy file for portal "${handle}" at ${path} — run "sigil policy init ${handle}" (add "--strict" for a locked-down template)`,
         );
       }
       throw new PolicyLoadError(`policy: failed to read ${path}`, err);
