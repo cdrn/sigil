@@ -303,3 +303,92 @@ test('runCli: policy show — exits 1 if file missing', async () => {
     rmSync(home, { recursive: true });
   }
 });
+
+test('runCli: policy init — provisions a policy file for an existing portal', async () => {
+  const home = mkTmpHome();
+  try {
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, Buffer.from('11'.repeat(32), 'hex'));
+    // Add the portal (creates both keyfile and policy file).
+    let cap = capture();
+    await runCli({
+      argv: ['portal', 'add', 'eth:bot', '--key-file', srcKey],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: { m: 256, t: 1, p: 1 },
+    });
+    // Delete the policy file as if it never existed (older sigil version).
+    rmSync(join(home, 'policy', 'eth:bot.toml'));
+
+    cap = capture();
+    const r = await runCli({
+      argv: ['policy', 'init', 'eth:bot'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+    });
+    equal(r.code, 0);
+    ok(/wrote permissive policy/.test(cap.out()));
+    ok(existsSync(join(home, 'policy', 'eth:bot.toml')));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: policy init <handle> --strict — writes strict template', async () => {
+  const home = mkTmpHome();
+  try {
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, Buffer.from('22'.repeat(32), 'hex'));
+    let cap = capture();
+    await runCli({
+      argv: ['portal', 'add', 'eth:bot', '--key-file', srcKey],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: { m: 256, t: 1, p: 1 },
+    });
+    rmSync(join(home, 'policy', 'eth:bot.toml'));
+
+    cap = capture();
+    const r = await runCli({
+      argv: ['policy', 'init', 'eth:bot', '--strict'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+    });
+    equal(r.code, 0);
+    ok(/wrote strict policy/.test(cap.out()));
+    ok(/strict policy denies everything/.test(cap.out()));
+    const pol = readFileSync(join(home, 'policy', 'eth:bot.toml'), 'utf8');
+    ok(/mode = "strict"/.test(pol));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: policy init — refuses if policy already exists', async () => {
+  const home = mkTmpHome();
+  try {
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, Buffer.from('33'.repeat(32), 'hex'));
+    let cap = capture();
+    await runCli({
+      argv: ['portal', 'add', 'eth:bot', '--key-file', srcKey],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: { m: 256, t: 1, p: 1 },
+    });
+    // policy file exists from portal add — init should refuse.
+    cap = capture();
+    const r = await runCli({
+      argv: ['policy', 'init', 'eth:bot'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+    });
+    equal(r.code, 1);
+    ok(/already exists/.test(cap.err()));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});

@@ -6,7 +6,7 @@ import { type InitScope, installInto } from '../hooks/install.js';
 import { parsePolicy } from '../policy/index.js';
 import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
-import { portalAdd, portalListFromDisk, portalRemove } from './portal.js';
+import { policyInit, portalAdd, portalListFromDisk, portalRemove } from './portal.js';
 import { status } from './status.js';
 import { formatResult, lock, unlock } from './unlock.js';
 
@@ -19,13 +19,17 @@ Usage:
   sigil portal list
   sigil portal remove <handle>
   sigil policy show <handle>
+  sigil policy init <handle> [--strict]
   sigil unlock
   sigil lock
 
-"sigil init" writes the MCP server registration + tool hooks into
-.claude/settings.json (or ~/.claude/settings.json with --user).
+"sigil init" writes ward hooks into .claude/settings.json and registers
+the MCP server in ~/.claude.json (with --user) or <root>/.mcp.json
+(project scope) — the files Claude Code CLI actually reads.
 "sigil portal add" writes a permissive policy by default; pass --strict
 to get a locked-down template you fill in before any sign succeeds.
+"sigil policy init" provisions a policy file for an existing portal
+whose policy is missing (e.g. keyfile from an older sigil version).
 "sigil unlock" prompts for the passphrase and pushes it to the running
 sigil-mcp process (spawned by Claude Code) over the control socket.
 Set SIGIL_HOME to override ~/.sigil.
@@ -75,8 +79,12 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
       });
       const scope: InitScope = sub.options['user'] === true ? 'user' : 'project';
       const result = installInto({ scope });
-      if (result.changed) out.write(`updated ${result.settingsPath}\n`);
-      else out.write(`${result.settingsPath} is already up to date\n`);
+      if (result.changed) {
+        out.write(`updated ${result.settingsPath} (hooks)\n`);
+        out.write(`updated ${result.mcpConfigPath} (MCP server)\n`);
+      } else {
+        out.write(`already up to date:\n  hooks: ${result.settingsPath}\n  mcp:   ${result.mcpConfigPath}\n`);
+      }
       return { code: 0 };
     }
     if (head === 'status') {
@@ -166,7 +174,22 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
       }
     }
     if (head === 'policy') {
-      const sub = parseSubcommand(rest, { show: { options: {} } });
+      const sub = parseSubcommand(rest, {
+        show: { options: {} },
+        init: { options: { strict: { type: 'boolean' } } },
+      });
+      if (sub.command === 'init') {
+        const handle = sub.positionals[0];
+        if (!handle) throw new ArgsError('policy init: missing handle');
+        const mode: 'permissive' | 'strict' =
+          sub.options['strict'] === true ? 'strict' : 'permissive';
+        const result = policyInit(paths, handle, mode);
+        out.write(`wrote ${mode} policy → ${result.policyPath}\n`);
+        if (mode === 'strict') {
+          out.write(`note: strict policy denies everything until you edit ${result.policyPath}\n`);
+        }
+        return { code: 0 };
+      }
       if (sub.command === 'show') {
         const handle = sub.positionals[0];
         if (!handle) throw new ArgsError('policy show: missing handle');
