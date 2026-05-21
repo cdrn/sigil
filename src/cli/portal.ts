@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type KdfParams, sealKey, SecretBuffer, unsealKey } from '../crypto/index.js';
-import { addressFromPrivateKey } from '../eth/index.js';
+import { addressFromPrivateKey, randomSecretKey } from '../eth/index.js';
 import { HandleTable } from '../daemon/handles.js';
 import { type PolicyMode, policyTemplate } from '../policy/index.js';
 import type { SigilPaths } from './paths.js';
@@ -44,40 +44,92 @@ export function portalAdd(
   paths: SigilPaths,
   opts: PortalAddOpts,
 ): { address: string; keyfilePath: string; policyPath: string } {
-  HandleTable.parseHandle(opts.handle); // validates format
-  mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
-  mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
-
-  const destPath = join(paths.keysDir, `${opts.handle}.sigil`);
-  if (existsSync(destPath)) {
-    throw new Error(`portal "${opts.handle}" already exists at ${destPath}; remove it first`);
-  }
-  const policyPath = join(paths.policyDir, `${opts.handle}.toml`);
-  if (existsSync(policyPath)) {
-    throw new Error(`policy file for "${opts.handle}" already exists at ${policyPath}; remove it first`);
-  }
-
   const raw = readFileSync(opts.keyFile);
   const priv = normalizePrivateKey(raw);
-  let address: string;
-  try {
-    address = addressFromPrivateKey(priv);
-    const sealed = opts.kdfParams
-      ? sealKey(priv, opts.passphrase, opts.kdfParams)
-      : sealKey(priv, opts.passphrase);
-    writeFileSync(destPath, sealed, { mode: 0o600 });
-  } finally {
-    priv.fill(0);
-  }
-
-  // Write the policy file alongside the keyfile. Mode 0o600 — it's not secret
-  // per se, but it does describe what this key can sign, which is sensitive.
-  writeFileSync(policyPath, policyTemplate(opts.policyMode ?? 'permissive'), { mode: 0o600 });
-
+  const result = provisionPortal(paths, {
+    handle: opts.handle,
+    priv,
+    passphrase: opts.passphrase,
+    policyMode: opts.policyMode ?? 'permissive',
+    ...(opts.kdfParams ? { kdfParams: opts.kdfParams } : {}),
+  });
   if (opts.removeSource !== false) {
     try { unlinkSync(opts.keyFile); }
     catch { /* best-effort cleanup; file may already be gone */ }
   }
+  return result;
+}
+
+export interface PortalNewOpts {
+  handle: string;
+  passphrase: Buffer;
+  /** See PortalAddOpts.kdfParams — same test-only knob. */
+  kdfParams?: KdfParams;
+  /** See PortalAddOpts.policyMode. */
+  policyMode?: PolicyMode;
+}
+
+/**
+ * Mint a fresh secp256k1 key inside sigil, encrypt with the passphrase,
+ * write the keyfile + policy file. No plaintext key ever lands on disk.
+ * The randomness goes through @noble's randomSecretKey() which is uniform
+ * over the valid scalar range.
+ */
+export function portalNew(
+  paths: SigilPaths,
+  opts: PortalNewOpts,
+): { address: string; keyfilePath: string; policyPath: string } {
+  const priv = randomSecretKey();
+  return provisionPortal(paths, {
+    handle: opts.handle,
+    priv,
+    passphrase: opts.passphrase,
+    policyMode: opts.policyMode ?? 'permissive',
+    ...(opts.kdfParams ? { kdfParams: opts.kdfParams } : {}),
+  });
+}
+
+interface ProvisionPortalArgs {
+  handle: string;
+  /** 32-byte private key. Takes ownership: zeroized before this returns. */
+  priv: Buffer;
+  passphrase: Buffer;
+  policyMode: PolicyMode;
+  kdfParams?: KdfParams;
+}
+
+function provisionPortal(
+  paths: SigilPaths,
+  args: ProvisionPortalArgs,
+): { address: string; keyfilePath: string; policyPath: string } {
+  HandleTable.parseHandle(args.handle); // validates format
+  mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
+
+  const destPath = join(paths.keysDir, `${args.handle}.sigil`);
+  if (existsSync(destPath)) {
+    args.priv.fill(0);
+    throw new Error(`portal "${args.handle}" already exists at ${destPath}; remove it first`);
+  }
+  const policyPath = join(paths.policyDir, `${args.handle}.toml`);
+  if (existsSync(policyPath)) {
+    args.priv.fill(0);
+    throw new Error(`policy file for "${args.handle}" already exists at ${policyPath}; remove it first`);
+  }
+
+  let address: string;
+  try {
+    address = addressFromPrivateKey(args.priv);
+    const sealed = args.kdfParams
+      ? sealKey(args.priv, args.passphrase, args.kdfParams)
+      : sealKey(args.priv, args.passphrase);
+    writeFileSync(destPath, sealed, { mode: 0o600 });
+  } finally {
+    args.priv.fill(0);
+  }
+
+  // Mode 0o600 — the policy file describes what this key can sign, which is sensitive.
+  writeFileSync(policyPath, policyTemplate(args.policyMode), { mode: 0o600 });
 
   return { address, keyfilePath: destPath, policyPath };
 }

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { unsealKey } from '../../src/crypto/index.js';
 import { addressFromPrivateKey } from '../../src/eth/index.js';
 import { resolvePaths } from '../../src/cli/paths.js';
-import { policyInit, portalAdd, portalListFromDisk, portalRemove } from '../../src/cli/portal.js';
+import { policyInit, portalAdd, portalListFromDisk, portalNew, portalRemove } from '../../src/cli/portal.js';
 import { parsePolicy } from '../../src/policy/index.js';
 
 function mkTmpHome(): string {
@@ -394,6 +394,122 @@ test('policyInit: refuses if the portal keyfile does not exist', () => {
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     throws(() => policyInit(paths, 'eth:absent', 'permissive'), /portal "eth:absent" not found/);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalNew: writes encrypted keyfile + policy and returns a valid address', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const r = portalNew(paths, {
+      handle: 'eth:fresh',
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    ok(/^0x[0-9a-f]{40}$/.test(r.address));
+    ok(existsSync(r.keyfilePath));
+    ok(existsSync(r.policyPath));
+    equal(statSync(r.keyfilePath).mode & 0o777, 0o600);
+    equal(statSync(r.policyPath).mode & 0o777, 0o600);
+    // Default policy is permissive.
+    const policy = parsePolicy(readFileSync(r.policyPath, 'utf8'));
+    equal(policy.mode, 'permissive');
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalNew: --strict writes a locked-down template', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const r = portalNew(paths, {
+      handle: 'eth:cold',
+      passphrase: Buffer.from('p'),
+      policyMode: 'strict',
+      kdfParams: TEST_KDF,
+    });
+    const policy = parsePolicy(readFileSync(r.policyPath, 'utf8'));
+    equal(policy.mode, 'strict');
+    equal(policy.allowMessageSigning, false);
+    equal(policy.allowTypedData, false);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalNew: distinct calls produce distinct addresses (sampling-based)', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const addrs = new Set<string>();
+    for (let i = 0; i < 10; i++) {
+      const r = portalNew(paths, {
+        handle: `eth:k${i}`,
+        passphrase: Buffer.from('p'),
+        kdfParams: TEST_KDF,
+      });
+      addrs.add(r.address);
+    }
+    // Astronomically unlikely to collide; if it does we have bigger problems.
+    equal(addrs.size, 10);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalNew: encrypted keyfile decrypts back to a working private key', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const r = portalNew(paths, {
+      handle: 'eth:test',
+      passphrase: Buffer.from('passpass'),
+      kdfParams: TEST_KDF,
+    });
+    // Decrypt with the same passphrase, derive address, confirm it matches.
+    const blob = readFileSync(r.keyfilePath);
+    const sb = unsealKey(blob, Buffer.from('passpass'));
+    try {
+      equal(addressFromPrivateKey(sb.bytes()), r.address);
+    } finally {
+      sb.dispose();
+    }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalNew: refuses if portal already exists', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    portalNew(paths, {
+      handle: 'eth:bot',
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    throws(() => portalNew(paths, {
+      handle: 'eth:bot',
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    }), /portal "eth:bot" already exists/);
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalNew: refuses invalid handle format', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    throws(() => portalNew(paths, {
+      handle: 'no-colon',
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    }));
   } finally {
     rmSync(home, { recursive: true });
   }

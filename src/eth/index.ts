@@ -2,6 +2,7 @@ export { keccak256 } from './keccak.js';
 export {
   type EthSignature,
   getPublicKeyUncompressed,
+  randomSecretKey,
   signDigest,
   recoverPublicKey,
 } from './secp.js';

@@ -6,7 +6,7 @@ import { type InitScope, installInto } from '../hooks/install.js';
 import { parsePolicy } from '../policy/index.js';
 import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
-import { policyInit, portalAdd, portalListFromDisk, portalRemove } from './portal.js';
+import { policyInit, portalAdd, portalListFromDisk, portalNew, portalRemove } from './portal.js';
 import { status } from './status.js';
 import { formatResult, lock, unlock } from './unlock.js';
 
@@ -15,6 +15,7 @@ const USAGE = `sigil — local signing control for Claude Code
 Usage:
   sigil init [--user]
   sigil status
+  sigil portal new <handle> [--strict]
   sigil portal add <handle> --key-file <path> [--no-remove-source] [--strict]
   sigil portal list
   sigil portal remove <handle>
@@ -111,6 +112,11 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
     }
     if (head === 'portal') {
       const sub = parseSubcommand(rest, {
+        new: {
+          options: {
+            'strict': { type: 'boolean' },
+          },
+        },
         add: {
           options: {
             'key-file': { type: 'string' },
@@ -121,6 +127,29 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         list: { options: {} },
         remove: { options: {} },
       });
+      if (sub.command === 'new') {
+        const handle = sub.positionals[0];
+        if (!handle) throw new ArgsError('portal new: missing handle');
+        const policyMode: 'permissive' | 'strict' =
+          sub.options['strict'] === true ? 'strict' : 'permissive';
+        const passphrase = await askPassphrase();
+        try {
+          const { address, keyfilePath, policyPath } = portalNew(paths, {
+            handle,
+            passphrase,
+            policyMode,
+            ...(opts.kdfParams ? { kdfParams: opts.kdfParams } : {}),
+          });
+          out.write(`generated ${handle} (${address}) → ${keyfilePath}\n`);
+          out.write(`policy: ${policyMode} → ${policyPath}\n`);
+          if (policyMode === 'strict') {
+            out.write(`note: strict policy denies everything until you edit ${policyPath}\n`);
+          }
+        } finally {
+          passphrase.fill(0);
+        }
+        return { code: 0 };
+      }
       if (sub.command === 'add') {
         const handle = sub.positionals[0];
         const keyFile = sub.options['key-file'];
