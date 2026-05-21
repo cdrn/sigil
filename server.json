@@ -6,12 +6,12 @@
     "url": "https://github.com/cdrn/sigil",
     "source": "github"
   },
-  "version": "0.0.6",
+  "version": "0.0.7",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "sigild",
-      "version": "0.0.6",
+      "version": "0.0.7",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
