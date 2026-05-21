@@ -23,6 +23,15 @@ export function getPublicKeyUncompressed(privateKey: Buffer | Uint8Array): Buffe
 }
 
 /**
+ * Generate a fresh secp256k1 secret key. Uses the platform CSPRNG via
+ * noble's utility, which is uniform over the valid scalar range (handles
+ * the vanishingly small bias of raw 256-bit random against N).
+ */
+export function randomSecretKey(): Buffer {
+  return Buffer.from(secp.utils.randomSecretKey());
+}
+
+/**
  * Signs a 32-byte digest and returns the Ethereum-shaped components.
  * The noble v3 recovered format is `recovery || r || s` (recovery is byte 0).
  */

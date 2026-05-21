@@ -237,6 +237,66 @@ test('runCli: portal add — writes permissive policy by default', async () => {
   }
 });
 
+test('runCli: portal new generates a fresh key with permissive policy', async () => {
+  const home = mkTmpHome();
+  try {
+    const cap = capture();
+    const r = await runCli({
+      argv: ['portal', 'new', 'eth:fresh'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    equal(r.code, 0);
+    ok(/generated eth:fresh \(0x[0-9a-f]{40}\)/.test(cap.out()));
+    ok(/policy: permissive/.test(cap.out()));
+    ok(existsSync(join(home, 'keys', 'eth:fresh.sigil')));
+    ok(existsSync(join(home, 'policy', 'eth:fresh.toml')));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: portal new --strict writes the strict template', async () => {
+  const home = mkTmpHome();
+  try {
+    const cap = capture();
+    const r = await runCli({
+      argv: ['portal', 'new', 'eth:cold', '--strict'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    equal(r.code, 0);
+    ok(/policy: strict/.test(cap.out()));
+    ok(/note: strict policy denies/.test(cap.out()));
+    const pol = readFileSync(join(home, 'policy', 'eth:cold.toml'), 'utf8');
+    ok(/mode = "strict"/.test(pol));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: portal new without handle errors with usage', async () => {
+  const home = mkTmpHome();
+  try {
+    const cap = capture();
+    const r = await runCli({
+      argv: ['portal', 'new'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    equal(r.code, 2);
+    ok(/missing handle/.test(cap.err()));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
 test('runCli: portal add --strict writes the strict template', async () => {
   const home = mkTmpHome();
   try {

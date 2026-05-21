@@ -40,15 +40,19 @@ Requires Node 22+.
 # 1. Wire sigil into Claude Code (project-scoped). Pass --user to do it globally.
 sigil init
 
-# 2. Encrypt a private key into sigil's keystore. Source key is deleted by default.
-#    Accepts either 32 raw bytes or 64 hex chars (with optional 0x prefix).
-sigil portal add eth:bot --key-file ./bot.key
-# → prompts for a passphrase, derives the address, writes
-#   ~/.sigil/keys/eth:bot.sigil  AND  ~/.sigil/policy/eth:bot.toml (permissive)
+# 2a. Generate a fresh key inside sigil (no plaintext ever hits disk):
+sigil portal new eth:bot
+# → prompts for a passphrase, mints a fresh secp256k1 key, prints the
+#   address, writes ~/.sigil/keys/eth:bot.sigil + permissive policy.
 #
-# Pass --strict to start with a locked-down policy template you fill in
-# before any sign succeeds:
-#   sigil portal add eth:bot --key-file ./bot.key --strict
+# 2b. OR import an existing private key from a file:
+#     Accepts either 32 raw bytes or 64 hex chars (with optional 0x prefix).
+sigil portal add eth:bot --key-file ./private.hex
+# → same as above but seeded from the file. Source file is deleted by
+#   default (pass --no-remove-source to keep it).
+#
+# Either form: pass --strict to start with a locked-down policy template
+# you fill in before any sign succeeds.
 
 # 3. Open Claude Code. It spawns sigil-mcp automatically via your MCP config.
 #    sigil-mcp boots locked — the first sign attempt will return DAEMON_LOCKED.
@@ -77,14 +81,22 @@ sigil init [--user]
   Idempotent — preserves your unrelated settings, and on upgrade
   migrates any stale mcpServers.sigil entry out of settings.json.
 
+sigil portal new <handle> [--strict]
+  Generate a fresh secp256k1 key inside sigil, encrypt with your
+  passphrase, write it to ~/.sigil/keys/<handle>.sigil (mode 0600).
+  No plaintext key ever lands on disk. Use this when you want a clean
+  hot wallet for a bot (vs importing an existing key from a file).
+  Also writes ~/.sigil/policy/<handle>.toml — permissive by default,
+  or --strict for a locked-down template.
+
 sigil portal add <handle> --key-file <path> [--no-remove-source] [--strict]
-  Encrypt the key with your passphrase and store it at
-  ~/.sigil/keys/<handle>.sigil (mode 0600). Handle format is
-  <kind>:<name> where kind is "eth". The source key file is deleted
-  by default — pass --no-remove-source to keep it.
+  Import an existing private key. Encrypts it with your passphrase
+  and stores at ~/.sigil/keys/<handle>.sigil (mode 0600). Handle
+  format is <kind>:<name> where kind is "eth". The source key file
+  is deleted by default — pass --no-remove-source to keep it.
   Also writes ~/.sigil/policy/<handle>.toml — permissive by default
-  (signs anything), or use --strict for a locked-down template you
-  fill in before signs succeed.
+  (signs anything), or --strict for a locked-down template you fill
+  in before signs succeed.
 
 sigil policy show <handle>
   Print the current policy file for a portal. Validates schema; exits
