@@ -8,12 +8,6 @@ test('blocks ~/.sigil/**', () => {
   ok(d.blocked);
 });
 
-test('blocks *.pem at any depth', () => {
-  ok(isBlockedPath('/some/where/secret.pem').blocked);
-  ok(isBlockedPath('secret.pem').blocked);
-  ok(isBlockedPath('./secret.pem').blocked);
-});
-
 test('blocks *.key, *.keystore, *.jks, *.p12', () => {
   ok(isBlockedPath('/x/y/private.key').blocked);
   ok(isBlockedPath('wallet.keystore').blocked);
@@ -27,16 +21,22 @@ test('blocks SSH private key conventions', () => {
   ok(isBlockedPath(`${homedir()}/.ssh/bot_rsa`).blocked);
 });
 
-test('blocks .env and .env.* at any depth', () => {
-  ok(isBlockedPath('/repo/.env').blocked);
-  ok(isBlockedPath('/repo/.env.local').blocked);
-  ok(isBlockedPath('.env').blocked);
-  ok(isBlockedPath('./.env.production').blocked);
+test('does NOT block *.pem (mostly public certs / CA bundles)', () => {
+  equal(isBlockedPath('/some/where/cert.pem').blocked, false);
+  equal(isBlockedPath('secret.pem').blocked, false);
+  equal(isBlockedPath('./ca-bundle.pem').blocked, false);
 });
 
-test('blocks ethereum keystore dirs', () => {
-  ok(isBlockedPath('/data/keystore/UTC--2020-01-01--addr').blocked);
-  ok(isBlockedPath('keystore').blocked);
+test('does NOT block .env / .env.* (templates and examples dominate)', () => {
+  equal(isBlockedPath('/repo/.env').blocked, false);
+  equal(isBlockedPath('/repo/.env.local').blocked, false);
+  equal(isBlockedPath('.env').blocked, false);
+  equal(isBlockedPath('./.env.production').blocked, false);
+});
+
+test('does NOT block bare keystore/ dirs (too generic; *.keystore extension is enough)', () => {
+  equal(isBlockedPath('/data/keystore/UTC--2020-01-01--addr').blocked, false);
+  equal(isBlockedPath('keystore').blocked, false);
 });
 
 test('blocks GPG and pass(1) stores', () => {

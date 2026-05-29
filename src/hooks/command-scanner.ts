@@ -113,6 +113,6 @@ function looksLikePath(tok: string): boolean {
   // OR is a bare filename ending in a key-ish extension.
   if (tok.includes('/')) return true;
   if (tok.startsWith('.')) return true;
-  if (/\.(pem|key|keystore|jks|p12)$/i.test(tok)) return true;
+  if (/\.(key|keystore|jks|p12)$/i.test(tok)) return true;
   return false;
 }
