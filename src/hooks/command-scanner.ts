@@ -5,13 +5,17 @@ import { isBlockedPath, type BlockerOpts, type BlockDecision } from './path-bloc
  * a determined shell can always obfuscate, but we catch the obvious cases
  * that a confused agent (or basic prompt injection) would produce.
  *
- * Approach:
- *  1. Tokenize the command crudely on whitespace and shell metacharacters.
- *  2. Skip the first token of each statement (the program name itself).
- *  3. Check each remaining token against the path blocker.
- *  4. Also detect a few "always block" reader commands when they appear at
- *     a position that suggests they're targeting a key (e.g. `gpg
- *     --export-secret-keys`).
+ * Model: path-token checks only fire when the statement's program is on the
+ * READER_COMMANDS allowlist below. That keeps the scanner from blocking
+ * benign commands that *mention* a path token without reading it — e.g.
+ * `git commit -F message.txt` (the file is recorded as a commit message,
+ * not read into the shell) or `gh pr create --body-file body.md`. Statement
+ * separators include `$(...)` and backticks, so `git commit -m "$(cat .env)"`
+ * still trips on the inner `cat`.
+ *
+ * Separately, ALWAYS_BLOCK_COMMAND_PATTERNS fires unconditionally for
+ * commands that are intrinsically dangerous regardless of classification
+ * (`gpg --export-secret-keys`, `ssh-keygen -y`, `openssl pkey -in`).
  */
 
 const COMMAND_SEPARATORS = /[;&|]|\$\(|`/;
@@ -22,22 +26,51 @@ const ALWAYS_BLOCK_COMMAND_PATTERNS: readonly { regex: RegExp; reason: string }[
   { regex: /\bopenssl\b[^|;]*(pkey|rsa|ec)\b[^|;]*-(in|noout)/i, reason: 'openssl key dump' },
 ]);
 
+/**
+ * Programs whose arguments we treat as candidate path reads. Start
+ * conservative (false negatives are worse than false positives for the
+ * threat we care about) but exclude commands that take paths as *data* —
+ * `git commit -F`, `gh pr create --body-file`, build tools, etc.
+ *
+ * `find` is included because `find ... -exec <reader>` is too easy a
+ * bypass; treating it as a reader lets the path-token loop catch the
+ * `-exec` target argument as well.
+ */
+const READER_COMMANDS: ReadonlySet<string> = new Set([
+  // bulk file readers
+  'cat', 'bat', 'tac', 'nl',
+  // paged / streamed readers
+  'less', 'more', 'head', 'tail',
+  // editors (a deliberate open is a read)
+  'vi', 'vim', 'view', 'nvim', 'nano', 'emacs', 'code', 'subl', 'open',
+  // binary inspectors
+  'xxd', 'od', 'hexdump', 'strings', 'file',
+  // searchers that print matches from files
+  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'sift',
+  // stream filters that can take a path arg and print contents
+  'tee', 'tr', 'sed', 'awk',
+  // compressed-content dumpers
+  'zcat', 'bzcat', 'xzcat', 'gunzip',
+  // walks the tree; `-exec <reader>` is a trivial bypass otherwise
+  'find',
+]);
+
 export function scanBashCommand(command: string, opts: BlockerOpts = {}): BlockDecision & { reason?: string } {
-  // Check always-block patterns first; they're command-shape based.
+  // 1. Always-block patterns — shape-based, fire regardless of classification.
   for (const { regex, reason } of ALWAYS_BLOCK_COMMAND_PATTERNS) {
     if (regex.test(command)) {
       return { blocked: true, reason };
     }
   }
 
-  // Tokenize the command. Split on statement separators first so we treat
-  // each statement's program name separately.
+  // 2. Per-statement path scan, gated on the program being a known reader.
+  //    COMMAND_SEPARATORS splits on `$(` and backticks too, so a `cat` hidden
+  //    inside a substitution surfaces as the first token of its own statement.
   const statements = command.split(COMMAND_SEPARATORS);
   for (const stmt of statements) {
     const tokens = tokenize(stmt);
     if (tokens.length === 0) continue;
-    // Skip the first token (program name) — we don't want to block on a path
-    // that happens to coincide with the script being executed. Args follow.
+    if (!isReaderCommand(tokens[0]!)) continue;
     for (let i = 1; i < tokens.length; i++) {
       const tok = stripShellQuoting(tokens[i]!);
       if (looksLikePath(tok)) {
@@ -53,6 +86,18 @@ export function scanBashCommand(command: string, opts: BlockerOpts = {}): BlockD
     }
   }
   return { blocked: false };
+}
+
+/**
+ * Match the program token against READER_COMMANDS. Strips any leading path
+ * (`/usr/bin/cat` → `cat`) and any shell quoting, then case-folds for
+ * platforms with case-insensitive filesystems.
+ */
+function isReaderCommand(programToken: string): boolean {
+  const stripped = stripShellQuoting(programToken);
+  const slash = stripped.lastIndexOf('/');
+  const base = (slash === -1 ? stripped : stripped.slice(slash + 1)).toLowerCase();
+  return READER_COMMANDS.has(base);
 }
 
 /**

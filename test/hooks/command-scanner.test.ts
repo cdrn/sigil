@@ -50,3 +50,44 @@ test('first token (program name) is never matched as a path', () => {
   // If the program itself is a .pem (weird but possible), don't block.
   equal(scanBashCommand('./tool.pem --check').blocked, false);
 });
+
+// ---------------------------------------------------------------------------
+// Reader-vs-recorder model (issue #45)
+// ---------------------------------------------------------------------------
+
+test('non-reader programs do not have their args path-scanned', () => {
+  // git commit -F writes the file as a commit message; the path is data,
+  // not a read target.
+  equal(scanBashCommand('git commit -F /etc/ssl/private.key').blocked, false);
+  // gh pr create --body-file likewise records the file as PR body text.
+  equal(scanBashCommand('gh pr create --body-file ~/.ssh/id_rsa').blocked, false);
+  // echo treats its args as literal text.
+  equal(scanBashCommand('echo ~/.ssh/id_rsa').blocked, false);
+});
+
+test('reader programs invoked through an absolute path are still recognised', () => {
+  ok(scanBashCommand('/usr/bin/cat ~/.ssh/id_rsa').blocked);
+  ok(scanBashCommand('/bin/grep secret /etc/ssl/private.key').blocked);
+});
+
+test('subshell-substituted reads are still blocked because $( starts a new statement', () => {
+  // `git commit` itself is not a reader, but the inner cat is — the
+  // statement split on $( surfaces cat as the program of its own statement.
+  ok(scanBashCommand('git commit -m "$(cat ~/.ssh/id_rsa)"').blocked);
+  ok(scanBashCommand('echo `cat /etc/ssl/private.key`').blocked);
+});
+
+test('reader allowlist covers grep, head, tail, less, xxd, find', () => {
+  ok(scanBashCommand('grep secret /etc/ssl/private.key').blocked);
+  ok(scanBashCommand('head -n1 ~/.ssh/id_ed25519').blocked);
+  ok(scanBashCommand('tail -f /tmp/foo.key').blocked);
+  ok(scanBashCommand('less ~/.sigil/keys/eth:bot.sigil').blocked);
+  ok(scanBashCommand('xxd /etc/ssl/private.key').blocked);
+  ok(scanBashCommand('find . -name id_rsa -exec cat ~/.ssh/id_rsa \\;').blocked);
+});
+
+test('build / runtime tools never path-scan their args', () => {
+  equal(scanBashCommand('node ./tool.key').blocked, false);
+  equal(scanBashCommand('npm install ./pkg.key').blocked, false);
+  equal(scanBashCommand('tsc -p ./tsconfig.key').blocked, false);
+});
