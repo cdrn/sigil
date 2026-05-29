@@ -8,7 +8,7 @@ export interface AuditEntry {
   ts: number; // ms since epoch
   prev_hash: string; // 64-char hex (32 bytes)
   kind: string; // method name, e.g. "eth_sign_transaction"
-  portal: string; // handle, e.g. "eth:bot"
+  portal: string; // handle, e.g. "evm:bot"
   payload: unknown; // method-specific structured data
   decision: AuditDecision;
   reason?: string; // populated for deny / confirm_required
@@ -209,7 +209,7 @@ export function readHead(path: string): ChainHead {
  *
  * Typical use:
  *   const w = new AuditWriter('/path/to/audit.log');
- *   w.append({ kind: 'eth_sign_message', portal: 'eth:bot', payload, decision: 'allow', sig });
+ *   w.append({ kind: 'eth_sign_message', portal: 'evm:bot', payload, decision: 'allow', sig });
  *   w.close();
  *
  * The seq and prev_hash fields are managed by the writer; callers supply

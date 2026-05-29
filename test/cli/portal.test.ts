@@ -25,7 +25,7 @@ test('portalAdd: writes encrypted keyfile and returns derived address', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     const result = portalAdd(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       keyFile: srcKey,
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -48,7 +48,7 @@ test('portalAdd: --no-remove-source preserves the source key file', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     portalAdd(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       keyFile: srcKey,
       passphrase: Buffer.from('p'),
       removeSource: false,
@@ -68,7 +68,7 @@ test('portalAdd: accepts hex-encoded key file (with and without 0x)', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, '0x' + hex + '\n', { encoding: 'utf8' });
     const result = portalAdd(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       keyFile: srcKey,
       passphrase: Buffer.from('p'),
       removeSource: false,
@@ -79,7 +79,7 @@ test('portalAdd: accepts hex-encoded key file (with and without 0x)', () => {
     const srcKey2 = join(home, 'src2.key');
     writeFileSync(srcKey2, hex, { encoding: 'utf8' });
     const result2 = portalAdd(paths, {
-      handle: 'eth:bot2',
+      handle: 'evm:bot2',
       keyFile: srcKey2,
       passphrase: Buffer.from('p'),
       removeSource: false,
@@ -98,7 +98,7 @@ test('portalAdd: rejects malformed key file', () => {
     const bad = join(home, 'bad.key');
     writeFileSync(bad, 'this is not a key');
     throws(() => portalAdd(paths, {
-      handle: 'eth:bot', keyFile: bad, passphrase: Buffer.from('p'),
+      handle: 'evm:bot', keyFile: bad, passphrase: Buffer.from('p'),
     }), /32 raw bytes or 64 hex/);
   } finally {
     rmSync(home, { recursive: true });
@@ -126,11 +126,11 @@ test('portalAdd: refuses to overwrite an existing portal', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     portalAdd(paths, {
-      handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'), removeSource: false,
+      handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), removeSource: false,
       kdfParams: TEST_KDF,
     });
     throws(() => portalAdd(paths, {
-      handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'),
+      handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'),
     }), /already exists/);
   } finally {
     rmSync(home, { recursive: true });
@@ -144,7 +144,7 @@ test('portalAdd: stored keyfile decrypts to the original private key', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(42));
     const { keyfilePath } = portalAdd(paths, {
-      handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('hunter2'), kdfParams: TEST_KDF,
+      handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('hunter2'), kdfParams: TEST_KDF,
     });
     const blob = readFileSync(keyfilePath);
     const sb = unsealKey(blob, Buffer.from('hunter2'));
@@ -175,15 +175,15 @@ test('portalListFromDisk: returns each portal with derived address, sorted', () 
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const pass = Buffer.from('p');
-    const keys: [string, number][] = [['eth:zzz', 1], ['eth:aaa', 2], ['eth:mmm', 3]];
+    const keys: [string, number][] = [['evm:zzz', 1], ['evm:aaa', 2], ['evm:mmm', 3]];
     for (const [handle, byte] of keys) {
       const srcKey = join(home, `src-${byte}.key`);
       writeFileSync(srcKey, priv(byte));
       portalAdd(paths, { handle, keyFile: srcKey, passphrase: pass, kdfParams: TEST_KDF });
     }
     const list = portalListFromDisk(paths, pass);
-    deepEqual(list.map((p) => p.handle), ['eth:aaa', 'eth:mmm', 'eth:zzz']);
-    equal(list.find((p) => p.handle === 'eth:zzz')!.address, addressFromPrivateKey(priv(1)));
+    deepEqual(list.map((p) => p.handle), ['evm:aaa', 'evm:mmm', 'evm:zzz']);
+    equal(list.find((p) => p.handle === 'evm:zzz')!.address, addressFromPrivateKey(priv(1)));
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -195,7 +195,7 @@ test('portalListFromDisk: throws if any keyfile fails to decrypt', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    portalAdd(paths, { handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('correct'), kdfParams: TEST_KDF });
+    portalAdd(paths, { handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('correct'), kdfParams: TEST_KDF });
     throws(() => portalListFromDisk(paths, Buffer.from('wrong')));
   } finally {
     rmSync(home, { recursive: true });
@@ -213,9 +213,9 @@ test('portalRemove: removes an existing portal', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     const { keyfilePath } = portalAdd(paths, {
-      handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF,
+      handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF,
     });
-    const result = portalRemove(paths, 'eth:bot');
+    const result = portalRemove(paths, 'evm:bot');
     equal(result.removed, true);
     equal(existsSync(keyfilePath), false);
   } finally {
@@ -227,7 +227,7 @@ test('portalRemove: reports not-removed for absent portal', () => {
   const home = mkTmpHome();
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
-    const result = portalRemove(paths, 'eth:absent');
+    const result = portalRemove(paths, 'evm:absent');
     equal(result.removed, false);
   } finally {
     rmSync(home, { recursive: true });
@@ -255,7 +255,7 @@ test('portalAdd: writes a permissive policy file by default', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     const result = portalAdd(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       keyFile: srcKey,
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -277,7 +277,7 @@ test('portalAdd: --strict policyMode writes the strict template', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     const result = portalAdd(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       keyFile: srcKey,
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -300,9 +300,9 @@ test('portalAdd: refuses if a policy file already exists at the target path', ()
     writeFileSync(srcKey, priv(1));
     // Pre-plant a policy file at the target path.
     mkdirSync(paths.policyDir, { recursive: true });
-    writeFileSync(join(paths.policyDir, 'eth:bot.toml'), '# pre-existing');
+    writeFileSync(join(paths.policyDir, 'evm:bot.toml'), '# pre-existing');
     throws(() => portalAdd(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       keyFile: srcKey,
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -319,14 +319,14 @@ test('portalRemove: removes the policy file alongside the keyfile', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     const added = portalAdd(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       keyFile: srcKey,
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
     });
     ok(existsSync(added.keyfilePath));
     ok(existsSync(added.policyPath));
-    portalRemove(paths, 'eth:bot');
+    portalRemove(paths, 'evm:bot');
     equal(existsSync(added.keyfilePath), false);
     equal(existsSync(added.policyPath), false);
   } finally {
@@ -340,11 +340,11 @@ test('policyInit: writes a permissive policy file for an existing portal', () =>
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    portalAdd(paths, { handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    portalAdd(paths, { handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
     // Wipe the policy file as if it never existed (older sigil version).
-    rmSync(join(paths.policyDir, 'eth:bot.toml'));
+    rmSync(join(paths.policyDir, 'evm:bot.toml'));
 
-    const result = policyInit(paths, 'eth:bot', 'permissive');
+    const result = policyInit(paths, 'evm:bot', 'permissive');
     ok(existsSync(result.policyPath));
     const parsed = parsePolicy(readFileSync(result.policyPath, 'utf8'));
     equal(parsed.mode, 'permissive');
@@ -359,11 +359,11 @@ test('policyInit: --strict template parses and denies by default', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    portalAdd(paths, { handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
-    rmSync(join(paths.policyDir, 'eth:bot.toml'));
+    portalAdd(paths, { handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    rmSync(join(paths.policyDir, 'evm:bot.toml'));
 
-    policyInit(paths, 'eth:bot', 'strict');
-    const parsed = parsePolicy(readFileSync(join(paths.policyDir, 'eth:bot.toml'), 'utf8'));
+    policyInit(paths, 'evm:bot', 'strict');
+    const parsed = parsePolicy(readFileSync(join(paths.policyDir, 'evm:bot.toml'), 'utf8'));
     equal(parsed.mode, 'strict');
     // Strict template defaults — empty allow_to, zero cap, signing disabled.
     deepEqual(parsed.allowTo, []);
@@ -381,9 +381,9 @@ test('policyInit: refuses to clobber an existing policy file', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    portalAdd(paths, { handle: 'eth:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    portalAdd(paths, { handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
     // policy file is already there from portalAdd.
-    throws(() => policyInit(paths, 'eth:bot', 'permissive'), /policy already exists/);
+    throws(() => policyInit(paths, 'evm:bot', 'permissive'), /policy already exists/);
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -393,7 +393,7 @@ test('policyInit: refuses if the portal keyfile does not exist', () => {
   const home = mkTmpHome();
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
-    throws(() => policyInit(paths, 'eth:absent', 'permissive'), /portal "eth:absent" not found/);
+    throws(() => policyInit(paths, 'evm:absent', 'permissive'), /portal "evm:absent" not found/);
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -404,7 +404,7 @@ test('portalNew: writes encrypted keyfile + policy and returns a valid address',
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const r = portalNew(paths, {
-      handle: 'eth:fresh',
+      handle: 'evm:fresh',
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
     });
@@ -426,7 +426,7 @@ test('portalNew: --strict writes a locked-down template', () => {
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const r = portalNew(paths, {
-      handle: 'eth:cold',
+      handle: 'evm:cold',
       passphrase: Buffer.from('p'),
       policyMode: 'strict',
       kdfParams: TEST_KDF,
@@ -447,7 +447,7 @@ test('portalNew: distinct calls produce distinct addresses (sampling-based)', ()
     const addrs = new Set<string>();
     for (let i = 0; i < 10; i++) {
       const r = portalNew(paths, {
-        handle: `eth:k${i}`,
+        handle: `evm:k${i}`,
         passphrase: Buffer.from('p'),
         kdfParams: TEST_KDF,
       });
@@ -465,7 +465,7 @@ test('portalNew: encrypted keyfile decrypts back to a working private key', () =
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const r = portalNew(paths, {
-      handle: 'eth:test',
+      handle: 'evm:test',
       passphrase: Buffer.from('passpass'),
       kdfParams: TEST_KDF,
     });
@@ -487,15 +487,15 @@ test('portalNew: refuses if portal already exists', () => {
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     portalNew(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
     });
     throws(() => portalNew(paths, {
-      handle: 'eth:bot',
+      handle: 'evm:bot',
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
-    }), /portal "eth:bot" already exists/);
+    }), /portal "evm:bot" already exists/);
   } finally {
     rmSync(home, { recursive: true });
   }

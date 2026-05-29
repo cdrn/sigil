@@ -6,7 +6,7 @@ import { decidePreToolUse } from '../../src/hooks/pre-tool-use.js';
 test('Read of a blocked path → block', () => {
   const d = decidePreToolUse({
     tool_name: 'Read',
-    tool_input: { file_path: `${homedir()}/.sigil/keys/eth:bot.sigil` },
+    tool_input: { file_path: `${homedir()}/.sigil/keys/evm:bot.sigil` },
   });
   ok(d);
   equal(d!.decision, 'block');

@@ -41,6 +41,7 @@ async function main(): Promise<void> {
     control = await startControlServer({
       socketPath: paths.controlSocket,
       keysDir: paths.keysDir,
+      policyDir: paths.policyDir,
       handles,
       onLog: (e) => process.stderr.write(`control: ${JSON.stringify(e)}\n`),
     });

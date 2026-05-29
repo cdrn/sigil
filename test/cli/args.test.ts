@@ -13,19 +13,19 @@ const SPECS = {
 };
 
 test('parseSubcommand: routes to the named subcommand', () => {
-  const r = parseSubcommand(['add', 'eth:bot', '--key-file', './k'], SPECS);
+  const r = parseSubcommand(['add', 'evm:bot', '--key-file', './k'], SPECS);
   equal(r.command, 'add');
-  deepEqual(r.positionals, ['eth:bot']);
+  deepEqual(r.positionals, ['evm:bot']);
   equal(r.options['key-file'], './k');
 });
 
 test('parseSubcommand: boolean flags default to absent', () => {
-  const r = parseSubcommand(['add', 'eth:bot', '--key-file', './k'], SPECS);
+  const r = parseSubcommand(['add', 'evm:bot', '--key-file', './k'], SPECS);
   equal(r.options['no-remove-source'], undefined);
 });
 
 test('parseSubcommand: boolean flags can be set', () => {
-  const r = parseSubcommand(['add', 'eth:bot', '--key-file', './k', '--no-remove-source'], SPECS);
+  const r = parseSubcommand(['add', 'evm:bot', '--key-file', './k', '--no-remove-source'], SPECS);
   equal(r.options['no-remove-source'], true);
 });
 

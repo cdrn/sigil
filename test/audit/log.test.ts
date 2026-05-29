@@ -74,7 +74,7 @@ const SAMPLE_ENTRY: AuditEntry = {
   ts: 1715_000_000_000,
   prev_hash: ZERO_HASH,
   kind: 'eth_sign_message',
-  portal: 'eth:bot',
+  portal: 'evm:bot',
   payload: { message: 'hello' },
   decision: 'allow',
   sig: '0xdeadbeef',
@@ -187,7 +187,7 @@ function chainOf(n: number): { entries: AuditEntry[]; sealed: StoredAuditEntry[]
       ts: 1715_000_000_000 + i,
       prev_hash: prevHash,
       kind: 'eth_sign_message',
-      portal: 'eth:bot',
+      portal: 'evm:bot',
       payload: { i },
       decision: 'allow',
       sig: `0x${i.toString(16).padStart(2, '0')}`,
@@ -308,7 +308,7 @@ function fuzzEntry(rng: () => number, seq: number, prevHash: string): AuditEntry
     ts: rngInt(rng, 1_700_000_000_000, 1_800_000_000_000),
     prev_hash: prevHash,
     kind: rngPick(rng, ['eth_sign_message', 'eth_sign_transaction', 'eth_sign_typed_data']),
-    portal: 'eth:' + rngString(rng, 8).replace(/[^\w]/g, '_') || 'eth:bot',
+    portal: 'evm:' + rngString(rng, 8).replace(/[^\w]/g, '_') || 'evm:bot',
     payload: { nonce: rngInt(rng, 0, 1_000_000), data: rngBytes(rng, rngInt(rng, 0, 32)).toString('hex') },
     decision: rngPick(rng, ['allow', 'deny', 'confirm_required'] as const),
     ...(rngBool(rng) ? { sig: '0x' + rngBytes(rng, 65).toString('hex') } : {}),
@@ -424,7 +424,7 @@ test('AuditWriter writes a verifiable single entry', () => {
     const w = new AuditWriter(path, { now: () => 1_700_000_000_000 });
     const e = w.append({
       kind: 'eth_sign_message',
-      portal: 'eth:bot',
+      portal: 'evm:bot',
       payload: { msg: 'hi' },
       decision: 'allow',
       sig: '0xabcd',
@@ -554,7 +554,7 @@ test('fuzz: many append + restart cycles produce a verifiable chain (50 iters, s
       for (let j = 0; j < batchSize; j++) {
         w.append({
           kind: rngPick(rng, ['eth_sign_message', 'eth_sign_transaction']),
-          portal: 'eth:bot',
+          portal: 'evm:bot',
           payload: { i: totalAppended + j, blob: rngBytes(rng, rngInt(rng, 0, 8)).toString('hex') },
           decision: rngPick(rng, ['allow', 'deny', 'confirm_required'] as const),
           ...(rngBool(rng) ? { sig: '0x' + rngBytes(rng, 65).toString('hex') } : {}),

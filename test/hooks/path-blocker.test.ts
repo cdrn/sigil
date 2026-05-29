@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { isBlockedPath } from '../../src/hooks/path-blocker.js';
 
 test('blocks ~/.sigil/**', () => {
-  const d = isBlockedPath(`${homedir()}/.sigil/keys/eth:bot.sigil`);
+  const d = isBlockedPath(`${homedir()}/.sigil/keys/evm:bot.sigil`);
   ok(d.blocked);
 });
 

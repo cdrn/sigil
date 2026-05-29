@@ -10,7 +10,7 @@
 
 One MCP server process, four bins, three runtime deps:
 
-1. **`sigil-mcp`** — the only thing that runs. Claude Code spawns it per session via your `mcpServers` config; it dies when Claude exits. Holds unlocked keys in process memory (zeroized on shutdown, `sigil lock`, or unlock-failure; mlock against swap is planned). Keys at rest are encrypted with XChaCha20-Poly1305 and an Argon2id-derived key. Signs over stdio using a DIY MCP wire protocol (~200 lines, no SDK dep). Claude never sees key material — only opaque handles like `eth:executor`.
+1. **`sigil-mcp`** — the only thing that runs. Claude Code spawns it per session via your `mcpServers` config; it dies when Claude exits. Holds unlocked keys in process memory (zeroized on shutdown, `sigil lock`, or unlock-failure; mlock against swap is planned). Keys at rest are encrypted with XChaCha20-Poly1305 and an Argon2id-derived key. Signs over stdio using a DIY MCP wire protocol (~200 lines, no SDK dep). Claude never sees key material — only opaque handles like `evm:executor`.
 2. **`sigil`** — control CLI. `init`, `status`, `portal add`/`list`/`remove`, `unlock`, `lock`.
 3. **`sigil-hook-pre` / `sigil-hook-post`** — Claude Code hook binaries that block reads of common key paths and redact key-shaped strings from tool output.
 
@@ -41,13 +41,13 @@ Requires Node 22+.
 sigil init
 
 # 2a. Generate a fresh key inside sigil (no plaintext ever hits disk):
-sigil portal new eth:bot
+sigil portal new evm:bot
 # → prompts for a passphrase, mints a fresh secp256k1 key, prints the
-#   address, writes ~/.sigil/keys/eth:bot.sigil + permissive policy.
+#   address, writes ~/.sigil/keys/evm:bot.sigil + permissive policy.
 #
 # 2b. OR import an existing private key from a file:
 #     Accepts either 32 raw bytes or 64 hex chars (with optional 0x prefix).
-sigil portal add eth:bot --key-file ./private.hex
+sigil portal add evm:bot --key-file ./private.hex
 # → same as above but seeded from the file. Source file is deleted by
 #   default (pass --no-remove-source to keep it).
 #

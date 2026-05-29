@@ -18,7 +18,7 @@ const listPortals: Tool = {
   definition: {
     name: 'sigil_list_portals',
     description:
-      'List the signing portals currently loaded in sigil. Returns each portal handle (e.g. "eth:executor"), its kind, and the public address it controls.',
+      'List the signing portals currently loaded in sigil. Returns each portal handle (e.g. "evm:executor"), its kind, and the public address it controls.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   handler: (args, ctx) => callMethod('sigil_list_portals', args, ctx),
@@ -32,7 +32,7 @@ const ethSignMessage: Tool = {
     inputSchema: {
       type: 'object',
       properties: {
-        portal: { type: 'string', description: 'Portal handle, e.g. "eth:executor".' },
+        portal: { type: 'string', description: 'Portal handle, e.g. "evm:executor".' },
         message: { type: 'string', description: '0x-prefixed hex of the bytes to sign.' },
       },
       required: ['portal', 'message'],

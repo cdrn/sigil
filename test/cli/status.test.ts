@@ -37,7 +37,7 @@ test('status: counts keyfiles in the keys directory', async () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const src = join(home, 'src.key');
     writeFileSync(src, priv(1));
-    portalAdd(paths, { handle: 'eth:bot', keyFile: src, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    portalAdd(paths, { handle: 'evm:bot', keyFile: src, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
 
     const report = await status(paths);
     equal(report.keyfilesOnDisk, 1);
@@ -55,6 +55,7 @@ test('status: reports mcpRunning=true when control server is alive (locked)', as
     const ctl = await startControlServer({
       socketPath: paths.controlSocket,
       keysDir: paths.keysDir,
+      policyDir: paths.policyDir,
       handles,
       pid: 42,
     });
@@ -79,12 +80,13 @@ test('status: reports unlocked + portals when control server is unlocked', async
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const handles = new HandleTable();
-    handles.addEntry('eth:bot', new SecretBuffer(priv(1)));
+    handles.addEntry('evm:bot', new SecretBuffer(priv(1)));
     handles.markUnlocked();
     const audit = new AuditWriter(paths.auditLog);
     const ctl = await startControlServer({
       socketPath: paths.controlSocket,
       keysDir: paths.keysDir,
+      policyDir: paths.policyDir,
       handles,
       pid: 100,
     });
@@ -93,7 +95,7 @@ test('status: reports unlocked + portals when control server is unlocked', async
       equal(report.mcpRunning, true);
       equal(report.unlocked, true);
       equal(report.portals.length, 1);
-      equal(report.portals[0]!.handle, 'eth:bot');
+      equal(report.portals[0]!.handle, 'evm:bot');
       ok(report.portals[0]!.address.startsWith('0x'));
     } finally {
       await ctl.close();

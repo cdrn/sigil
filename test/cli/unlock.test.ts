@@ -34,6 +34,7 @@ async function withRunningMcp(home: string, fn: (handles: HandleTable) => Promis
   const ctl = await startControlServer({
     socketPath: paths.controlSocket,
     keysDir: paths.keysDir,
+      policyDir: paths.policyDir,
     handles,
     pid: 12345,
   });
@@ -68,7 +69,7 @@ test('runCli unlock: happy path loads portals', async () => {
     await withRunningMcp(home, async (handles) => {
       const paths = resolvePaths({ SIGIL_HOME: home });
       const pass = Buffer.from('hunter2');
-      writeFileSync(join(paths.keysDir, 'eth:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
+      writeFileSync(join(paths.keysDir, 'evm:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
 
       const cap = capture();
       const r = await runCli({
@@ -79,7 +80,7 @@ test('runCli unlock: happy path loads portals', async () => {
       });
       equal(r.code, 0);
       ok(/unlocked 1 portal/.test(cap.out()), `expected "unlocked 1 portal" in: ${cap.out()}`);
-      ok(/eth:bot/.test(cap.out()));
+      ok(/evm:bot/.test(cap.out()));
       ok(handles.isUnlocked());
     });
   } finally {
@@ -92,7 +93,7 @@ test('runCli unlock: wrong passphrase exits 2', async () => {
   try {
     await withRunningMcp(home, async (handles) => {
       const paths = resolvePaths({ SIGIL_HOME: home });
-      writeFileSync(join(paths.keysDir, 'eth:bot.sigil'), sealKey(priv(1), Buffer.from('right'), TEST_KDF));
+      writeFileSync(join(paths.keysDir, 'evm:bot.sigil'), sealKey(priv(1), Buffer.from('right'), TEST_KDF));
 
       const cap = capture();
       const r = await runCli({
@@ -192,7 +193,7 @@ test('runCli status: reports running + unlocked + portals when MCP is alive', as
     await withRunningMcp(home, async (handles) => {
       const paths = resolvePaths({ SIGIL_HOME: home });
       const pass = Buffer.from('p');
-      writeFileSync(join(paths.keysDir, 'eth:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
+      writeFileSync(join(paths.keysDir, 'evm:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
       handles.loadFromDir(paths.keysDir, pass);
 
       const cap = capture();
@@ -209,7 +210,7 @@ test('runCli status: reports running + unlocked + portals when MCP is alive', as
       equal(parsed.mcpPid, 12345);
       equal(parsed.unlocked, true);
       equal(parsed.portals.length, 1);
-      equal(parsed.portals[0]!.handle, 'eth:bot');
+      equal(parsed.portals[0]!.handle, 'evm:bot');
     });
   } finally {
     rmSync(home, { recursive: true });

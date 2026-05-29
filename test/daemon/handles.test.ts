@@ -22,25 +22,26 @@ function priv(byte: number): Buffer {
 // parseHandle
 // ---------------------------------------------------------------------------
 
-test('parseHandle accepts well-formed eth handles', () => {
-  deepEqual(HandleTable.parseHandle('eth:bot'), { kind: 'eth', name: 'bot' });
-  deepEqual(HandleTable.parseHandle('eth:executor_01'), { kind: 'eth', name: 'executor_01' });
-  deepEqual(HandleTable.parseHandle('eth:Bot-2'), { kind: 'eth', name: 'Bot-2' });
+test('parseHandle accepts well-formed evm handles', () => {
+  deepEqual(HandleTable.parseHandle('evm:bot'), { kind: 'evm', name: 'bot' });
+  deepEqual(HandleTable.parseHandle('evm:executor_01'), { kind: 'evm', name: 'executor_01' });
+  deepEqual(HandleTable.parseHandle('evm:Bot-2'), { kind: 'evm', name: 'Bot-2' });
 });
 
 test('parseHandle rejects malformed handles', () => {
-  throws(() => HandleTable.parseHandle('eth'), HandleLoadError);
-  throws(() => HandleTable.parseHandle('eth:'), HandleLoadError);
+  throws(() => HandleTable.parseHandle('evm'), HandleLoadError); // no name
+  throws(() => HandleTable.parseHandle('evm:'), HandleLoadError);
+  throws(() => HandleTable.parseHandle('eth:bot'), HandleLoadError); // legacy prefix rejected post-migration
   throws(() => HandleTable.parseHandle(':bot'), HandleLoadError);
-  throws(() => HandleTable.parseHandle('eth:bot/x'), HandleLoadError);
-  throws(() => HandleTable.parseHandle('eth:bot.key'), HandleLoadError);
+  throws(() => HandleTable.parseHandle('evm:bot/x'), HandleLoadError);
+  throws(() => HandleTable.parseHandle('evm:bot.key'), HandleLoadError);
   throws(() => HandleTable.parseHandle('btc:bot'), HandleLoadError); // unknown kind
 });
 
 test('handleFromFilename extracts handle from .sigil filenames', () => {
-  equal(HandleTable.handleFromFilename('eth:bot.sigil'), 'eth:bot');
+  equal(HandleTable.handleFromFilename('evm:bot.sigil'), 'evm:bot');
   equal(HandleTable.handleFromFilename('not-a-handle.sigil'), null);
-  equal(HandleTable.handleFromFilename('eth:bot.txt'), null);
+  equal(HandleTable.handleFromFilename('evm:bot.txt'), null);
   equal(HandleTable.handleFromFilename('foo.sigil'), null);
 });
 
@@ -50,21 +51,21 @@ test('handleFromFilename extracts handle from .sigil filenames', () => {
 
 test('addEntry stores a key and exposes handle + derived address', () => {
   const t = new HandleTable();
-  t.addEntry('eth:bot', new SecretBuffer(priv(1)));
-  ok(t.has('eth:bot'));
+  t.addEntry('evm:bot', new SecretBuffer(priv(1)));
+  ok(t.has('evm:bot'));
   const list = t.list();
   equal(list.length, 1);
-  equal(list[0]!.handle, 'eth:bot');
-  equal(list[0]!.kind, 'eth');
+  equal(list[0]!.handle, 'evm:bot');
+  equal(list[0]!.kind, 'evm');
   equal(list[0]!.address, addressFromPrivateKey(priv(1)));
   t.dispose();
 });
 
 test('addEntry rejects duplicate handle and disposes the rejected secret', () => {
   const t = new HandleTable();
-  t.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  t.addEntry('evm:bot', new SecretBuffer(priv(1)));
   const dup = new SecretBuffer(priv(2));
-  throws(() => t.addEntry('eth:bot', dup), HandleLoadError);
+  throws(() => t.addEntry('evm:bot', dup), HandleLoadError);
   // The duplicate's secret should have been disposed by addEntry.
   ok(dup.isDisposed, 'rejected secret should be disposed');
   t.dispose();
@@ -78,9 +79,9 @@ test('addEntry rejects malformed handle', () => {
 
 test('get returns the SecretBuffer for known handles, undefined for unknown', () => {
   const t = new HandleTable();
-  t.addEntry('eth:bot', new SecretBuffer(priv(1)));
-  ok(t.get('eth:bot') !== undefined);
-  equal(t.get('eth:nope'), undefined);
+  t.addEntry('evm:bot', new SecretBuffer(priv(1)));
+  ok(t.get('evm:bot') !== undefined);
+  equal(t.get('evm:nope'), undefined);
   t.dispose();
 });
 
@@ -88,14 +89,14 @@ test('dispose zeroizes every key and prevents further use', () => {
   const t = new HandleTable();
   const sb1 = new SecretBuffer(priv(1));
   const sb2 = new SecretBuffer(priv(2));
-  t.addEntry('eth:a', sb1);
-  t.addEntry('eth:b', sb2);
+  t.addEntry('evm:a', sb1);
+  t.addEntry('evm:b', sb2);
   t.dispose();
   ok(sb1.isDisposed && sb2.isDisposed);
   ok(t.isDisposed);
-  throws(() => t.has('eth:a'), /disposed/);
+  throws(() => t.has('evm:a'), /disposed/);
   throws(() => t.list(), /disposed/);
-  throws(() => t.get('eth:a'), /disposed/);
+  throws(() => t.get('evm:a'), /disposed/);
 });
 
 test('dispose is idempotent', () => {
@@ -120,8 +121,8 @@ test('loadFromDir loads every well-formed keyfile', () => {
   const dir = mkTmp();
   try {
     const passphrase = Buffer.from('test-pass');
-    writeFileSync(join(dir, 'eth:bot.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
-    writeFileSync(join(dir, 'eth:executor.sigil'), sealKey(priv(2), passphrase, TEST_KDF));
+    writeFileSync(join(dir, 'evm:bot.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
+    writeFileSync(join(dir, 'evm:executor.sigil'), sealKey(priv(2), passphrase, TEST_KDF));
     // Non-keyfile should be ignored.
     writeFileSync(join(dir, 'README.txt'), 'ignore me');
 
@@ -129,7 +130,7 @@ test('loadFromDir loads every well-formed keyfile', () => {
     t.loadFromDir(dir, passphrase);
     const list = t.list();
     equal(list.length, 2);
-    deepEqual(list.map((p) => p.handle).sort(), ['eth:bot', 'eth:executor']);
+    deepEqual(list.map((p) => p.handle).sort(), ['evm:bot', 'evm:executor']);
     t.dispose();
   } finally {
     rmSync(dir, { recursive: true });
@@ -141,15 +142,15 @@ test('loadFromDir is deterministic in order (sorted by filename)', () => {
   try {
     const passphrase = Buffer.from('p');
     // Write in a non-sorted order.
-    writeFileSync(join(dir, 'eth:zzz.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
-    writeFileSync(join(dir, 'eth:aaa.sigil'), sealKey(priv(2), passphrase, TEST_KDF));
-    writeFileSync(join(dir, 'eth:mmm.sigil'), sealKey(priv(3), passphrase, TEST_KDF));
+    writeFileSync(join(dir, 'evm:zzz.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
+    writeFileSync(join(dir, 'evm:aaa.sigil'), sealKey(priv(2), passphrase, TEST_KDF));
+    writeFileSync(join(dir, 'evm:mmm.sigil'), sealKey(priv(3), passphrase, TEST_KDF));
 
     const t = new HandleTable();
     t.loadFromDir(dir, passphrase);
     deepEqual(
       t.list().map((p) => p.handle),
-      ['eth:aaa', 'eth:mmm', 'eth:zzz'],
+      ['evm:aaa', 'evm:mmm', 'evm:zzz'],
     );
     t.dispose();
   } finally {
@@ -161,7 +162,7 @@ test('loadFromDir throws HandleLoadError on wrong passphrase', () => {
   const dir = mkTmp();
   try {
     writeFileSync(
-      join(dir, 'eth:bot.sigil'),
+      join(dir, 'evm:bot.sigil'),
       sealKey(priv(1), Buffer.from('right'), TEST_KDF),
     );
     const t = new HandleTable();
@@ -178,7 +179,7 @@ test('loadFromDir on tampered keyfile throws HandleLoadError', () => {
     const passphrase = Buffer.from('p');
     const blob = sealKey(priv(1), passphrase, TEST_KDF);
     blob[blob.length - 1] = (blob[blob.length - 1] ?? 0) ^ 0xff;
-    writeFileSync(join(dir, 'eth:bot.sigil'), blob);
+    writeFileSync(join(dir, 'evm:bot.sigil'), blob);
     const t = new HandleTable();
     throws(() => t.loadFromDir(dir, passphrase), /wrong passphrase|tampered/);
     t.dispose();
@@ -193,13 +194,13 @@ test('loadFromDir on subdir of files (nested) ignores nested entries', () => {
     const passphrase = Buffer.from('p');
     mkdirSync(join(dir, 'subdir'));
     writeFileSync(
-      join(dir, 'subdir', 'eth:nested.sigil'),
+      join(dir, 'subdir', 'evm:nested.sigil'),
       sealKey(priv(7), passphrase, TEST_KDF),
     );
-    writeFileSync(join(dir, 'eth:bot.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
+    writeFileSync(join(dir, 'evm:bot.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
     const t = new HandleTable();
     t.loadFromDir(dir, passphrase);
-    deepEqual(t.list().map((p) => p.handle), ['eth:bot']);
+    deepEqual(t.list().map((p) => p.handle), ['evm:bot']);
     t.dispose();
   } finally {
     rmSync(dir, { recursive: true });
@@ -218,7 +219,7 @@ test('fresh table reports isUnlocked() === false', () => {
 
 test('addEntry alone does NOT flip unlocked (only markUnlocked / loadFromDir does)', () => {
   const t = new HandleTable();
-  t.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  t.addEntry('evm:bot', new SecretBuffer(priv(1)));
   equal(t.isUnlocked(), false);
   t.markUnlocked();
   equal(t.isUnlocked(), true);
@@ -237,7 +238,7 @@ test('loadFromDir on populated dir marks the table unlocked', () => {
   const dir = mkTmp();
   try {
     const passphrase = Buffer.from('p');
-    writeFileSync(join(dir, 'eth:bot.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
+    writeFileSync(join(dir, 'evm:bot.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
     const t = new HandleTable();
     t.loadFromDir(dir, passphrase);
     equal(t.isUnlocked(), true);
@@ -251,7 +252,7 @@ test('loadFromDir failure leaves table locked + entries zeroized', () => {
   const dir = mkTmp();
   try {
     writeFileSync(
-      join(dir, 'eth:bot.sigil'),
+      join(dir, 'evm:bot.sigil'),
       sealKey(priv(1), Buffer.from('right'), TEST_KDF),
     );
     const t = new HandleTable();
@@ -267,7 +268,7 @@ test('loadFromDir failure leaves table locked + entries zeroized', () => {
 test('lock() zeroizes entries, clears them, and re-locks', () => {
   const t = new HandleTable();
   const sb = new SecretBuffer(priv(1));
-  t.addEntry('eth:bot', sb);
+  t.addEntry('evm:bot', sb);
   t.markUnlocked();
   ok(t.isUnlocked());
   equal(t.list().length, 1);
@@ -279,7 +280,7 @@ test('lock() zeroizes entries, clears them, and re-locks', () => {
 
   // Table is still usable — can be re-unlocked.
   const sb2 = new SecretBuffer(priv(2));
-  t.addEntry('eth:bot', sb2);
+  t.addEntry('evm:bot', sb2);
   t.markUnlocked();
   equal(t.isUnlocked(), true);
   equal(t.list().length, 1);
@@ -309,5 +310,5 @@ test('markUnlocked / lock / loadFromDir / addEntry throw after dispose', () => {
   // lock() is intentionally a silent no-op after dispose (idempotent).
   t.lock();
   throws(() => t.loadFromDir('/tmp', Buffer.from('p')), /disposed/);
-  throws(() => t.addEntry('eth:x', new SecretBuffer(priv(1))), /disposed/);
+  throws(() => t.addEntry('evm:x', new SecretBuffer(priv(1))), /disposed/);
 });

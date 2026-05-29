@@ -30,7 +30,7 @@ interface H {
 function setUp(): H {
   const dir = mkTmp();
   const handles = new HandleTable();
-  handles.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  handles.addEntry('evm:bot', new SecretBuffer(priv(1)));
   handles.markUnlocked();
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => ++now });
@@ -111,7 +111,7 @@ test('handleLine: tools/call sigil_list_portals returns content + structuredCont
     equal(r.result.content[0]!.type, 'text');
     const portals = JSON.parse(r.result.content[0]!.text) as { portals: { handle: string }[] };
     equal(portals.portals.length, 1);
-    equal(r.result.structuredContent.portals[0]!.handle, 'eth:bot');
+    equal(r.result.structuredContent.portals[0]!.handle, 'evm:bot');
   } finally { tearDown(h); }
 });
 
@@ -122,7 +122,7 @@ test('handleLine: tools/call eth_sign_message succeeds end-to-end in-process', (
     const resp = handleLine(
       JSON.stringify({
         jsonrpc: '2.0', id: 9, method: 'tools/call',
-        params: { name: 'sigil_eth_sign_message', arguments: { portal: 'eth:bot', message: messageHex } },
+        params: { name: 'sigil_eth_sign_message', arguments: { portal: 'evm:bot', message: messageHex } },
       }),
       { context: h.ctx },
     );
@@ -157,7 +157,7 @@ test('handleLine: tools/call surfaces method error code (portal-not-found → -3
         jsonrpc: '2.0', id: 1, method: 'tools/call',
         params: {
           name: 'sigil_eth_sign_message',
-          arguments: { portal: 'eth:nope', message: '0xff' },
+          arguments: { portal: 'evm:nope', message: '0xff' },
         },
       }),
       { context: h.ctx },
@@ -231,7 +231,7 @@ test('runMcpStdio: full handshake + tools/list + tools/call via in-memory stream
       JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n' +
       JSON.stringify({
         jsonrpc: '2.0', id: 3, method: 'tools/call',
-        params: { name: 'sigil_eth_sign_message', arguments: { portal: 'eth:bot', message: messageHex } },
+        params: { name: 'sigil_eth_sign_message', arguments: { portal: 'evm:bot', message: messageHex } },
       }) + '\n';
 
     const stdin = Readable.from([input]);

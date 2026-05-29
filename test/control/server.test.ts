@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sealKey } from '../../src/crypto/index.js';
@@ -27,11 +27,12 @@ interface H {
 async function setUp(): Promise<H> {
   const dir = mkTmp();
   const keysDir = join(dir, 'keys');
+  const policyDir = join(dir, 'policy');
   // Use a short socket path to stay under the 104-byte AF_UNIX limit on darwin.
   // `mkdtempSync(tmpdir(), ...)` paths are already short enough.
   const socketPath = join(dir, 'c.sock');
   const handles = new HandleTable();
-  const ctl = await startControlServer({ socketPath, keysDir, handles, pid: 999 });
+  const ctl = await startControlServer({ socketPath, keysDir, policyDir, handles, pid: 999 });
   return {
     dir,
     keysDir,
@@ -69,7 +70,7 @@ test('control server: unlock loads keyfiles + flips unlocked', async () => {
     const { mkdirSync } = await import('node:fs');
     mkdirSync(h.keysDir, { recursive: true });
     const pass = Buffer.from('correct-horse');
-    writeFileSync(join(h.keysDir, 'eth:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
+    writeFileSync(join(h.keysDir, 'evm:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
 
     const resp = await controlRequest({
       socketPath: h.socketPath,
@@ -79,7 +80,7 @@ test('control server: unlock loads keyfiles + flips unlocked', async () => {
     if (!isControlError(resp)) {
       equal(resp.unlocked, true);
       equal(resp.portals.length, 1);
-      equal(resp.portals[0]!.handle, 'eth:bot');
+      equal(resp.portals[0]!.handle, 'evm:bot');
     }
     ok(h.handles.isUnlocked());
   } finally {
@@ -92,7 +93,7 @@ test('control server: unlock with wrong passphrase returns WRONG_PASSPHRASE + le
   try {
     const { mkdirSync } = await import('node:fs');
     mkdirSync(h.keysDir, { recursive: true });
-    writeFileSync(join(h.keysDir, 'eth:bot.sigil'), sealKey(priv(1), Buffer.from('right'), TEST_KDF));
+    writeFileSync(join(h.keysDir, 'evm:bot.sigil'), sealKey(priv(1), Buffer.from('right'), TEST_KDF));
     const resp = await controlRequest({
       socketPath: h.socketPath,
       request: { method: 'unlock', passphraseB64: Buffer.from('wrong').toString('base64') },
@@ -126,7 +127,7 @@ test('control server: lock re-locks the table; unlock works again afterwards', a
     const { mkdirSync } = await import('node:fs');
     mkdirSync(h.keysDir, { recursive: true });
     const pass = Buffer.from('p');
-    writeFileSync(join(h.keysDir, 'eth:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
+    writeFileSync(join(h.keysDir, 'evm:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
 
     // unlock → lock → unlock cycle.
     let resp = await controlRequest({
@@ -213,12 +214,102 @@ test('startControlServer: clears a stale (unowned) socket file and binds', async
     const ctl = await startControlServer({
       socketPath,
       keysDir: join(dir, 'keys'),
+      policyDir: join(dir, 'policy'),
       handles,
       pid: 1,
     });
     try {
       const resp = await controlRequest({ socketPath, request: { method: 'status' } });
       ok(!isControlError(resp));
+    } finally {
+      await ctl.close();
+      handles.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Legacy handle-prefix migration: pre-0.0.8 keyfiles named eth:<n>.sigil are
+// renamed in-place to evm:<n>.sigil (and matching policy .toml files) on unlock.
+// ---------------------------------------------------------------------------
+
+test('unlock: renames legacy eth:<n>.sigil + policy to evm:<n> in-place, then loads', async () => {
+  const dir = mkTmp();
+  try {
+    const keysDir = join(dir, 'keys');
+    const policyDir = join(dir, 'policy');
+    mkdirSync(keysDir, { recursive: true });
+    mkdirSync(policyDir, { recursive: true });
+
+    // Seed a keyfile with the LEGACY filename. The encrypted blob is whatever
+    // sealKey produces — the migrator never reads its contents, only renames.
+    const passphrase = Buffer.from('migrate-pass');
+    const sealed = sealKey(priv(7), passphrase, TEST_KDF);
+    writeFileSync(join(keysDir, 'eth:legacy.sigil'), sealed);
+    writeFileSync(join(policyDir, 'eth:legacy.toml'), 'mode = "permissive"\n');
+
+    const handles = new HandleTable();
+    const socketPath = join(dir, 'c.sock');
+    const ctl = await startControlServer({ socketPath, keysDir, policyDir, handles, pid: 1 });
+    try {
+      const resp = await controlRequest({
+        socketPath,
+        request: { method: 'unlock', passphraseB64: passphrase.toString('base64') },
+      });
+      ok(!isControlError(resp), `unlock should succeed, got ${JSON.stringify(resp)}`);
+      if (isControlError(resp)) return;
+      // The portal is loaded under the new prefix.
+      equal(resp.portals.length, 1);
+      equal(resp.portals[0]!.handle, 'evm:legacy');
+      // Files on disk are renamed.
+      ok(existsSync(join(keysDir, 'evm:legacy.sigil')));
+      ok(!existsSync(join(keysDir, 'eth:legacy.sigil')));
+      ok(existsSync(join(policyDir, 'evm:legacy.toml')));
+      ok(!existsSync(join(policyDir, 'eth:legacy.toml')));
+      // Bytes round-trip — no re-encryption, content unchanged.
+      const after = readFileSync(join(keysDir, 'evm:legacy.sigil'));
+      ok(after.equals(sealed), 'migration must not rewrite encrypted bytes');
+    } finally {
+      await ctl.close();
+      handles.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('unlock: refuses to clobber an existing evm:<n>.sigil when migrating', async () => {
+  const dir = mkTmp();
+  try {
+    const keysDir = join(dir, 'keys');
+    const policyDir = join(dir, 'policy');
+    mkdirSync(keysDir, { recursive: true });
+    mkdirSync(policyDir, { recursive: true });
+
+    const passphrase = Buffer.from('p');
+    // Both legacy AND new-prefix keyfiles exist — operator state we can't
+    // safely resolve, so the migrator throws.
+    writeFileSync(join(keysDir, 'eth:dup.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
+    writeFileSync(join(keysDir, 'evm:dup.sigil'), sealKey(priv(2), passphrase, TEST_KDF));
+
+    const handles = new HandleTable();
+    const socketPath = join(dir, 'c.sock');
+    const ctl = await startControlServer({ socketPath, keysDir, policyDir, handles, pid: 1 });
+    try {
+      const resp = await controlRequest({
+        socketPath,
+        request: { method: 'unlock', passphraseB64: passphrase.toString('base64') },
+      });
+      ok(isControlError(resp));
+      if (!isControlError(resp)) return;
+      equal(resp.code, 'INTERNAL');
+      ok(/legacy-handle migration failed/.test(resp.error));
+      // Both files still on disk, untouched.
+      ok(existsSync(join(keysDir, 'eth:dup.sigil')));
+      ok(existsSync(join(keysDir, 'evm:dup.sigil')));
+      equal(readdirSync(keysDir).length, 2);
     } finally {
       await ctl.close();
       handles.dispose();
@@ -237,6 +328,7 @@ test('startControlServer: refuses to bind when another server owns the socket', 
       await startControlServer({
         socketPath: h.socketPath,
         keysDir: h.keysDir,
+        policyDir: join(h.dir, 'policy'),
         handles: handles2,
       });
     } catch (e) { err = e as Error; }

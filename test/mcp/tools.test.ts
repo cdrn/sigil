@@ -22,7 +22,7 @@ interface H {
 function setUp(): H {
   const dir = mkTmp();
   const handles = new HandleTable();
-  handles.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  handles.addEntry('evm:bot', new SecretBuffer(priv(1)));
   handles.markUnlocked();
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => ++now });
@@ -77,7 +77,7 @@ test('sigil_eth_sign_message handler forwards args + returns a signature', () =>
   try {
     const tool = findTool('sigil_eth_sign_message')!;
     const messageHex = '0x' + Buffer.from('hi').toString('hex');
-    const result = tool.handler({ portal: 'eth:bot', message: messageHex }, h.ctx);
+    const result = tool.handler({ portal: 'evm:bot', message: messageHex }, h.ctx);
     const sc = result.structuredContent as { signature: string };
     ok(sc.signature.startsWith('0x'));
   } finally { tearDown(h); }
@@ -102,7 +102,7 @@ test('handler surfaces method error code unchanged (PORTAL_NOT_FOUND → ToolErr
   try {
     const tool = findTool('sigil_eth_sign_message')!;
     let caught: ToolError | null = null;
-    try { tool.handler({ portal: 'eth:nope', message: '0xff' }, h.ctx); }
+    try { tool.handler({ portal: 'evm:nope', message: '0xff' }, h.ctx); }
     catch (e) { caught = e as ToolError; }
     ok(caught instanceof ToolError);
     equal(caught!.code, -32000);
