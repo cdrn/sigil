@@ -1,5 +1,5 @@
 // Tiny POSIX-style glob → regex translator. Just enough to support our
-// blocklist patterns (~/.sigil/everything, *.pem, .env at any depth, etc.).
+// blocklist patterns (~/.sigil/everything, *.key at any depth, etc.).
 //
 // Supported syntax:
 //   double-star (globstar): match anything including path separators

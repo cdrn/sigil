@@ -9,8 +9,7 @@ import { globMatch, normalizePath } from './glob.js';
 export const DEFAULT_PATH_PATTERNS: readonly string[] = Object.freeze([
   // sigil's own state
   '**/.sigil/**',
-  // common key file extensions
-  '**/*.pem',
+  // key-bearing file extensions (specific enough to have a low false-positive rate)
   '**/*.key',
   '**/*.keystore',
   '**/*.jks',
@@ -20,12 +19,6 @@ export const DEFAULT_PATH_PATTERNS: readonly string[] = Object.freeze([
   '**/.ssh/*_rsa',
   '**/.ssh/*_ed25519',
   '**/.ssh/*_ecdsa',
-  // env files (no extension, dotted prefix variants like .env.local)
-  '**/.env',
-  '**/.env.*',
-  // ethereum/geth keystore directories
-  '**/keystore',
-  '**/keystore/**',
   // GPG / pass(1) storage
   '**/.gnupg/**',
   '**/.password-store/**',

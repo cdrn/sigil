@@ -6,9 +6,9 @@ test('blocks cat of a .key file argument', () => {
   ok(scanBashCommand('cat /etc/ssl/private.key').blocked);
 });
 
-test('blocks cat of .env at any depth', () => {
-  ok(scanBashCommand('cat ./.env').blocked);
-  ok(scanBashCommand('cat /repo/.env.local').blocked);
+test('does NOT block cat of .env (no longer on the wardlist)', () => {
+  equal(scanBashCommand('cat ./.env').blocked, false);
+  equal(scanBashCommand('cat /repo/.env.local').blocked, false);
 });
 
 test('blocks reads from ~/.sigil/**', () => {
@@ -42,7 +42,7 @@ test('does NOT block ordinary commands', () => {
 });
 
 test('still blocks across compound statements', () => {
-  ok(scanBashCommand('echo hi && cat .env').blocked);
+  ok(scanBashCommand('echo hi && cat ~/.ssh/id_rsa').blocked);
   ok(scanBashCommand('true; cat /etc/pki/private.key').blocked);
 });
 
