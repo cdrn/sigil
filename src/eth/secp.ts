@@ -37,7 +37,10 @@ export function randomSecretKey(): Buffer {
  */
 export function signDigest(digest: Buffer | Uint8Array, privateKey: Buffer | Uint8Array): EthSignature {
   if (digest.length !== 32) throw new Error(`digest must be 32 bytes, got ${digest.length}`);
-  const sigR = secp.sign(digest, privateKey, { format: 'recovered' });
+  // prehash: false — the caller already passed a 32-byte keccak digest; noble's default is
+  // sha256(message) which would double-hash. Without this, sigs verify only against sigil's own
+  // recoverPublicKey (which has the same default) and fail Ethereum consensus recovery.
+  const sigR = secp.sign(digest, privateKey, { format: 'recovered', prehash: false });
   const recovery = sigR[0];
   if (recovery !== 0 && recovery !== 1) {
     throw new Error(`unexpected recovery byte: ${recovery}`);
@@ -62,7 +65,8 @@ export function recoverPublicKey(
   sigR[0] = sig.recovery;
   sigR.set(sig.r, 1);
   sigR.set(sig.s, 33);
-  const compressed = secp.recoverPublicKey(sigR, digest);
+  // prehash: false — see signDigest comment. Recovery must use the raw 32-byte digest.
+  const compressed = secp.recoverPublicKey(sigR, digest, { prehash: false });
   // recoverPublicKey returns compressed (33 bytes) — convert to uncompressed.
   const point = secp.Point.fromBytes(compressed);
   return Buffer.from(point.toBytes(false));
