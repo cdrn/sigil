@@ -46,13 +46,16 @@ jobs:
         run: |
           set -euo pipefail
           extract() {
+            # Resolve via path.resolve so Node treats the arg as a filesystem
+            # path, not a node_modules module specifier.
             node -e "
-              const lock = require('$1');
+              const path = require('path');
+              const lock = require(path.resolve('$1'));
               const pkgs = lock.packages || {};
               const lines = [];
-              for (const [path, info] of Object.entries(pkgs)) {
-                if (path === '') continue;
-                const name = path.replace(/^node_modules\//, '').replace(/\/node_modules\//g, '/');
+              for (const [p, info] of Object.entries(pkgs)) {
+                if (p === '') continue;
+                const name = p.replace(/^node_modules\//, '').replace(/\/node_modules\//g, '/');
                 if (info.version) lines.push(name + '@' + info.version);
               }
               lines.sort();
