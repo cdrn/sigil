@@ -8,7 +8,7 @@
 
 ## What it is
 
-One MCP server process, four bins, three runtime deps:
+One MCP server process, four bins, five runtime deps (all pinned, zero transitive):
 
 1. **`sigil-mcp`** — the only thing that runs. Claude Code spawns it per session via your `mcpServers` config; it dies when Claude exits. Holds unlocked keys in process memory (zeroized on shutdown, `sigil lock`, or unlock-failure; mlock against swap is planned). Keys at rest are encrypted with XChaCha20-Poly1305 and an Argon2id-derived key. Signs over stdio using a DIY MCP wire protocol (~200 lines, no SDK dep). Claude never sees key material — only opaque handles like `evm:executor`.
 2. **`sigil`** — control CLI. `init`, `status`, `portal add`/`list`/`remove`, `unlock`, `lock`.
@@ -169,11 +169,12 @@ What's deferred to follow-up PRs (still in [#3](https://github.com/cdrn/sigil/is
 Key-management libraries die from supply chain compromise, not from clever attacks on the code. Given the npm ecosystem in 2026 (Mini Shai-Hulud, Axios, pgserve, TanStack), `sigil` commits to:
 
 - **Zero install scripts.** No `postinstall`, `preinstall`, `prepare`. CI-enforced (planned: a CI guard that fails if any dep adds one).
-- **Three runtime deps, all version-pinned** (no caret ranges):
+- **Five runtime deps, all version-pinned** (no caret ranges), all zero-transitive — the entire `npm ls --omit dev` tree is exactly these five packages:
   - [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) for XChaCha20-Poly1305
   - [`@noble/hashes`](https://github.com/paulmillr/noble-hashes) for Argon2id, keccak256, sha2, HMAC
   - [`@noble/secp256k1`](https://github.com/paulmillr/noble-secp256k1) for ECDSA
-  All by paulmillr, audited, zero transitive deps.
+  - [`@iarna/toml`](https://github.com/iarna/iarna-toml) for parsing per-portal policy TOML files
+  - [`qrcode-generator`](https://github.com/kazuhikoarase/qrcode-generator) for `sigil portal qr` rendering
 - **No MCP SDK.** The official `@modelcontextprotocol/sdk` pulls 92 transitive deps (ajv, hono, cors, cross-spawn, etc) — unacceptable surface. We implement the MCP wire protocol directly in ~200 lines.
 - **No Bun.** Plain Node only. Bun is currently being weaponized by Mini Shai-Hulud as an evasion layer; we will not give that pattern any cover.
 - **Provenance attestations on every npm publish.** Starting v0.0.4, releases are built by [a GitHub Actions workflow](./.github/workflows/release.yml) under OIDC trusted-publisher auth, signed with a Sigstore attestation. No long-lived npm token; tampered or out-of-band publishes fail signature verification.

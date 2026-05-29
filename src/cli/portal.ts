@@ -163,6 +163,30 @@ export function portalListFromDisk(paths: SigilPaths, passphrase: Buffer): Porta
   return out;
 }
 
+/**
+ * Resolve a single portal's address by decrypting its keyfile, deriving
+ * the address, then disposing the secret. Throws if the handle is malformed
+ * or the keyfile is missing / can't be decrypted with this passphrase.
+ *
+ * Used by `sigil portal qr` — same trust model as `portal list`, just
+ * scoped to one handle so we don't decrypt the whole keychain to render
+ * a single QR.
+ */
+export function portalAddress(paths: SigilPaths, handle: string, passphrase: Buffer): string {
+  HandleTable.parseHandle(handle);
+  const keyfilePath = join(paths.keysDir, `${handle}.sigil`);
+  if (!existsSync(keyfilePath)) {
+    throw new Error(`portal "${handle}" not found at ${keyfilePath}`);
+  }
+  const blob = readFileSync(keyfilePath);
+  const sb = unsealKey(blob, passphrase);
+  try {
+    return addressFromPrivateKey(sb.bytes());
+  } finally {
+    sb.dispose();
+  }
+}
+
 export interface PortalRemoveResult {
   removed: boolean;
   path: string;
