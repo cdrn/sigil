@@ -30,7 +30,25 @@ jobs:
         # The next step audits the tree for any dep declaring an install
         # hook so we notice before a fresh user (without our .npmrc)
         # would actually execute it.
-        run: npm ci
+        #
+        # We wrap in a retry loop because npm registry fetches from GHA
+        # runners occasionally hang silently (no output for minutes); a
+        # short timeout + retry is cheaper than a 6h job-level cancel.
+        # --loglevel=info surfaces the per-tarball progress so a future
+        # hang has a recognizable failure mode in the log.
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            echo "::group::npm ci attempt ${attempt}"
+            if timeout 120 npm ci --loglevel=info --no-audit --no-fund --prefer-offline; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::npm ci timed out or failed on attempt ${attempt}"
+          done
+          echo "::error::npm ci failed after 3 attempts"
+          exit 1
       - name: Audit dep tree for install scripts
         # Fails the build if any package in node_modules declares
         # preinstall / install / postinstall. See script header for the
