@@ -154,3 +154,46 @@ test('different nonces produce different signatures (so tx is bound to nonce)', 
   const b = signTransaction({ ...base, nonce: 1 }, PRIV);
   ok(a !== b);
 });
+
+// External interop pin (regression for the prehash:true noble default).
+//
+// Earlier signDigest + recoverPublicKey both relied on noble v3's prehash
+// default of true, which made the signer secretly compute sha256(digest)
+// before signing. Locally everything looked fine because our recover shared
+// the same default — so the in-house round-trip matched. But every Ethereum
+// node (and `cast`) recovers directly from the raw keccak digest, so the
+// resulting signed tx recovered to the wrong address and was rejected by
+// the network with "insufficient funds" against the phantom signer.
+//
+// This test pins signTransaction's output against a known-good signed tx
+// produced by `cast mktx` (foundry) for the same key + fields. If a future
+// change reverts the prehash:false flags — or otherwise drifts from the
+// canonical EIP-1559 signing — this assertion fires immediately, before
+// anyone broadcasts a tx that silently recovers to a phantom signer.
+//
+// The private key below was historically published in a public testnet
+// playground; using it here as a deterministic fixture is fine.
+test('signs an EIP-1559 tx byte-identically to cast (prehash:true regression)', () => {
+  const fixturePriv = Buffer.from(
+    '23035b9a999c4903bf094fc7456dc59f5ee6bccad4bc43efbda5207d766b2ba7',
+    'hex',
+  );
+  const tx: Eip1559Tx = {
+    type: 'eip1559',
+    chainId: 11155111,
+    nonce: 0,
+    maxPriorityFeePerGas: 1440000n,
+    maxFeePerGas: 1962381502n,
+    gasLimit: 21000n,
+    to: '0x7f5b3dfb3a5dd4f5904ce397a4879fb18c22a311',
+    value: 2500000000000000000n,
+    data: '0x',
+  };
+  // Produced by `cast mktx --private-key 0x2303... <to> --value 2500000000000000000
+  // --chain 11155111 --nonce 0 --priority-gas-price 1440000 --gas-price 1962381502
+  // --gas-limit 21000`, verified by broadcasting to Sepolia (tx
+  // 0x9d36d2215d5e8615c89c8ca2e7f40ffbf8c6e1826f372b739f01d965b13a8488).
+  const expected =
+    '0x02f87483aa36a7808315f9008474f790be825208947f5b3dfb3a5dd4f5904ce397a4879fb18c22a3118822b1c8c1227a000080c080a06ed6edf834d4461cdc995fcfaa5ac44252830b2cc1bd47e6106a2d93b424372fa04f4aa529d64b30a177046789658c77ecae9f0c1c5c1398018eb9ed18190cc053';
+  equal(signTransaction(tx, fixturePriv), expected);
+});
