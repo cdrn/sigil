@@ -133,6 +133,76 @@ test('runCli: portal list — shows handles and addresses', async () => {
   }
 });
 
+test('runCli: portal qr — prints address, a QR block, and the address again', async () => {
+  const home = mkTmpHome();
+  try {
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    await runCli({
+      argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
+      stdout: new Writable({ write(_c, _e, cb) { cb(); } }),
+      stderr: new Writable({ write(_c, _e, cb) { cb(); } }),
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    const cap = capture();
+    const r = await runCli({
+      argv: ['portal', 'qr', 'evm:bot'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    equal(r.code, 0);
+    const out = cap.out();
+    // Address printed twice (above + below the QR), case-preserving.
+    const addr = out.match(/0x[0-9a-fA-F]{40}/g);
+    ok(addr !== null && addr.length >= 2, 'address printed at least twice');
+    equal(addr![0], addr![1]);
+    // QR block characters present.
+    ok(out.includes('▀'));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: portal qr — missing handle exits 2 with usage', async () => {
+  const home = mkTmpHome();
+  try {
+    const cap = capture();
+    const r = await runCli({
+      argv: ['portal', 'qr'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    equal(r.code, 2);
+    ok(/missing handle/.test(cap.err()));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: portal qr — unknown handle exits 1 with helpful error', async () => {
+  const home = mkTmpHome();
+  try {
+    const cap = capture();
+    const r = await runCli({
+      argv: ['portal', 'qr', 'evm:nope'],
+      stdout: cap.stdout, stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    equal(r.code, 1);
+    ok(/not found/.test(cap.err()));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
 test('runCli: portal remove — success and not-found cases', async () => {
   const home = mkTmpHome();
   try {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { unsealKey } from '../../src/crypto/index.js';
 import { addressFromPrivateKey } from '../../src/eth/index.js';
 import { resolvePaths } from '../../src/cli/paths.js';
-import { policyInit, portalAdd, portalListFromDisk, portalNew, portalRemove } from '../../src/cli/portal.js';
+import { policyInit, portalAdd, portalAddress, portalListFromDisk, portalNew, portalRemove } from '../../src/cli/portal.js';
 import { parsePolicy } from '../../src/policy/index.js';
 
 function mkTmpHome(): string {
@@ -205,6 +205,70 @@ test('portalListFromDisk: throws if any keyfile fails to decrypt', () => {
 // ---------------------------------------------------------------------------
 // portalRemove
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// portalAddress (for `sigil portal qr`)
+// ---------------------------------------------------------------------------
+
+test('portalAddress: decrypts a single keyfile and returns its derived address', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(7));
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    const addr = portalAddress(paths, 'evm:bot', Buffer.from('p'));
+    equal(addr, addressFromPrivateKey(priv(7)));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalAddress: rejects malformed handle', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    throws(() => portalAddress(paths, 'not-a-handle', Buffer.from('p')));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalAddress: errors helpfully when keyfile is missing', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    throws(
+      () => portalAddress(paths, 'evm:absent', Buffer.from('p')),
+      /portal "evm:absent" not found/,
+    );
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalAddress: wrong passphrase throws (does NOT return a junk address)', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('correct'),
+      kdfParams: TEST_KDF,
+    });
+    throws(() => portalAddress(paths, 'evm:bot', Buffer.from('wrong')));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
 
 test('portalRemove: removes an existing portal', () => {
   const home = mkTmpHome();

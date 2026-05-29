@@ -6,7 +6,8 @@ import { type InitScope, installInto } from '../hooks/install.js';
 import { parsePolicy } from '../policy/index.js';
 import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
-import { policyInit, portalAdd, portalListFromDisk, portalNew, portalRemove } from './portal.js';
+import { encode as encodeQr, renderTerminal } from '../qr/index.js';
+import { policyInit, portalAdd, portalAddress, portalListFromDisk, portalNew, portalRemove } from './portal.js';
 import { status } from './status.js';
 import { formatResult, lock, unlock } from './unlock.js';
 
@@ -18,6 +19,7 @@ Usage:
   sigil portal new <handle> [--strict]
   sigil portal add <handle> --key-file <path> [--no-remove-source] [--strict]
   sigil portal list
+  sigil portal qr <handle>
   sigil portal remove <handle>
   sigil policy show <handle>
   sigil policy init <handle> [--strict]
@@ -125,6 +127,7 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
           },
         },
         list: { options: {} },
+        qr: { options: {} },
         remove: { options: {} },
       });
       if (sub.command === 'new') {
@@ -191,6 +194,25 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         } finally {
           passphrase.fill(0);
         }
+        return { code: 0 };
+      }
+      if (sub.command === 'qr') {
+        const handle = sub.positionals[0];
+        if (!handle) throw new ArgsError('portal qr: missing handle');
+        const passphrase = await askPassphrase();
+        let address: string;
+        try {
+          address = portalAddress(paths, handle, passphrase);
+        } finally {
+          passphrase.fill(0);
+        }
+        // Byte mode preserves the address as-is. The earlier alphanumeric
+        // encoding uppercased everything, which broke wallets that validate
+        // EIP-55 (those reject "0X..." and all-uppercase as invalid).
+        const matrix = encodeQr(address);
+        out.write(`${handle} — ${address}\n\n`);
+        out.write(renderTerminal(matrix));
+        out.write(`\n${handle} — ${address}\n`);
         return { code: 0 };
       }
       if (sub.command === 'remove') {
