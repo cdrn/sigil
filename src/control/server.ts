@@ -1,5 +1,6 @@
-import { chmodSync, existsSync, unlinkSync } from 'node:fs';
+import { chmodSync, existsSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
+import { join } from 'node:path';
 import { HandleLoadError, HandleTable } from '../daemon/handles.js';
 import {
   CONTROL_SOCKET_VERSION,
@@ -16,6 +17,12 @@ export interface ControlServerOpts {
   socketPath: string;
   /** Directory of encrypted keyfiles to load on unlock. */
   keysDir: string;
+  /**
+   * Directory of per-portal policy TOMLs. Used to migrate legacy `eth:*.toml`
+   * filenames alongside the matching `eth:*.sigil` keyfiles when the handle
+   * prefix is renamed.
+   */
+  policyDir: string;
   /** Live HandleTable shared with the MCP server. */
   handles: HandleTable;
   /** Optional log sink — defaults to no-op. */
@@ -31,7 +38,8 @@ export type ControlLogEvent =
   | { kind: 'response'; ok: boolean; code?: string }
   | { kind: 'parse_error'; line: string }
   | { kind: 'stale_socket_cleared'; path: string }
-  | { kind: 'bind_error'; error: string };
+  | { kind: 'bind_error'; error: string }
+  | { kind: 'legacy_handle_migrated'; from: string; to: string };
 
 export interface ControlServerHandle {
   /** Returns when the server socket is closed (and the file unlinked). */
@@ -225,6 +233,19 @@ function doUnlock(passphraseB64: string, opts: ControlServerOpts, pid: number): 
   } catch {
     return { ok: false, code: 'INVALID_REQUEST', error: 'passphraseB64 is not valid base64' };
   }
+  // One-shot, idempotent migration of legacy "eth:" handle prefixes to "evm:".
+  // Pre-0.0.8 sigil named EVM-family keyfiles "eth:<name>.sigil" + matching
+  // policy "eth:<name>.toml". Same secp256k1 key, same address — the prefix
+  // is purely cosmetic, so we rename in place before loadFromDir runs (it
+  // expects the new prefix). Safe to run on every unlock: no-op if there's
+  // nothing matching the old pattern.
+  try {
+    migrateLegacyEthPrefix(opts.keysDir, opts.policyDir, (from, to) =>
+      opts.onLog?.({ kind: 'legacy_handle_migrated', from, to }),
+    );
+  } catch (err) {
+    return { ok: false, code: 'INTERNAL', error: `legacy-handle migration failed: ${(err as Error).message}` };
+  }
   try {
     opts.handles.loadFromDir(opts.keysDir, passphrase);
   } catch (err) {
@@ -241,6 +262,54 @@ function doUnlock(passphraseB64: string, opts: ControlServerOpts, pid: number): 
     passphrase.fill(0);
   }
   return statusResponse(opts.handles, pid);
+}
+
+/**
+ * Rename any pre-0.0.8 `eth:<name>.sigil` keyfiles to `evm:<name>.sigil`,
+ * plus the matching `eth:<name>.toml` policy file if present. The encrypted
+ * bytes are unchanged — same key, same address, same passphrase, same KDF
+ * params. Idempotent; safe to call on every unlock.
+ *
+ * Refuses to clobber an existing target (e.g. someone manually created both
+ * `eth:foo.sigil` and `evm:foo.sigil`). On any per-file failure, throws and
+ * lets the caller surface a clear error rather than silently half-migrating.
+ */
+function migrateLegacyEthPrefix(
+  keysDir: string,
+  policyDir: string,
+  onMigrated: (from: string, to: string) => void,
+): void {
+  if (!existsSync(keysDir)) return;
+  for (const filename of readdirSync(keysDir)) {
+    if (!filename.startsWith('eth:') || !filename.endsWith('.sigil')) continue;
+    const newName = 'evm:' + filename.slice('eth:'.length);
+    const oldKey = join(keysDir, filename);
+    const newKey = join(keysDir, newName);
+    if (existsSync(newKey)) {
+      throw new Error(
+        `cannot migrate ${filename}: ${newName} already exists at ${newKey}; resolve manually before unlocking`,
+      );
+    }
+    renameSync(oldKey, newKey);
+    onMigrated(filename, newName);
+
+    // Rename the matching policy file if it exists. Missing policy is fine —
+    // `policy init` can re-provision later, and the keyfile migration is the
+    // load-blocking half.
+    const policyBase = filename.slice(0, -'.sigil'.length);
+    const oldPolicy = join(policyDir, policyBase + '.toml');
+    if (existsSync(oldPolicy)) {
+      const newPolicyBase = 'evm:' + policyBase.slice('eth:'.length);
+      const newPolicy = join(policyDir, newPolicyBase + '.toml');
+      if (existsSync(newPolicy)) {
+        throw new Error(
+          `cannot migrate ${policyBase}.toml: ${newPolicyBase}.toml already exists at ${newPolicy}`,
+        );
+      }
+      renameSync(oldPolicy, newPolicy);
+      onMigrated(policyBase + '.toml', newPolicyBase + '.toml');
+    }
+  }
 }
 
 function statusResponse(handles: HandleTable, pid: number): ControlSuccess {

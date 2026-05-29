@@ -41,7 +41,7 @@ export interface ControlSuccess {
 
 export interface PortalSummary {
   handle: string;
-  kind: 'eth';
+  kind: 'evm';
   address: string;
 }
 

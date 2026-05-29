@@ -18,7 +18,7 @@ test('normalizePath: collapses repeated slashes and ../', () => {
 });
 
 test('globMatch: ** matches anything including separators', () => {
-  ok(globMatch('/x/y/z/.sigil/keys/eth:bot.sigil', '**/.sigil/**'));
+  ok(globMatch('/x/y/z/.sigil/keys/evm:bot.sigil', '**/.sigil/**'));
   ok(globMatch('.sigil/anything', '**/.sigil/**'));
 });
 
@@ -43,7 +43,7 @@ test('globMatch: tilde-prefixed pattern is expanded', () => {
 
 test('globMatch: trailing /** matches subpaths', () => {
   ok(globMatch(`${homedir()}/.sigil/sock`, '~/.sigil/**'));
-  ok(globMatch(`${homedir()}/.sigil/keys/eth:bot.sigil`, '~/.sigil/**'));
+  ok(globMatch(`${homedir()}/.sigil/keys/evm:bot.sigil`, '~/.sigil/**'));
   // Standard glob: `dir/**` matches things INSIDE dir, not dir itself.
   // Reading a bare directory through Read wouldn't return file content anyway.
   equal(globMatch(`${homedir()}/.sigil`, '~/.sigil/**'), false);

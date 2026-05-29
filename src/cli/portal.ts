@@ -136,7 +136,7 @@ function provisionPortal(
 
 export interface PortalInfo {
   handle: string;
-  kind: 'eth';
+  kind: 'evm';
   address: string;
 }
 
@@ -155,7 +155,7 @@ export function portalListFromDisk(paths: SigilPaths, passphrase: Buffer): Porta
     const blob = readFileSync(join(paths.keysDir, filename));
     const sb = unsealKey(blob, passphrase);
     try {
-      out.push({ handle, kind: 'eth', address: addressFromPrivateKey(sb.bytes()) });
+      out.push({ handle, kind: 'evm', address: addressFromPrivateKey(sb.bytes()) });
     } finally {
       sb.dispose();
     }

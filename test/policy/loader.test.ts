@@ -150,8 +150,8 @@ test('parsePolicy: allow_message_signing / allow_typed_data must be booleans', (
 
 test('permissivePolicyResolver returns a permissive policy for any handle', () => {
   const r = permissivePolicyResolver();
-  const p1 = r.resolve('eth:alice');
-  const p2 = r.resolve('eth:bob');
+  const p1 = r.resolve('evm:alice');
+  const p2 = r.resolve('evm:bob');
   equal(p1.mode, 'permissive');
   equal(p2.mode, 'permissive');
 });
@@ -163,9 +163,9 @@ test('permissivePolicyResolver returns a permissive policy for any handle', () =
 test('FileSystemPolicyResolver: loads policy from disk', () => {
   const dir = mkdtempSync(join(tmpdir(), 'sigil-pol-'));
   try {
-    writeFileSync(join(dir, 'eth:bot.toml'), `mode = "strict"\nchain_ids = [1]\n`);
+    writeFileSync(join(dir, 'evm:bot.toml'), `mode = "strict"\nchain_ids = [1]\n`);
     const r = new FileSystemPolicyResolver(dir);
-    const p = r.resolve('eth:bot');
+    const p = r.resolve('evm:bot');
     equal(p.mode, 'strict');
     deepEqual(p.chainIds, [1]);
   } finally {
@@ -178,7 +178,7 @@ test('FileSystemPolicyResolver: missing file → PolicyLoadError with helpful me
   try {
     const r = new FileSystemPolicyResolver(dir);
     let err: PolicyLoadError | null = null;
-    try { r.resolve('eth:absent'); } catch (e) { err = e as PolicyLoadError; }
+    try { r.resolve('evm:absent'); } catch (e) { err = e as PolicyLoadError; }
     ok(err instanceof PolicyLoadError);
     ok(/no policy file/.test(err!.message));
     // Error should steer users to the right command for an existing
@@ -193,9 +193,9 @@ test('FileSystemPolicyResolver: missing file → PolicyLoadError with helpful me
 test('FileSystemPolicyResolver: malformed file → PolicyLoadError', () => {
   const dir = mkdtempSync(join(tmpdir(), 'sigil-pol-'));
   try {
-    writeFileSync(join(dir, 'eth:bot.toml'), `mode = "yolo"`);
+    writeFileSync(join(dir, 'evm:bot.toml'), `mode = "yolo"`);
     const r = new FileSystemPolicyResolver(dir);
-    throws(() => r.resolve('eth:bot'), PolicyLoadError);
+    throws(() => r.resolve('evm:bot'), PolicyLoadError);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -204,12 +204,12 @@ test('FileSystemPolicyResolver: malformed file → PolicyLoadError', () => {
 test('FileSystemPolicyResolver: re-read picks up edits without restart', () => {
   const dir = mkdtempSync(join(tmpdir(), 'sigil-pol-'));
   try {
-    const file = join(dir, 'eth:bot.toml');
+    const file = join(dir, 'evm:bot.toml');
     writeFileSync(file, `mode = "permissive"`);
     const r = new FileSystemPolicyResolver(dir);
-    equal(r.resolve('eth:bot').mode, 'permissive');
+    equal(r.resolve('evm:bot').mode, 'permissive');
     writeFileSync(file, `mode = "strict"\nchain_ids = [1]\n`);
-    equal(r.resolve('eth:bot').mode, 'strict');
+    equal(r.resolve('evm:bot').mode, 'strict');
   } finally {
     rmSync(dir, { recursive: true });
   }

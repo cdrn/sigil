@@ -46,7 +46,7 @@ function makeCtx(): { ctx: MethodContext; cleanup: () => void; auditPath: string
   const dir = mkTmp();
   const auditPath = join(dir, 'audit.log');
   const handles = new HandleTable();
-  handles.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  handles.addEntry('evm:bot', new SecretBuffer(priv(1)));
   handles.markUnlocked();
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(auditPath, { now: () => ++now });
@@ -83,14 +83,14 @@ test('dispatch unknown method throws RpcMethodError(METHOD_NOT_FOUND)', () => {
 test('list_portals returns all loaded handles with derived addresses', () => {
   const { ctx, cleanup } = makeCtx();
   try {
-    ctx.handles.addEntry('eth:executor', new SecretBuffer(priv(2)));
+    ctx.handles.addEntry('evm:executor', new SecretBuffer(priv(2)));
     const result = dispatch('sigil_list_portals', null, ctx) as {
       portals: { handle: string; kind: string; address: string }[];
     };
     equal(result.portals.length, 2);
-    const bot = result.portals.find((p) => p.handle === 'eth:bot')!;
+    const bot = result.portals.find((p) => p.handle === 'evm:bot')!;
     equal(bot.address, addressFromPrivateKey(priv(1)));
-    const exec = result.portals.find((p) => p.handle === 'eth:executor')!;
+    const exec = result.portals.find((p) => p.handle === 'evm:executor')!;
     equal(exec.address, addressFromPrivateKey(priv(2)));
   } finally { cleanup(); }
 });
@@ -105,7 +105,7 @@ test('eth_sign_message recovers to the portal address and writes audit', () => {
     const messageHex = '0x' + Buffer.from('hello world', 'utf8').toString('hex');
     const result = dispatch(
       'sigil_eth_sign_message',
-      { portal: 'eth:bot', message: messageHex },
+      { portal: 'evm:bot', message: messageHex },
       ctx,
     ) as { signature: string };
     ok(result.signature.startsWith('0x'));
@@ -120,7 +120,7 @@ test('eth_sign_message recovers to the portal address and writes audit', () => {
     const entries = verifyChain(readFileSync(auditPath));
     equal(entries.length, 1);
     equal(entries[0]!.kind, 'eth_sign_message');
-    equal(entries[0]!.portal, 'eth:bot');
+    equal(entries[0]!.portal, 'evm:bot');
     equal(entries[0]!.decision, 'allow');
     equal(entries[0]!.sig, result.signature);
   } finally { cleanup(); }
@@ -141,7 +141,7 @@ test('eth_sign_message: unknown portal returns PORTAL_NOT_FOUND', () => {
   try {
     let err: RpcMethodError | null = null;
     try {
-      dispatch('sigil_eth_sign_message', { portal: 'eth:nope', message: '0xff' }, ctx);
+      dispatch('sigil_eth_sign_message', { portal: 'evm:nope', message: '0xff' }, ctx);
     } catch (e) { err = e as RpcMethodError; }
     ok(err); equal(err!.code, RPC_PORTAL_NOT_FOUND);
   } finally { cleanup(); }
@@ -152,7 +152,7 @@ test('eth_sign_message: non-hex message returns INVALID_PARAMS', () => {
   try {
     let err: RpcMethodError | null = null;
     try {
-      dispatch('sigil_eth_sign_message', { portal: 'eth:bot', message: 'not hex' }, ctx);
+      dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: 'not hex' }, ctx);
     } catch (e) { err = e as RpcMethodError; }
     ok(err); equal(err!.code, RPC_INVALID_PARAMS);
   } finally { cleanup(); }
@@ -187,7 +187,7 @@ test('eth_sign_transaction (eip1559) recovers to portal address and audits', () 
     };
     const result = dispatch(
       'sigil_eth_sign_transaction',
-      { portal: 'eth:bot', tx },
+      { portal: 'evm:bot', tx },
       ctx,
     ) as { signed: string };
     ok(result.signed.startsWith('0x02'));
@@ -227,21 +227,21 @@ test('eth_sign_transaction: malformed tx fields return INVALID_PARAMS', () => {
   try {
     throws(
       () => dispatch('sigil_eth_sign_transaction', {
-        portal: 'eth:bot',
+        portal: 'evm:bot',
         tx: { type: 'eip1559', chainId: 1, nonce: 'not-a-number', maxPriorityFeePerGas: 1, maxFeePerGas: 1, gasLimit: 21000, to: '0xdead', value: 0, data: '0x' },
       }, ctx),
       RpcMethodError,
     );
     throws(
       () => dispatch('sigil_eth_sign_transaction', {
-        portal: 'eth:bot',
+        portal: 'evm:bot',
         tx: { type: 'unknown' },
       }, ctx),
       RpcMethodError,
     );
     throws(
       () => dispatch('sigil_eth_sign_transaction', {
-        portal: 'eth:bot',
+        portal: 'evm:bot',
         tx: { type: 'eip1559', chainId: 1, nonce: 0, maxPriorityFeePerGas: 1, maxFeePerGas: 1, gasLimit: 21000, to: 'not-an-address', value: 0, data: '0x' },
       }, ctx),
       RpcMethodError,
@@ -253,7 +253,7 @@ test('eth_sign_transaction supports legacy tx', () => {
   const { ctx, cleanup } = makeCtx();
   try {
     const result = dispatch('sigil_eth_sign_transaction', {
-      portal: 'eth:bot',
+      portal: 'evm:bot',
       tx: {
         type: 'legacy',
         chainId: 1, nonce: 0,
@@ -271,7 +271,7 @@ test('eth_sign_transaction supports contract creation (to=null)', () => {
   const { ctx, cleanup } = makeCtx();
   try {
     const result = dispatch('sigil_eth_sign_transaction', {
-      portal: 'eth:bot',
+      portal: 'evm:bot',
       tx: {
         type: 'eip1559',
         chainId: 1, nonce: 0,
@@ -307,7 +307,7 @@ test('eth_sign_typed_data recovers to portal address (canonical EIP-712 example)
         contents: 'Hello, Bob!',
       },
     };
-    const result = dispatch('sigil_eth_sign_typed_data', { portal: 'eth:bot', typedData: td }, ctx) as {
+    const result = dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData: td }, ctx) as {
       signature: string;
     };
     equal(result.signature.length, 2 + 130);
@@ -322,7 +322,7 @@ test('eth_sign_typed_data: malformed typedData returns INVALID_PARAMS', () => {
   const { ctx, cleanup } = makeCtx();
   try {
     throws(
-      () => dispatch('sigil_eth_sign_typed_data', { portal: 'eth:bot', typedData: { junk: true } }, ctx),
+      () => dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData: { junk: true } }, ctx),
       RpcMethodError,
     );
   } finally { cleanup(); }
@@ -337,7 +337,7 @@ test('multiple sign calls produce a verifiable audit chain', () => {
   try {
     for (let i = 0; i < 5; i++) {
       const messageHex = '0x' + Buffer.from(`msg ${i}`, 'utf8').toString('hex');
-      dispatch('sigil_eth_sign_message', { portal: 'eth:bot', message: messageHex }, ctx);
+      dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: messageHex }, ctx);
     }
     ctx.audit.close();
     const entries = verifyChain(readFileSync(auditPath));
@@ -352,7 +352,7 @@ test('portal-not-found errors short-circuit before audit (current behavior, will
   // the audit file is never created.
   const { ctx, cleanup } = makeCtx();
   try {
-    try { dispatch('sigil_eth_sign_message', { portal: 'eth:nope', message: '0xff' }, ctx); }
+    try { dispatch('sigil_eth_sign_message', { portal: 'evm:nope', message: '0xff' }, ctx); }
     catch { /* expected */ }
     // No audit entries were written.
     equal(ctx.audit.head.nextSeq, 0);
@@ -371,11 +371,11 @@ test('sign methods throw DAEMON_LOCKED when the handle table is locked', () => {
     const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => 1 });
     const ctx: MethodContext = { handles, audit, policy: permissivePolicyResolver() };
     const calls: { method: string; params: unknown }[] = [
-      { method: 'sigil_eth_sign_message', params: { portal: 'eth:bot', message: '0xff' } },
+      { method: 'sigil_eth_sign_message', params: { portal: 'evm:bot', message: '0xff' } },
       {
         method: 'sigil_eth_sign_transaction',
         params: {
-          portal: 'eth:bot',
+          portal: 'evm:bot',
           tx: {
             type: 'legacy', chainId: 1, nonce: 0, gasPrice: 1, gasLimit: 21000,
             to: '0x' + '11'.repeat(20), value: 0, data: '0x',
@@ -385,7 +385,7 @@ test('sign methods throw DAEMON_LOCKED when the handle table is locked', () => {
       {
         method: 'sigil_eth_sign_typed_data',
         params: {
-          portal: 'eth:bot',
+          portal: 'evm:bot',
           typedData: {
             types: { EIP712Domain: [{ name: 'name', type: 'string' }], Mail: [{ name: 'msg', type: 'string' }] },
             primaryType: 'Mail',
@@ -441,14 +441,14 @@ test('unknown-portal vs locked-table are reported as distinct error codes', () =
     try {
       // Locked.
       let err: RpcMethodError | null = null;
-      try { dispatch('sigil_eth_sign_message', { portal: 'eth:x', message: '0xff' }, ctx); }
+      try { dispatch('sigil_eth_sign_message', { portal: 'evm:x', message: '0xff' }, ctx); }
       catch (e) { err = e as RpcMethodError; }
       equal(err!.code, RPC_DAEMON_LOCKED);
 
-      // Now unlock with zero portals on disk → still no eth:x.
+      // Now unlock with zero portals on disk → still no evm:x.
       handles.markUnlocked();
       err = null;
-      try { dispatch('sigil_eth_sign_message', { portal: 'eth:x', message: '0xff' }, ctx); }
+      try { dispatch('sigil_eth_sign_message', { portal: 'evm:x', message: '0xff' }, ctx); }
       catch (e) { err = e as RpcMethodError; }
       equal(err!.code, RPC_PORTAL_NOT_FOUND);
     } finally {
@@ -472,7 +472,7 @@ function strictResolverFor(toml: string): PolicyResolver {
 function makeCtxWithPolicy(policy: PolicyResolver) {
   const dir = mkTmp();
   const handles = new HandleTable();
-  handles.addEntry('eth:bot', new SecretBuffer(priv(1)));
+  handles.addEntry('evm:bot', new SecretBuffer(priv(1)));
   handles.markUnlocked();
   let now = 1_700_000_000_000;
   const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => ++now });
@@ -486,7 +486,7 @@ function makeCtxWithPolicy(policy: PolicyResolver) {
 test('policy: permissive resolver allows all sign methods through', () => {
   const { ctx, cleanup } = makeCtxWithPolicy(permissivePolicyResolver());
   try {
-    const r = dispatch('sigil_eth_sign_message', { portal: 'eth:bot', message: '0x68' }, ctx) as { signature: string };
+    const r = dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0x68' }, ctx) as { signature: string };
     ok(r.signature.startsWith('0x'));
   } finally { cleanup(); }
 });
@@ -500,7 +500,7 @@ test('policy: strict mode denies personal_sign when allow_message_signing=false'
   const { ctx, cleanup } = makeCtxWithPolicy(policy);
   try {
     let err: RpcMethodError | null = null;
-    try { dispatch('sigil_eth_sign_message', { portal: 'eth:bot', message: '0xff' }, ctx); }
+    try { dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0xff' }, ctx); }
     catch (e) { err = e as RpcMethodError; }
     ok(err instanceof RpcMethodError);
     equal(err!.code, RPC_POLICY_DENIED);
@@ -520,7 +520,7 @@ test('policy: strict mode denies tx with value over cap', () => {
     let err: RpcMethodError | null = null;
     try {
       dispatch('sigil_eth_sign_transaction', {
-        portal: 'eth:bot',
+        portal: 'evm:bot',
         tx: {
           type: 'legacy', chainId: 1, nonce: 0, gasPrice: 1, gasLimit: 21000,
           to: '0x000000000000000000000000000000000000dead', value: 101, data: '0x',
@@ -537,13 +537,13 @@ test('policy: missing policy file → POLICY_DENIED + audit deny', () => {
   // PolicyResolver that always throws — mimics the FileSystemPolicyResolver
   // when the user's policy file doesn't exist.
   const failing: PolicyResolver = {
-    resolve: () => { throw new PolicyLoadError('no policy file for portal "eth:bot"'); },
+    resolve: () => { throw new PolicyLoadError('no policy file for portal "evm:bot"'); },
   };
   const { ctx, cleanup, auditPath } = makeCtxWithPolicy(failing);
   try {
     let err: RpcMethodError | null = null;
     try {
-      dispatch('sigil_eth_sign_message', { portal: 'eth:bot', message: '0xff' }, ctx);
+      dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0xff' }, ctx);
     } catch (e) { err = e as RpcMethodError; }
     equal(err!.code, RPC_POLICY_DENIED);
     ok(/no policy file/.test(err!.message));
@@ -569,7 +569,7 @@ test('policy: deny short-circuits sign — no signature, no allow entry in audit
   try {
     try {
       dispatch('sigil_eth_sign_transaction', {
-        portal: 'eth:bot',
+        portal: 'evm:bot',
         tx: {
           type: 'legacy', chainId: 1, nonce: 0, gasPrice: 1, gasLimit: 21000,
           to: '0x1111111111111111111111111111111111111111', value: 0, data: '0x',

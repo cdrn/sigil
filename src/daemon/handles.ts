@@ -8,14 +8,20 @@ import {
 } from '../crypto/index.js';
 
 const KEYFILE_EXT = '.sigil';
-// Handle format: <kind>:<name> where kind is currently always "eth" and name
+// Handle format: <kind>:<name> where kind is currently always "evm" and name
 // is restricted to characters that are safe both as identifiers and as
 // filenames. Disallow '.', '/', and whitespace.
-const HANDLE_RE = /^(eth):([a-zA-Z0-9_-]+)$/;
+//
+// The kind is "evm" rather than "eth" because a single secp256k1 key derives
+// to the same 20-byte address on every EVM chain (Ethereum, Arbitrum, Base,
+// Optimism, Polygon, etc.). Naming the kind after a single chain would imply
+// a scope the key doesn't actually have — chain restrictions live in the
+// per-portal policy file (chain_ids allowlist), not in the handle.
+const HANDLE_RE = /^(evm):([a-zA-Z0-9_-]+)$/;
 
 export interface PortalInfo {
   handle: string;
-  kind: 'eth';
+  kind: 'evm';
   address: string;
 }
 
@@ -48,10 +54,10 @@ export class HandleTable {
   #unlocked = false;
   #disposed = false;
 
-  static parseHandle(handle: string): { kind: 'eth'; name: string } {
+  static parseHandle(handle: string): { kind: 'evm'; name: string } {
     const m = HANDLE_RE.exec(handle);
     if (!m) throw new HandleLoadError(`invalid handle "${handle}": expected <kind>:<name>`);
-    return { kind: m[1] as 'eth', name: m[2]! };
+    return { kind: m[1] as 'evm', name: m[2]! };
   }
 
   static handleFromFilename(filename: string): string | null {
@@ -131,7 +137,7 @@ export class HandleTable {
     const address = addressFromPrivateKey(secret.bytes());
     this.#entries.set(handle, {
       secret,
-      info: { handle, kind: 'eth', address },
+      info: { handle, kind: 'evm', address },
     });
   }
 
