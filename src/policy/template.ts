@@ -64,6 +64,13 @@ allow_message_signing = false
 # OpenSea orders, gasless approvals). Treat with the same care as signing
 # transactions. Set true to permit.
 allow_typed_data = false
+
+# Optional: above this wei amount, sigil pushes a notification to your
+# phone and waits for an explicit approve/deny tap before signing. Must be
+# strictly less than max_value_wei. Requires a [confirm.ntfy] block in
+# ~/.sigil/config.toml; without one, sigil-mcp refuses to start.
+# Example: confirm anything above 0.01 ETH.
+# require_confirm_above_wei = "10000000000000000"
 `;
 
 export type PolicyMode = 'permissive' | 'strict';

@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { equal, ok, throws } from 'node:assert/strict';
+import { equal, ok, rejects, throws } from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -65,11 +65,11 @@ function makeCtx(): { ctx: MethodContext; cleanup: () => void; auditPath: string
 // dispatch / method routing
 // ---------------------------------------------------------------------------
 
-test('dispatch unknown method throws RpcMethodError(METHOD_NOT_FOUND)', () => {
+test('dispatch unknown method throws RpcMethodError(METHOD_NOT_FOUND)', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
     let err: RpcMethodError | null = null;
-    try { dispatch('does_not_exist', null, ctx); }
+    try { await dispatch('does_not_exist', null, ctx); }
     catch (e) { err = e as RpcMethodError; }
     ok(err instanceof RpcMethodError);
     equal(err!.code, RPC_METHOD_NOT_FOUND);
@@ -80,11 +80,11 @@ test('dispatch unknown method throws RpcMethodError(METHOD_NOT_FOUND)', () => {
 // sigil_list_portals
 // ---------------------------------------------------------------------------
 
-test('list_portals returns all loaded handles with derived addresses', () => {
+test('list_portals returns all loaded handles with derived addresses', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
     ctx.handles.addEntry('evm:executor', new SecretBuffer(priv(2)));
-    const result = dispatch('sigil_list_portals', null, ctx) as {
+    const result = await dispatch('sigil_list_portals', null, ctx) as {
       portals: { handle: string; kind: string; address: string }[];
     };
     equal(result.portals.length, 2);
@@ -99,11 +99,11 @@ test('list_portals returns all loaded handles with derived addresses', () => {
 // sigil_eth_sign_message
 // ---------------------------------------------------------------------------
 
-test('eth_sign_message recovers to the portal address and writes audit', () => {
+test('eth_sign_message recovers to the portal address and writes audit', async () => {
   const { ctx, auditPath, cleanup } = makeCtx();
   try {
     const messageHex = '0x' + Buffer.from('hello world', 'utf8').toString('hex');
-    const result = dispatch(
+    const result = await dispatch(
       'sigil_eth_sign_message',
       { portal: 'evm:bot', message: messageHex },
       ctx,
@@ -126,44 +126,44 @@ test('eth_sign_message recovers to the portal address and writes audit', () => {
   } finally { cleanup(); }
 });
 
-test('eth_sign_message: missing portal returns INVALID_PARAMS', () => {
+test('eth_sign_message: missing portal returns INVALID_PARAMS', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
     let err: RpcMethodError | null = null;
-    try { dispatch('sigil_eth_sign_message', { message: '0xff' }, ctx); }
+    try { await dispatch('sigil_eth_sign_message', { message: '0xff' }, ctx); }
     catch (e) { err = e as RpcMethodError; }
     ok(err); equal(err!.code, RPC_INVALID_PARAMS);
   } finally { cleanup(); }
 });
 
-test('eth_sign_message: unknown portal returns PORTAL_NOT_FOUND', () => {
+test('eth_sign_message: unknown portal returns PORTAL_NOT_FOUND', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
     let err: RpcMethodError | null = null;
     try {
-      dispatch('sigil_eth_sign_message', { portal: 'evm:nope', message: '0xff' }, ctx);
+      await dispatch('sigil_eth_sign_message', { portal: 'evm:nope', message: '0xff' }, ctx);
     } catch (e) { err = e as RpcMethodError; }
     ok(err); equal(err!.code, RPC_PORTAL_NOT_FOUND);
   } finally { cleanup(); }
 });
 
-test('eth_sign_message: non-hex message returns INVALID_PARAMS', () => {
+test('eth_sign_message: non-hex message returns INVALID_PARAMS', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
     let err: RpcMethodError | null = null;
     try {
-      dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: 'not hex' }, ctx);
+      await dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: 'not hex' }, ctx);
     } catch (e) { err = e as RpcMethodError; }
     ok(err); equal(err!.code, RPC_INVALID_PARAMS);
   } finally { cleanup(); }
 });
 
-test('eth_sign_message: params not an object returns INVALID_PARAMS', () => {
+test('eth_sign_message: params not an object returns INVALID_PARAMS', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
-    throws(() => dispatch('sigil_eth_sign_message', 'oops', ctx), RpcMethodError);
-    throws(() => dispatch('sigil_eth_sign_message', null, ctx), RpcMethodError);
-    throws(() => dispatch('sigil_eth_sign_message', [1, 2], ctx), RpcMethodError);
+    await rejects(() => dispatch('sigil_eth_sign_message', 'oops', ctx), RpcMethodError);
+    await rejects(() => dispatch('sigil_eth_sign_message', null, ctx), RpcMethodError);
+    await rejects(() => dispatch('sigil_eth_sign_message', [1, 2], ctx), RpcMethodError);
   } finally { cleanup(); }
 });
 
@@ -171,7 +171,7 @@ test('eth_sign_message: params not an object returns INVALID_PARAMS', () => {
 // sigil_eth_sign_transaction
 // ---------------------------------------------------------------------------
 
-test('eth_sign_transaction (eip1559) recovers to portal address and audits', () => {
+test('eth_sign_transaction (eip1559) recovers to portal address and audits', async () => {
   const { ctx, auditPath, cleanup } = makeCtx();
   try {
     const tx = {
@@ -185,7 +185,7 @@ test('eth_sign_transaction (eip1559) recovers to portal address and audits', () 
       value: '100',
       data: '0x',
     };
-    const result = dispatch(
+    const result = await dispatch(
       'sigil_eth_sign_transaction',
       { portal: 'evm:bot', tx },
       ctx,
@@ -222,25 +222,22 @@ test('eth_sign_transaction (eip1559) recovers to portal address and audits', () 
   } finally { cleanup(); }
 });
 
-test('eth_sign_transaction: malformed tx fields return INVALID_PARAMS', () => {
+test('eth_sign_transaction: malformed tx fields return INVALID_PARAMS', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
-    throws(
-      () => dispatch('sigil_eth_sign_transaction', {
+    await rejects(() => dispatch('sigil_eth_sign_transaction', {
         portal: 'evm:bot',
         tx: { type: 'eip1559', chainId: 1, nonce: 'not-a-number', maxPriorityFeePerGas: 1, maxFeePerGas: 1, gasLimit: 21000, to: '0xdead', value: 0, data: '0x' },
       }, ctx),
       RpcMethodError,
     );
-    throws(
-      () => dispatch('sigil_eth_sign_transaction', {
+    await rejects(() => dispatch('sigil_eth_sign_transaction', {
         portal: 'evm:bot',
         tx: { type: 'unknown' },
       }, ctx),
       RpcMethodError,
     );
-    throws(
-      () => dispatch('sigil_eth_sign_transaction', {
+    await rejects(() => dispatch('sigil_eth_sign_transaction', {
         portal: 'evm:bot',
         tx: { type: 'eip1559', chainId: 1, nonce: 0, maxPriorityFeePerGas: 1, maxFeePerGas: 1, gasLimit: 21000, to: 'not-an-address', value: 0, data: '0x' },
       }, ctx),
@@ -249,10 +246,10 @@ test('eth_sign_transaction: malformed tx fields return INVALID_PARAMS', () => {
   } finally { cleanup(); }
 });
 
-test('eth_sign_transaction supports legacy tx', () => {
+test('eth_sign_transaction supports legacy tx', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
-    const result = dispatch('sigil_eth_sign_transaction', {
+    const result = await dispatch('sigil_eth_sign_transaction', {
       portal: 'evm:bot',
       tx: {
         type: 'legacy',
@@ -267,10 +264,10 @@ test('eth_sign_transaction supports legacy tx', () => {
   } finally { cleanup(); }
 });
 
-test('eth_sign_transaction supports contract creation (to=null)', () => {
+test('eth_sign_transaction supports contract creation (to=null)', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
-    const result = dispatch('sigil_eth_sign_transaction', {
+    const result = await dispatch('sigil_eth_sign_transaction', {
       portal: 'evm:bot',
       tx: {
         type: 'eip1559',
@@ -287,7 +284,7 @@ test('eth_sign_transaction supports contract creation (to=null)', () => {
 // sigil_eth_sign_typed_data
 // ---------------------------------------------------------------------------
 
-test('eth_sign_typed_data recovers to portal address (canonical EIP-712 example)', () => {
+test('eth_sign_typed_data recovers to portal address (canonical EIP-712 example)', async () => {
   const { ctx, auditPath, cleanup } = makeCtx();
   try {
     const td = {
@@ -307,7 +304,7 @@ test('eth_sign_typed_data recovers to portal address (canonical EIP-712 example)
         contents: 'Hello, Bob!',
       },
     };
-    const result = dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData: td }, ctx) as {
+    const result = await dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData: td }, ctx) as {
       signature: string;
     };
     equal(result.signature.length, 2 + 130);
@@ -318,11 +315,10 @@ test('eth_sign_typed_data recovers to portal address (canonical EIP-712 example)
   } finally { cleanup(); }
 });
 
-test('eth_sign_typed_data: malformed typedData returns INVALID_PARAMS', () => {
+test('eth_sign_typed_data: malformed typedData returns INVALID_PARAMS', async () => {
   const { ctx, cleanup } = makeCtx();
   try {
-    throws(
-      () => dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData: { junk: true } }, ctx),
+    await rejects(() => dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData: { junk: true } }, ctx),
       RpcMethodError,
     );
   } finally { cleanup(); }
@@ -332,12 +328,12 @@ test('eth_sign_typed_data: malformed typedData returns INVALID_PARAMS', () => {
 // Audit chain stays linked across multiple calls
 // ---------------------------------------------------------------------------
 
-test('multiple sign calls produce a verifiable audit chain', () => {
+test('multiple sign calls produce a verifiable audit chain', async () => {
   const { ctx, auditPath, cleanup } = makeCtx();
   try {
     for (let i = 0; i < 5; i++) {
       const messageHex = '0x' + Buffer.from(`msg ${i}`, 'utf8').toString('hex');
-      dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: messageHex }, ctx);
+      await dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: messageHex }, ctx);
     }
     ctx.audit.close();
     const entries = verifyChain(readFileSync(auditPath));
@@ -346,13 +342,13 @@ test('multiple sign calls produce a verifiable audit chain', () => {
   } finally { cleanup(); }
 });
 
-test('portal-not-found errors short-circuit before audit (current behavior, will change with policy in #3)', () => {
+test('portal-not-found errors short-circuit before audit (current behavior, will change with policy in #3)', async () => {
   // Current behavior: a portal-not-found error fails before any audit append.
   // When policy lands (#3) we'll audit the deny too. For now: not audited;
   // the audit file is never created.
   const { ctx, cleanup } = makeCtx();
   try {
-    try { dispatch('sigil_eth_sign_message', { portal: 'evm:nope', message: '0xff' }, ctx); }
+    try { await dispatch('sigil_eth_sign_message', { portal: 'evm:nope', message: '0xff' }, ctx); }
     catch { /* expected */ }
     // No audit entries were written.
     equal(ctx.audit.head.nextSeq, 0);
@@ -363,7 +359,7 @@ test('portal-not-found errors short-circuit before audit (current behavior, will
 // DAEMON_LOCKED
 // ---------------------------------------------------------------------------
 
-test('sign methods throw DAEMON_LOCKED when the handle table is locked', () => {
+test('sign methods throw DAEMON_LOCKED when the handle table is locked', async () => {
   const dir = mkTmp();
   try {
     const handles = new HandleTable();
@@ -398,7 +394,7 @@ test('sign methods throw DAEMON_LOCKED when the handle table is locked', () => {
     try {
       for (const { method, params } of calls) {
         let err: RpcMethodError | null = null;
-        try { dispatch(method, params, ctx); }
+        try { await dispatch(method, params, ctx); }
         catch (e) { err = e as RpcMethodError; }
         ok(err instanceof RpcMethodError, `${method} should throw RpcMethodError`);
         equal(err!.code, RPC_DAEMON_LOCKED, `${method} should return DAEMON_LOCKED`);
@@ -413,14 +409,14 @@ test('sign methods throw DAEMON_LOCKED when the handle table is locked', () => {
   }
 });
 
-test('list_portals works while locked (returns empty list)', () => {
+test('list_portals works while locked (returns empty list)', async () => {
   const dir = mkTmp();
   try {
     const handles = new HandleTable();
     const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => 1 });
     const ctx: MethodContext = { handles, audit, policy: permissivePolicyResolver() };
     try {
-      const result = dispatch('sigil_list_portals', null, ctx) as { portals: unknown[] };
+      const result = await dispatch('sigil_list_portals', null, ctx) as { portals: unknown[] };
       equal(result.portals.length, 0);
     } finally {
       audit.close();
@@ -431,7 +427,7 @@ test('list_portals works while locked (returns empty list)', () => {
   }
 });
 
-test('unknown-portal vs locked-table are reported as distinct error codes', () => {
+test('unknown-portal vs locked-table are reported as distinct error codes', async () => {
   // Locked → DAEMON_LOCKED. Unlocked-but-handle-missing → PORTAL_NOT_FOUND.
   const dir = mkTmp();
   try {
@@ -441,14 +437,14 @@ test('unknown-portal vs locked-table are reported as distinct error codes', () =
     try {
       // Locked.
       let err: RpcMethodError | null = null;
-      try { dispatch('sigil_eth_sign_message', { portal: 'evm:x', message: '0xff' }, ctx); }
+      try { await dispatch('sigil_eth_sign_message', { portal: 'evm:x', message: '0xff' }, ctx); }
       catch (e) { err = e as RpcMethodError; }
       equal(err!.code, RPC_DAEMON_LOCKED);
 
       // Now unlock with zero portals on disk → still no evm:x.
       handles.markUnlocked();
       err = null;
-      try { dispatch('sigil_eth_sign_message', { portal: 'evm:x', message: '0xff' }, ctx); }
+      try { await dispatch('sigil_eth_sign_message', { portal: 'evm:x', message: '0xff' }, ctx); }
       catch (e) { err = e as RpcMethodError; }
       equal(err!.code, RPC_PORTAL_NOT_FOUND);
     } finally {
@@ -483,15 +479,15 @@ function makeCtxWithPolicy(policy: PolicyResolver) {
   };
 }
 
-test('policy: permissive resolver allows all sign methods through', () => {
+test('policy: permissive resolver allows all sign methods through', async () => {
   const { ctx, cleanup } = makeCtxWithPolicy(permissivePolicyResolver());
   try {
-    const r = dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0x68' }, ctx) as { signature: string };
+    const r = await dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0x68' }, ctx) as { signature: string };
     ok(r.signature.startsWith('0x'));
   } finally { cleanup(); }
 });
 
-test('policy: strict mode denies personal_sign when allow_message_signing=false', () => {
+test('policy: strict mode denies personal_sign when allow_message_signing=false', async () => {
   const policy = strictResolverFor(`
     mode = "strict"
     chain_ids = [1]
@@ -500,7 +496,7 @@ test('policy: strict mode denies personal_sign when allow_message_signing=false'
   const { ctx, cleanup } = makeCtxWithPolicy(policy);
   try {
     let err: RpcMethodError | null = null;
-    try { dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0xff' }, ctx); }
+    try { await dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0xff' }, ctx); }
     catch (e) { err = e as RpcMethodError; }
     ok(err instanceof RpcMethodError);
     equal(err!.code, RPC_POLICY_DENIED);
@@ -508,7 +504,7 @@ test('policy: strict mode denies personal_sign when allow_message_signing=false'
   } finally { cleanup(); }
 });
 
-test('policy: strict mode denies tx with value over cap', () => {
+test('policy: strict mode denies tx with value over cap', async () => {
   const policy = strictResolverFor(`
     mode = "strict"
     chain_ids = [1]
@@ -519,7 +515,7 @@ test('policy: strict mode denies tx with value over cap', () => {
   try {
     let err: RpcMethodError | null = null;
     try {
-      dispatch('sigil_eth_sign_transaction', {
+      await dispatch('sigil_eth_sign_transaction', {
         portal: 'evm:bot',
         tx: {
           type: 'legacy', chainId: 1, nonce: 0, gasPrice: 1, gasLimit: 21000,
@@ -533,7 +529,7 @@ test('policy: strict mode denies tx with value over cap', () => {
   } finally { cleanup(); }
 });
 
-test('policy: missing policy file → POLICY_DENIED + audit deny', () => {
+test('policy: missing policy file → POLICY_DENIED + audit deny', async () => {
   // PolicyResolver that always throws — mimics the FileSystemPolicyResolver
   // when the user's policy file doesn't exist.
   const failing: PolicyResolver = {
@@ -543,7 +539,7 @@ test('policy: missing policy file → POLICY_DENIED + audit deny', () => {
   try {
     let err: RpcMethodError | null = null;
     try {
-      dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0xff' }, ctx);
+      await dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0xff' }, ctx);
     } catch (e) { err = e as RpcMethodError; }
     equal(err!.code, RPC_POLICY_DENIED);
     ok(/no policy file/.test(err!.message));
@@ -558,7 +554,7 @@ test('policy: missing policy file → POLICY_DENIED + audit deny', () => {
   } finally { cleanup(); }
 });
 
-test('policy: deny short-circuits sign — no signature, no allow entry in audit', () => {
+test('policy: deny short-circuits sign — no signature, no allow entry in audit', async () => {
   const policy = strictResolverFor(`
     mode = "strict"
     chain_ids = [1]
@@ -568,7 +564,7 @@ test('policy: deny short-circuits sign — no signature, no allow entry in audit
   const { ctx, cleanup, auditPath } = makeCtxWithPolicy(policy);
   try {
     try {
-      dispatch('sigil_eth_sign_transaction', {
+      await dispatch('sigil_eth_sign_transaction', {
         portal: 'evm:bot',
         tx: {
           type: 'legacy', chainId: 1, nonce: 0, gasPrice: 1, gasLimit: 21000,
@@ -582,4 +578,221 @@ test('policy: deny short-circuits sign — no signature, no allow entry in audit
     equal(entry.decision, 'deny');
     equal(entry.sig, undefined);
   } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// Confirm gate integration
+// ---------------------------------------------------------------------------
+
+import { ConfirmGate, startAckServer, type AckServer, type ConfirmRequest, type ConfirmTransport } from '../../src/confirm/index.js';
+
+class ScriptedTransport implements ConfirmTransport {
+  readonly name = 'scripted';
+  captured: ConfirmRequest | undefined;
+  /** When set, send() throws this. Otherwise it captures and lets the test
+   *  drive the human-click step via approveUrl/denyUrl. */
+  failNext: Error | undefined;
+  async send(req: ConfirmRequest): Promise<void> {
+    if (this.failNext) {
+      const err = this.failNext;
+      this.failNext = undefined;
+      throw err;
+    }
+    this.captured = req;
+  }
+}
+
+async function makeCtxWithConfirm(
+  policyToml: string,
+): Promise<{
+  ctx: MethodContext;
+  transport: ScriptedTransport;
+  ack: AckServer;
+  cleanup: () => Promise<void>;
+  auditPath: string;
+}> {
+  const dir = mkTmp();
+  const handles = new HandleTable();
+  handles.addEntry('evm:bot', new SecretBuffer(priv(1)));
+  handles.markUnlocked();
+  let now = 1_700_000_000_000;
+  const audit = new AuditWriter(join(dir, 'audit.log'), { now: () => ++now });
+  const policy = strictResolverFor(policyToml);
+  const transport = new ScriptedTransport();
+  const ack = await startAckServer();
+  const confirm = new ConfirmGate({ transport, ackServer: ack, timeoutMs: 1000 });
+  return {
+    ctx: { handles, audit, policy, confirm },
+    transport,
+    ack,
+    auditPath: join(dir, 'audit.log'),
+    cleanup: async () => {
+      audit.close();
+      handles.dispose();
+      await ack.close();
+      rmSync(dir, { recursive: true });
+    },
+  };
+}
+
+const DEST = '0x000000000000000000000000000000000000dead';
+
+function txAtValue(value: number | bigint): Record<string, unknown> {
+  return {
+    type: 'legacy', chainId: 1, nonce: 0,
+    gasPrice: '20000000000', gasLimit: 21000,
+    to: DEST, value, data: '0x',
+  };
+}
+
+test('confirm: tx below threshold signs without consulting the gate', async () => {
+  const { ctx, transport, cleanup } = await makeCtxWithConfirm(`
+    mode = "permissive"
+    require_confirm_above_wei = "100"
+  `);
+  try {
+    const r = await dispatch('sigil_eth_sign_transaction', {
+      portal: 'evm:bot', tx: txAtValue(50),
+    }, ctx) as { signed: string };
+    ok(r.signed.startsWith('0x'));
+    equal(transport.captured, undefined);
+  } finally { await cleanup(); }
+});
+
+test('confirm: tx over threshold pushes summary + signs on approve', async () => {
+  const { ctx, transport, cleanup, auditPath } = await makeCtxWithConfirm(`
+    mode = "permissive"
+    require_confirm_above_wei = "100"
+  `);
+  try {
+    const signing = dispatch('sigil_eth_sign_transaction', {
+      portal: 'evm:bot', tx: txAtValue(500),
+    }, ctx) as Promise<{ signed: string }>;
+    signing.catch(() => { /* ensure no unhandled rejection if a regression makes us deny */ });
+    await new Promise((r) => setImmediate(r));
+    ok(transport.captured, 'transport should have been hit');
+    ok(/0x0000…dead/.test(transport.captured!.summary), transport.captured!.summary);
+    await fetch(transport.captured!.approveUrl, { method: 'POST' });
+    const r = await signing;
+    ok(r.signed.startsWith('0x'));
+    ctx.audit.close();
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries.length, 1);
+    equal(entries[0]!.decision, 'allow');
+  } finally { await cleanup(); }
+});
+
+test('confirm: deny click → POLICY_DENIED + audit deny + no signature', async () => {
+  const { ctx, transport, cleanup, auditPath } = await makeCtxWithConfirm(`
+    mode = "permissive"
+    require_confirm_above_wei = "100"
+  `);
+  try {
+    const signing = dispatch('sigil_eth_sign_transaction', {
+      portal: 'evm:bot', tx: txAtValue(500),
+    }, ctx);
+    // Suppress the unhandled-rejection signal — we attach a catch later via
+    // await, but Node's test runner is eager about flagging the gap.
+    signing.catch(() => { /* handled below */ });
+    await new Promise((r) => setImmediate(r));
+    await fetch(transport.captured!.denyUrl, { method: 'POST' });
+    let err: RpcMethodError | null = null;
+    try { await signing; } catch (e) { err = e as RpcMethodError; }
+    ok(err instanceof RpcMethodError);
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/confirm denied by human/.test(err!.message));
+    ctx.audit.close();
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries.length, 1);
+    equal(entries[0]!.decision, 'deny');
+    equal(entries[0]!.sig, undefined);
+  } finally { await cleanup(); }
+});
+
+test('confirm: timeout → POLICY_DENIED with "timed out" reason', async () => {
+  const { ctx, cleanup } = await makeCtxWithConfirm(`
+    mode = "permissive"
+    require_confirm_above_wei = "100"
+  `);
+  const ack2 = await startAckServer();
+  ctx.confirm = new ConfirmGate({
+    transport: new ScriptedTransport(),
+    ackServer: ack2,
+    timeoutMs: 30,
+  });
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', {
+        portal: 'evm:bot', tx: txAtValue(500),
+      }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/timed out/.test(err!.message));
+  } finally {
+    await ack2.close();
+    await cleanup();
+  }
+});
+
+test('confirm: transport error → POLICY_DENIED with transport error reason (fail-closed)', async () => {
+  const { ctx, transport, cleanup } = await makeCtxWithConfirm(`
+    mode = "permissive"
+    require_confirm_above_wei = "100"
+  `);
+  transport.failNext = new Error('ECONNREFUSED');
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', {
+        portal: 'evm:bot', tx: txAtValue(500),
+      }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/confirm transport error/.test(err!.message));
+    ok(/ECONNREFUSED/.test(err!.message));
+  } finally { await cleanup(); }
+});
+
+test('confirm: no confirm gate in context → POLICY_DENIED, never signs', async () => {
+  const { ctx, cleanup, auditPath } = await makeCtxWithConfirm(`
+    mode = "permissive"
+    require_confirm_above_wei = "100"
+  `);
+  delete (ctx as { confirm?: unknown }).confirm;
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', {
+        portal: 'evm:bot', tx: txAtValue(500),
+      }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/no confirm transport is configured/.test(err!.message));
+    ctx.audit.close();
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries.length, 1);
+    equal(entries[0]!.decision, 'deny');
+  } finally { await cleanup(); }
+});
+
+test('confirm: strict-mode static deny fires before confirm gate (gate never invoked)', async () => {
+  const { ctx, transport, cleanup } = await makeCtxWithConfirm(`
+    mode = "strict"
+    chain_ids = [1]
+    allow_to = ["${DEST}"]
+    max_value_wei = "1000"
+    require_confirm_above_wei = "100"
+  `);
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', {
+        portal: 'evm:bot', tx: txAtValue(2000),
+      }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/exceeds max_value_wei/.test(err!.message));
+    equal(transport.captured, undefined, 'transport should not have been hit');
+  } finally { await cleanup(); }
 });

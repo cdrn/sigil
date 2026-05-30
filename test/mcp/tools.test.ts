@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { equal, ok, throws } from 'node:assert/strict';
+import { equal, ok, rejects } from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,11 +60,11 @@ test('input schemas declare required fields where appropriate', () => {
   equal(JSON.stringify(tx.definition.inputSchema.required?.sort()), JSON.stringify(['portal', 'tx']));
 });
 
-test('sigil_list_portals handler returns method result as text + structuredContent', () => {
+test('sigil_list_portals handler returns method result as text + structuredContent', async () => {
   const h = setUp();
   try {
     const tool = findTool('sigil_list_portals')!;
-    const result = tool.handler({}, h.ctx);
+    const result = await tool.handler({}, h.ctx);
     equal(result.content[0]!.type, 'text');
     const parsed = JSON.parse(result.content[0]!.text) as { portals: unknown[] };
     equal(parsed.portals.length, 1);
@@ -72,37 +72,37 @@ test('sigil_list_portals handler returns method result as text + structuredConte
   } finally { tearDown(h); }
 });
 
-test('sigil_eth_sign_message handler forwards args + returns a signature', () => {
+test('sigil_eth_sign_message handler forwards args + returns a signature', async () => {
   const h = setUp();
   try {
     const tool = findTool('sigil_eth_sign_message')!;
     const messageHex = '0x' + Buffer.from('hi').toString('hex');
-    const result = tool.handler({ portal: 'evm:bot', message: messageHex }, h.ctx);
+    const result = await tool.handler({ portal: 'evm:bot', message: messageHex }, h.ctx);
     const sc = result.structuredContent as { signature: string };
     ok(sc.signature.startsWith('0x'));
   } finally { tearDown(h); }
 });
 
-test('handler raises ToolError(INVALID_PARAMS) on non-object args', () => {
+test('handler raises ToolError(INVALID_PARAMS) on non-object args', async () => {
   const h = setUp();
   try {
     const tool = findTool('sigil_eth_sign_message')!;
-    throws(() => tool.handler('oops', h.ctx), ToolError);
-    throws(() => tool.handler(null, h.ctx), ToolError);
+    await rejects(() => tool.handler('oops', h.ctx), ToolError);
+    await rejects(() => tool.handler(null, h.ctx), ToolError);
     let caught: ToolError | null = null;
-    try { tool.handler([1, 2], h.ctx); }
+    try { await tool.handler([1, 2], h.ctx); }
     catch (e) { caught = e as ToolError; }
     ok(caught instanceof ToolError);
     equal(caught!.code, MCP_INVALID_PARAMS);
   } finally { tearDown(h); }
 });
 
-test('handler surfaces method error code unchanged (PORTAL_NOT_FOUND → ToolError(-32000))', () => {
+test('handler surfaces method error code unchanged (PORTAL_NOT_FOUND → ToolError(-32000))', async () => {
   const h = setUp();
   try {
     const tool = findTool('sigil_eth_sign_message')!;
     let caught: ToolError | null = null;
-    try { tool.handler({ portal: 'evm:nope', message: '0xff' }, h.ctx); }
+    try { await tool.handler({ portal: 'evm:nope', message: '0xff' }, h.ctx); }
     catch (e) { caught = e as ToolError; }
     ok(caught instanceof ToolError);
     equal(caught!.code, -32000);

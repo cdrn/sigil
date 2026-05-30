@@ -47,10 +47,10 @@ function tearDown(h: H): void {
 // handleLine
 // ---------------------------------------------------------------------------
 
-test('handleLine: initialize returns capabilities + serverInfo', () => {
+test('handleLine: initialize returns capabilities + serverInfo', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
       { context: h.ctx },
     );
@@ -60,10 +60,10 @@ test('handleLine: initialize returns capabilities + serverInfo', () => {
   } finally { tearDown(h); }
 });
 
-test('handleLine: notifications/initialized has no response', () => {
+test('handleLine: notifications/initialized has no response', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
       { context: h.ctx },
     );
@@ -71,10 +71,10 @@ test('handleLine: notifications/initialized has no response', () => {
   } finally { tearDown(h); }
 });
 
-test('handleLine: tools/list returns all four tools with input schemas', () => {
+test('handleLine: tools/list returns all four tools with input schemas', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
       { context: h.ctx },
     );
@@ -92,10 +92,10 @@ test('handleLine: tools/list returns all four tools with input schemas', () => {
   } finally { tearDown(h); }
 });
 
-test('handleLine: tools/call sigil_list_portals returns content + structuredContent', () => {
+test('handleLine: tools/call sigil_list_portals returns content + structuredContent', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({
         jsonrpc: '2.0', id: 1, method: 'tools/call',
         params: { name: 'sigil_list_portals', arguments: {} },
@@ -115,11 +115,11 @@ test('handleLine: tools/call sigil_list_portals returns content + structuredCont
   } finally { tearDown(h); }
 });
 
-test('handleLine: tools/call eth_sign_message succeeds end-to-end in-process', () => {
+test('handleLine: tools/call eth_sign_message succeeds end-to-end in-process', async () => {
   const h = setUp();
   try {
     const messageHex = '0x' + Buffer.from('hello mcp').toString('hex');
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({
         jsonrpc: '2.0', id: 9, method: 'tools/call',
         params: { name: 'sigil_eth_sign_message', arguments: { portal: 'evm:bot', message: messageHex } },
@@ -134,10 +134,10 @@ test('handleLine: tools/call eth_sign_message succeeds end-to-end in-process', (
   } finally { tearDown(h); }
 });
 
-test('handleLine: tools/call with unknown tool returns METHOD_NOT_FOUND', () => {
+test('handleLine: tools/call with unknown tool returns METHOD_NOT_FOUND', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({
         jsonrpc: '2.0', id: 1, method: 'tools/call',
         params: { name: 'nonexistent_tool', arguments: {} },
@@ -149,10 +149,10 @@ test('handleLine: tools/call with unknown tool returns METHOD_NOT_FOUND', () => 
   } finally { tearDown(h); }
 });
 
-test('handleLine: tools/call surfaces method error code (portal-not-found → -32000)', () => {
+test('handleLine: tools/call surfaces method error code (portal-not-found → -32000)', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({
         jsonrpc: '2.0', id: 1, method: 'tools/call',
         params: {
@@ -168,10 +168,10 @@ test('handleLine: tools/call surfaces method error code (portal-not-found → -3
   } finally { tearDown(h); }
 });
 
-test('handleLine: tools/call with non-object params → INVALID_PARAMS', () => {
+test('handleLine: tools/call with non-object params → INVALID_PARAMS', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({
         jsonrpc: '2.0', id: 1, method: 'tools/call',
         params: 'oops',
@@ -183,10 +183,10 @@ test('handleLine: tools/call with non-object params → INVALID_PARAMS', () => {
   } finally { tearDown(h); }
 });
 
-test('handleLine: unknown method (not tools/call) returns METHOD_NOT_FOUND', () => {
+test('handleLine: unknown method (not tools/call) returns METHOD_NOT_FOUND', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'mystery_method' }),
       { context: h.ctx },
     );
@@ -195,10 +195,10 @@ test('handleLine: unknown method (not tools/call) returns METHOD_NOT_FOUND', () 
   } finally { tearDown(h); }
 });
 
-test('handleLine: ping responds with empty object', () => {
+test('handleLine: ping responds with empty object', async () => {
   const h = setUp();
   try {
-    const resp = handleLine(
+    const resp = await handleLine(
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
       { context: h.ctx },
     );
@@ -207,10 +207,10 @@ test('handleLine: ping responds with empty object', () => {
   } finally { tearDown(h); }
 });
 
-test('handleLine: malformed JSON returns PARSE_ERROR with id=null', () => {
+test('handleLine: malformed JSON returns PARSE_ERROR with id=null', async () => {
   const h = setUp();
   try {
-    const resp = handleLine('{not json', { context: h.ctx });
+    const resp = await handleLine('{not json', { context: h.ctx });
     const r = JSON.parse(resp!) as { id: unknown; error: { code: number } };
     equal(r.id, null);
     equal(r.error.code, -32700);

@@ -137,6 +137,83 @@ test('parsePolicy: allowed_selectors must be 0x + 8 hex', () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// require_confirm_above_wei
+// ---------------------------------------------------------------------------
+
+test('parsePolicy: require_confirm_above_wei is parsed in permissive mode', () => {
+  const p = parsePolicy(`
+    mode = "permissive"
+    require_confirm_above_wei = "100000000000000000"
+  `);
+  equal(p.mode, 'permissive');
+  equal(p.requireConfirmAboveWei, 100_000_000_000_000_000n);
+});
+
+test('parsePolicy: require_confirm_above_wei is parsed in strict mode', () => {
+  const p = parsePolicy(`
+    mode = "strict"
+    chain_ids = [1]
+    max_value_wei = "1000000000000000000"
+    require_confirm_above_wei = "100000000000000000"
+  `);
+  equal(p.requireConfirmAboveWei, 100_000_000_000_000_000n);
+});
+
+test('parsePolicy: require_confirm_above_wei must be a decimal string', () => {
+  throws(
+    () => parsePolicy(`mode = "permissive"\nrequire_confirm_above_wei = 100`),
+    /must be a decimal string/,
+  );
+  throws(
+    () => parsePolicy(`mode = "permissive"\nrequire_confirm_above_wei = "0x10"`),
+    /decimal integer string/,
+  );
+});
+
+test('parsePolicy: strict mode rejects require_confirm >= max_value (confirm would never fire)', () => {
+  // confirm == cap → cap denies first (value > maxValueWei), confirm never fires
+  throws(
+    () =>
+      parsePolicy(`
+        mode = "strict"
+        chain_ids = [1]
+        max_value_wei = "100"
+        require_confirm_above_wei = "100"
+      `),
+    /must be less than max_value_wei/,
+  );
+  // confirm > cap — same problem
+  throws(
+    () =>
+      parsePolicy(`
+        mode = "strict"
+        chain_ids = [1]
+        max_value_wei = "100"
+        require_confirm_above_wei = "200"
+      `),
+    /must be less than max_value_wei/,
+  );
+});
+
+test('parsePolicy: strict mode allows require_confirm with max_value=0 (cap is "no value sends"; confirm gates pure-data calls? no — same field)', () => {
+  // When max_value_wei=0, no value tx ever gets past the cap, so a confirm
+  // threshold is decorative. We don't reject this — it's only a problem if
+  // the threshold is *at or above* a nonzero cap.
+  const p = parsePolicy(`
+    mode = "strict"
+    chain_ids = [1]
+    max_value_wei = "0"
+    require_confirm_above_wei = "100"
+  `);
+  equal(p.requireConfirmAboveWei, 100n);
+});
+
+test('parsePolicy: omitting require_confirm_above_wei leaves it undefined', () => {
+  const p = parsePolicy(`mode = "permissive"`);
+  equal(p.requireConfirmAboveWei, undefined);
+});
+
 test('parsePolicy: allow_message_signing / allow_typed_data must be booleans', () => {
   throws(
     () => parsePolicy(`mode = "strict"\nchain_ids = [1]\nallow_message_signing = "yes"`),

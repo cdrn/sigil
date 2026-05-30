@@ -39,8 +39,11 @@ export type McpLogEvent =
  * Handle a single received line by dispatching it through the MCP protocol.
  * Returns either a response string to send back, or `null` if the line was a
  * notification (no response expected).
+ *
+ * Async because tools/call can perform an out-of-band confirm round-trip
+ * (sign_transaction → ConfirmGate → human ack) that may take seconds.
  */
-export function handleLine(line: string, opts: McpServerOpts): string | null {
+export async function handleLine(line: string, opts: McpServerOpts): Promise<string | null> {
   const parsed = parseMessage(line);
   const log = (e: McpLogEvent): void => opts.onLog?.(e);
 
@@ -62,7 +65,7 @@ export function handleLine(line: string, opts: McpServerOpts): string | null {
   const req = parsed.request;
   log({ kind: 'recv', method: req.method, id: req.id });
   try {
-    const result = dispatch(req, opts);
+    const result = await dispatch(req, opts);
     log({ kind: 'send_ok', id: req.id });
     return encodeSuccess(req.id, result);
   } catch (err) {
@@ -76,7 +79,7 @@ export function handleLine(line: string, opts: McpServerOpts): string | null {
   }
 }
 
-function dispatch(req: McpRequest, opts: McpServerOpts): unknown {
+async function dispatch(req: McpRequest, opts: McpServerOpts): Promise<unknown> {
   switch (req.method) {
     case 'initialize':
       return {
@@ -87,7 +90,7 @@ function dispatch(req: McpRequest, opts: McpServerOpts): unknown {
     case 'tools/list':
       return { tools: TOOLS.map((t) => t.definition) };
     case 'tools/call':
-      return invokeTool(req.params, opts);
+      return await invokeTool(req.params, opts);
     case 'ping':
       return {};
     default:
@@ -95,7 +98,7 @@ function dispatch(req: McpRequest, opts: McpServerOpts): unknown {
   }
 }
 
-function invokeTool(params: unknown, opts: McpServerOpts): unknown {
+async function invokeTool(params: unknown, opts: McpServerOpts): Promise<unknown> {
   if (typeof params !== 'object' || params === null || Array.isArray(params)) {
     throw new ToolError(MCP_INVALID_PARAMS, 'tools/call: params must be an object');
   }
@@ -109,7 +112,7 @@ function invokeTool(params: unknown, opts: McpServerOpts): unknown {
     throw new ToolError(MCP_METHOD_NOT_FOUND, `unknown tool: ${name}`);
   }
   const args = obj['arguments'] ?? {};
-  return tool.handler(args, opts.context);
+  return await tool.handler(args, opts.context);
 }
 
 // ---------------------------------------------------------------------------
@@ -123,14 +126,23 @@ export interface McpStdioOpts extends McpServerOpts {
 
 /**
  * Run the MCP server over arbitrary streams (stdin/stdout in production,
- * mock streams in tests). Resolves when stdin closes.
+ * mock streams in tests). Resolves when stdin closes AND any in-flight
+ * requests have finished — so a slow confirm round-trip doesn't get
+ * truncated by an early resolve.
+ *
+ * Concurrency: handlers run serially, chained through a processing promise.
+ * That preserves response ordering (matches sync behavior pre-confirm) and
+ * keeps stdout writes ordered without needing a separate write queue.
+ * Trade-off: a long-pending confirm on request A blocks request B until A
+ * resolves. Acceptable for sigil — agents don't pipeline tool calls in
+ * practice, and serial is the simpler correctness story.
  */
 export function runMcpStdio(opts: McpStdioOpts): Promise<void> {
   const { stdin, stdout } = opts;
   stdin.setEncoding?.('utf8');
   return new Promise((resolve, reject) => {
     let buf = '';
-    let stdinEnded = false;
+    let processing: Promise<void> = Promise.resolve();
     stdin.on('data', (chunk) => {
       buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
       let nl: number;
@@ -138,13 +150,16 @@ export function runMcpStdio(opts: McpStdioOpts): Promise<void> {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (line.length === 0) continue;
-        const resp = handleLine(line, opts);
-        if (resp !== null) stdout.write(resp + '\n');
+        processing = processing.then(async () => {
+          const resp = await handleLine(line, opts);
+          if (resp !== null) stdout.write(resp + '\n');
+        });
       }
     });
     stdin.on('end', () => {
-      stdinEnded = true;
-      if (stdinEnded) resolve();
+      // Drain the processing chain before resolving — otherwise a confirm
+      // mid-flight when stdin closes would lose its response.
+      processing.then(() => resolve(), reject);
     });
     stdin.on('error', reject);
   });
