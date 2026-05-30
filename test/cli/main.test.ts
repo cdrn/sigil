@@ -161,7 +161,7 @@ test('runCli: portal qr — prints address, a QR block, and the address again', 
     ok(addr !== null && addr.length >= 2, 'address printed at least twice');
     equal(addr![0], addr![1]);
     // QR block characters present.
-    ok(out.includes('▀'));
+    ok(out.includes('██'));
   } finally {
     rmSync(home, { recursive: true });
   }
