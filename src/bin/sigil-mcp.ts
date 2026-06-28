@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import { AuditWriter } from '../audit/index.js';
 import { resolvePaths, sessionSocketPath } from '../cli/paths.js';
 import { startControlServer } from '../control/index.js';
@@ -35,6 +35,10 @@ async function main(): Promise<void> {
   mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.controlDir, { recursive: true, mode: 0o700 });
+  // mkdir's `mode` only applies to a freshly-created dir (and is masked by
+  // umask), so re-assert 0o700 in case the dir pre-existed with looser perms.
+  // The per-socket file gets its own 0o600 from the control server on bind.
+  try { chmodSync(paths.controlDir, 0o700); } catch { /* best-effort */ }
   const socketPath = sessionSocketPath(paths.controlDir, process.pid);
 
   const handles = new HandleTable();
