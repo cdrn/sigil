@@ -221,11 +221,11 @@ function dispatch(
 
 function doUnlock(passphraseB64: string, opts: ControlServerOpts, pid: number): ControlResponse {
   if (opts.handles.isUnlocked()) {
-    return {
-      ok: false,
-      code: 'ALREADY_UNLOCKED',
-      error: 'sigil is already unlocked; run "sigil lock" first to re-unlock',
-    };
+    // Idempotent: this session is already in the desired state. Report success
+    // with the currently-loaded portals (rather than an error) so a fan-out
+    // `sigil unlock` that reaches a mix of locked + already-unlocked sessions
+    // treats them all as unlocked and can report their portals accurately.
+    return statusResponse(opts.handles, pid);
   }
   let passphrase: Buffer;
   try {

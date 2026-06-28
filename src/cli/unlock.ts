@@ -50,20 +50,16 @@ export function formatResult(action: 'unlock' | 'lock', sessions: SessionResult[
   // A session is "reachable" if it answered at all (success or server-side
   // error). Reaped / unreachable sockets don't count.
   const answered = sessions.filter((s) => s.response !== null);
-  const unreachable = sessions.filter((s) => s.response === null);
 
   if (answered.length === 0) {
-    // Nothing live to talk to. Distinguish "no sessions at all" from "every
-    // session we found was unreachable" only in the message; both exit 1.
-    if (sessions.length === 0) {
-      return {
-        message:
-          `sigil-mcp is not running. Start a Claude Code session (which spawns it via your MCP config) and try again.`,
-        code: 1,
-      };
-    }
-    const detail = unreachable[0]?.clientError?.message ?? 'no response';
-    return { message: `sigil ${action}: no reachable sessions (${detail})`, code: 1 };
+    // Nothing live answered. Whether the directory was empty or every socket
+    // in it was stale (reaped this run), the actionable advice is the same:
+    // there's no running sigil-mcp to talk to.
+    return {
+      message:
+        `sigil-mcp is not running. Start a Claude Code session (which spawns it via your MCP config) and try again.`,
+      code: 1,
+    };
   }
 
   if (action === 'unlock') {
@@ -72,35 +68,46 @@ export function formatResult(action: 'unlock' | 'lock', sessions: SessionResult[
     );
     if (wrong) return { message: `sigil unlock: wrong passphrase`, code: 2 };
 
-    // Unlocked = freshly unlocked OR already unlocked. Anything else is a
-    // per-session failure (e.g. KEYS_LOAD_FAILED) we surface but don't let
-    // sink the whole command if other sessions succeeded.
-    const unlocked: SessionResult[] = [];
+    // Unlocked = freshly unlocked (ok: true, carries authoritative portals) OR
+    // already unlocked. A current sigil-mcp reports already-unlocked sessions
+    // as ok: true too; the legacy ALREADY_UNLOCKED error is still accepted here
+    // for forward-compat with an older server process. Anything else is a
+    // per-session failure we surface without sinking the sessions that worked.
+    const portalBearing: SessionResult[] = []; // ok: true — knows its portals
+    const unlockedNoInfo: SessionResult[] = []; // legacy ALREADY_UNLOCKED — portals unknown
     const failed: SessionResult[] = [];
     for (const s of answered) {
       const r = s.response!;
-      if (!isControlError(r)) unlocked.push(s);
-      else if (r.code === 'ALREADY_UNLOCKED') unlocked.push(s);
+      if (!isControlError(r)) portalBearing.push(s);
+      else if (r.code === 'ALREADY_UNLOCKED') unlockedNoInfo.push(s);
       else failed.push(s);
     }
+    const unlockedCount = portalBearing.length + unlockedNoInfo.length;
 
-    if (unlocked.length === 0) {
+    if (unlockedCount === 0) {
       const first = failed[0]?.response;
       const detail = first && isControlError(first) ? `${first.error} (${first.code})` : 'unknown error';
       return { message: `sigil unlock: ${detail}`, code: 1 };
     }
 
-    const portals = portalsOf(unlocked);
-    const sessionWord = unlocked.length === 1 ? 'session' : 'sessions';
-    const portalPart = portals.length === 0
-      ? ' (no portals on disk yet — add one with "sigil portal add")'
-      : `: ${portals.join(', ')}`;
-    let message = `unlocked ${unlocked.length} ${sessionWord}${portalPart}`;
-    if (failed.length > 0) message += ` — ${failed.length} session(s) failed to load keys`;
+    const portals = portalsOf(portalBearing);
+    const sessionWord = unlockedCount === 1 ? 'session' : 'sessions';
+    let portalPart: string;
+    if (portals.length > 0) {
+      portalPart = `: ${portals.join(', ')}`;
+    } else if (portalBearing.length > 0) {
+      // At least one session authoritatively reported its (empty) portal set.
+      portalPart = ' (no portals on disk yet — add one with "sigil portal add")';
+    } else {
+      // Only legacy already-unlocked responses, which don't echo portals.
+      portalPart = '';
+    }
+    let message = `unlocked ${unlockedCount} ${sessionWord}${portalPart}`;
+    if (failed.length > 0) message += ` — ${failed.length} session(s) failed to unlock`;
     return { message, code: 0 };
   }
 
-  // lock: never returns ALREADY_*/WRONG; every answered session is now locked.
+  // lock: every answered session is now locked.
   const n = answered.length;
   return { message: `locked ${n} session${n === 1 ? '' : 's'}`, code: 0 };
 }

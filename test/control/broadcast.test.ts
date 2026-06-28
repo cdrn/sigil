@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sealKey } from '../../src/crypto/index.js';
@@ -122,6 +123,32 @@ test('broadcast status: aggregates a mix of locked + unlocked sessions', async (
     ok(!isControlError(b) && b.unlocked === false);
   } finally {
     await tearDown(sessions);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('broadcast: a live-but-slow session times out but is NOT reaped', async () => {
+  const dir = mkTmp();
+  const controlDir = join(dir, 'control');
+  mkdirSync(controlDir, { recursive: true });
+  // A raw server that accepts the connection but never replies — simulates a
+  // wedged-but-alive sigil-mcp. It must survive the broadcast (not be reaped).
+  const slowPath = sessionSocketPath(controlDir, 555);
+  const conns: import('node:net').Socket[] = [];
+  const slow: Server = createServer((sock) => { conns.push(sock); /* swallow, never reply */ });
+  await new Promise<void>((resolve) => slow.listen(slowPath, () => resolve()));
+  try {
+    const results = await broadcast(controlDir, { method: 'status' }, 100);
+    equal(results.length, 1);
+    const r = results[0]!;
+    equal(r.response, null);
+    equal(r.clientError?.code, 'TIMEOUT');
+    equal(r.reaped, false);
+    ok(existsSync(slowPath), 'a timed-out (live) socket must be left in place');
+  } finally {
+    // Destroy any accepted connections so server.close()'s callback can fire.
+    for (const c of conns) c.destroy();
+    await new Promise<void>((resolve) => slow.close(() => resolve()));
     rmSync(dir, { recursive: true, force: true });
   }
 });

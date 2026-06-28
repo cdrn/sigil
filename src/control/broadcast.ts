@@ -74,6 +74,7 @@ async function sendOne(
   request: ControlRequest,
   timeoutMs?: number,
 ): Promise<SessionResult> {
+  let err: ControlClientError;
   try {
     const response = await controlRequest({
       socketPath: s.socketPath,
@@ -81,16 +82,28 @@ async function sendOne(
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
     return { ...s, response, reaped: false };
-  } catch (err) {
-    if (!(err instanceof ControlClientError)) throw err;
-    // SERVER_DOWN means the file is gone (ENOENT) or nothing is listening
-    // (ECONNREFUSED) — the owning process died without cleaning up. Reap it.
-    // TIMEOUT / BAD_RESPONSE / NO_RESPONSE could be a live-but-busy server, so
-    // leave those sockets in place.
-    let reaped = false;
-    if (err.code === 'SERVER_DOWN') {
-      try { unlinkSync(s.socketPath); reaped = true; } catch { /* raced another reaper */ }
-    }
-    return { ...s, response: null, clientError: err, reaped };
+  } catch (e) {
+    // controlRequest rejects with ControlClientError for all transport
+    // failures, but guard against anything unexpected (e.g. a synchronous
+    // throw from createConnection on a pathological path) so a single bad
+    // socket can never reject the whole fan-out and sink the other sessions.
+    err = e instanceof ControlClientError
+      ? e
+      : new ControlClientError(`control socket: ${(e as Error).message}`, 'CONNECT_FAILED');
   }
+  // SERVER_DOWN means the file is gone (ENOENT), nothing is listening
+  // (ECONNREFUSED), or the path isn't a socket (ENOTSOCK) — no live server, so
+  // reap it. TIMEOUT / BAD_RESPONSE / NO_RESPONSE / CONNECT_FAILED could be a
+  // live-but-busy server, so leave those sockets in place.
+  //
+  // Narrow race not handled: if a process died and its PID was immediately
+  // reused by a new sigil-mcp that is mid-bind, a connect during the brief
+  // ENOENT window could unlink the new server's just-bound socket. Requires
+  // PID reuse + simultaneous bind + simultaneous broadcast; the new session
+  // self-heals on its next restart. Acceptable given how narrow it is.
+  let reaped = false;
+  if (err.code === 'SERVER_DOWN') {
+    try { unlinkSync(s.socketPath); reaped = true; } catch { /* raced another reaper */ }
+  }
+  return { ...s, response: null, clientError: err, reaped };
 }
