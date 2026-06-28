@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditWriter } from '../../src/audit/index.js';
 import { SecretBuffer } from '../../src/crypto/index.js';
-import { resolvePaths } from '../../src/cli/paths.js';
+import { resolvePaths, sessionSocketPath } from '../../src/cli/paths.js';
 import { portalAdd } from '../../src/cli/portal.js';
 import { status } from '../../src/cli/status.js';
 import { startControlServer } from '../../src/control/index.js';
@@ -22,9 +22,7 @@ test('status: empty home reports zero keyfiles, mcp not running', async () => {
     const report = await status(paths);
     equal(report.keyfilesOnDisk, 0);
     equal(report.mcpRunning, false);
-    equal(report.mcpPid, null);
-    equal(report.unlocked, false);
-    equal(report.portals.length, 0);
+    equal(report.sessions.length, 0);
     equal(report.auditLog, paths.auditLog);
   } finally {
     rmSync(home, { recursive: true });
@@ -50,10 +48,11 @@ test('status: reports mcpRunning=true when control server is alive (locked)', as
   const home = mkTmpHome();
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
+    mkdirSync(paths.controlDir, { recursive: true });
     const handles = new HandleTable();
     const audit = new AuditWriter(paths.auditLog);
     const ctl = await startControlServer({
-      socketPath: paths.controlSocket,
+      socketPath: sessionSocketPath(paths.controlDir, 42),
       keysDir: paths.keysDir,
       policyDir: paths.policyDir,
       handles,
@@ -62,9 +61,10 @@ test('status: reports mcpRunning=true when control server is alive (locked)', as
     try {
       const report = await status(paths);
       equal(report.mcpRunning, true);
-      equal(report.mcpPid, 42);
-      equal(report.unlocked, false);
-      equal(report.portals.length, 0);
+      equal(report.sessions.length, 1);
+      equal(report.sessions[0]!.pid, 42);
+      equal(report.sessions[0]!.unlocked, false);
+      equal(report.sessions[0]!.portals.length, 0);
     } finally {
       await ctl.close();
       handles.dispose();
@@ -79,12 +79,13 @@ test('status: reports unlocked + portals when control server is unlocked', async
   const home = mkTmpHome();
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
+    mkdirSync(paths.controlDir, { recursive: true });
     const handles = new HandleTable();
     handles.addEntry('evm:bot', new SecretBuffer(priv(1)));
     handles.markUnlocked();
     const audit = new AuditWriter(paths.auditLog);
     const ctl = await startControlServer({
-      socketPath: paths.controlSocket,
+      socketPath: sessionSocketPath(paths.controlDir, 100),
       keysDir: paths.keysDir,
       policyDir: paths.policyDir,
       handles,
@@ -93,10 +94,11 @@ test('status: reports unlocked + portals when control server is unlocked', async
     try {
       const report = await status(paths);
       equal(report.mcpRunning, true);
-      equal(report.unlocked, true);
-      equal(report.portals.length, 1);
-      equal(report.portals[0]!.handle, 'evm:bot');
-      ok(report.portals[0]!.address.startsWith('0x'));
+      equal(report.sessions.length, 1);
+      equal(report.sessions[0]!.unlocked, true);
+      equal(report.sessions[0]!.portals.length, 1);
+      equal(report.sessions[0]!.portals[0]!.handle, 'evm:bot');
+      ok(report.sessions[0]!.portals[0]!.address.startsWith('0x'));
     } finally {
       await ctl.close();
       handles.dispose();

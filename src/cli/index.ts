@@ -8,11 +8,10 @@ export {
   portalListFromDisk,
   portalRemove,
 } from './portal.js';
-export { type StatusReport, status } from './status.js';
+export { type StatusReport, type SessionStatus, status } from './status.js';
 export {
   type UnlockOpts,
   type LockOpts,
-  type UnlockResult,
   formatResult,
   lock,
   unlock,

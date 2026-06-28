@@ -25,9 +25,9 @@ Keys at rest are encrypted on disk in `~/.sigil/keys/<handle>.sigil` (XChaCha20-
 
 The unlock path:
 
-1. `sigil-mcp` opens a Unix socket at `~/.sigil/control.sock` (chmod 0600).
-2. The user runs `sigil unlock` in a separate terminal; the CLI prompts for the passphrase, connects to the socket, and sends `{method: "unlock", passphraseB64: ...}`.
-3. `sigil-mcp` decrypts every keyfile in `~/.sigil/keys/`, populates the in-memory table, zeroizes the passphrase buffer.
+1. `sigil-mcp` opens a Unix socket at `~/.sigil/control/<pid>.sock` (chmod 0600), one per running session.
+2. The user runs `sigil unlock` in a separate terminal; the CLI prompts for the passphrase, then connects to **every** socket in `~/.sigil/control/` and sends `{method: "unlock", passphraseB64: ...}` to each.
+3. Each `sigil-mcp` decrypts every keyfile in `~/.sigil/keys/`, populates its own in-memory table, and zeroizes the passphrase buffer.
 
 This shape was chosen so the agent has no path to trigger unlock — only a human at the local TTY can. `sigil lock` zeroizes the in-memory table without killing the process; subsequent signs return `DAEMON_LOCKED` again until the next `sigil unlock`.
 
@@ -104,7 +104,7 @@ Given the 2026 npm threat landscape, a compromised release of `sigil` would be c
 - The MCP stdio is the agent's exposed surface; the control socket is the user's exposed surface. Both are unauthenticated within the user's session — any process running as `$USER` can talk to either. This is consistent with the threat model (we don't defend against local user compromise) but worth stating explicitly.
 - **mlock is not yet implemented.** Plaintext key material lives in a regular `Buffer` that is zeroized on `sigil-mcp` shutdown, on `sigil lock`, or on a failed unlock. This means keys are vulnerable to being paged to swap on a memory-pressured system. mlock requires a native module, which we will ship as bundled prebuilds (no install scripts) rather than via a compile-on-install dependency. Tracked as a planned layer.
 - **Passphrase in transit through V8 strings.** The control socket carries the passphrase base64-encoded inside a JSON message. The CLI's `Buffer` and the server's decoded `Buffer` are zeroized after use, but the intermediate JSON string sits in V8's string heap and cannot be reliably wiped. This is the same trade-off as `readPassphrase`'s internal accumulator and is considered acceptable for v0.x; mitigations would require either a custom binary framing or a fully native crypto path.
-- **Multi-window:** the first `sigil-mcp` to start owns `~/.sigil/control.sock`. Subsequent sessions in other Claude windows still run, but their `sigil-mcp` cannot be reached by `sigil unlock` — only the first one is addressable. Phase C of [#23](https://github.com/cdrn/sigil/issues/23) will add per-PID sockets + a flock'd audit log so multi-window sessions coexist cleanly.
+- **Multi-window:** each `sigil-mcp` binds its own `~/.sigil/control/<pid>.sock`, and `sigil unlock`/`lock`/`status` fan out across all of them, so every open Claude window is reachable from one CLI call. Each session keeps a separate in-memory handle table and unlocks independently; the passphrase is sent (base64 in JSON, same transit caveat as above) to each live session. A window opened after an unlock starts locked until the next `sigil unlock`. Sockets orphaned by hard-killed sessions are unlinked on the next CLI call. Keys still never outlive the sessions that hold them — see [#23](https://github.com/cdrn/sigil/issues/23).
 - Out-of-band confirmation (planned, [#4](https://github.com/cdrn/sigil/issues/4)) depends on a working push channel. If the push provider is down, high-value signs are denied, not approved.
 
 ## Reporting issues
