@@ -2,7 +2,8 @@
  * Wire protocol for the sigil-mcp control socket.
  *
  * One NDJSON request per connection, one NDJSON response, then the server
- * half-closes. The socket lives at `~/.sigil/control.sock` (0600).
+ * half-closes. Each session's socket lives at `~/.sigil/control/<pid>.sock`
+ * (0600); the CLI fans requests out across every socket in that directory.
  *
  * Methods:
  *   - unlock: load keyfiles from disk into the running MCP server's

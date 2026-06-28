@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { sealKey } from '../../src/crypto/index.js';
 import { runCli } from '../../src/cli/main.js';
-import { resolvePaths } from '../../src/cli/paths.js';
+import { resolvePaths, sessionSocketPath } from '../../src/cli/paths.js';
 import { startControlServer } from '../../src/control/index.js';
 import { HandleTable } from '../../src/daemon/handles.js';
 
@@ -26,17 +26,22 @@ function capture(): { stdout: Writable; stderr: Writable; out: () => string; err
 }
 
 // Spins up a control server in-process for the CLI to connect to.
-async function withRunningMcp(home: string, fn: (handles: HandleTable) => Promise<void>): Promise<void> {
+async function withRunningMcp(
+  home: string,
+  fn: (handles: HandleTable) => Promise<void>,
+  pid = 12345,
+): Promise<void> {
   const paths = resolvePaths({ SIGIL_HOME: home });
   mkdirSync(paths.home, { recursive: true });
   mkdirSync(paths.keysDir, { recursive: true });
+  mkdirSync(paths.controlDir, { recursive: true });
   const handles = new HandleTable();
   const ctl = await startControlServer({
-    socketPath: paths.controlSocket,
+    socketPath: sessionSocketPath(paths.controlDir, pid),
     keysDir: paths.keysDir,
-      policyDir: paths.policyDir,
+    policyDir: paths.policyDir,
     handles,
-    pid: 12345,
+    pid,
   });
   try {
     await fn(handles);
@@ -45,6 +50,115 @@ async function withRunningMcp(home: string, fn: (handles: HandleTable) => Promis
     handles.dispose();
   }
 }
+
+// Spins up N in-process control servers in the same home (distinct PIDs), as
+// multiple Claude windows would. Returns the live HandleTables.
+async function withRunningMcps(
+  home: string,
+  pids: number[],
+  fn: (handles: HandleTable[]) => Promise<void>,
+): Promise<void> {
+  const paths = resolvePaths({ SIGIL_HOME: home });
+  mkdirSync(paths.home, { recursive: true });
+  mkdirSync(paths.keysDir, { recursive: true });
+  mkdirSync(paths.controlDir, { recursive: true });
+  const tables: HandleTable[] = [];
+  const ctls = [];
+  for (const pid of pids) {
+    const handles = new HandleTable();
+    tables.push(handles);
+    ctls.push(await startControlServer({
+      socketPath: sessionSocketPath(paths.controlDir, pid),
+      keysDir: paths.keysDir,
+      policyDir: paths.policyDir,
+      handles,
+      pid,
+    }));
+  }
+  try {
+    await fn(tables);
+  } finally {
+    for (const ctl of ctls) await ctl.close();
+    for (const h of tables) h.dispose();
+  }
+}
+
+test('runCli unlock: one unlock fans out to ALL live sessions', async () => {
+  const home = mkTmpHome();
+  try {
+    await withRunningMcps(home, [201, 202, 203], async (tables) => {
+      const paths = resolvePaths({ SIGIL_HOME: home });
+      const pass = Buffer.from('hunter2');
+      writeFileSync(join(paths.keysDir, 'evm:bot.sigil'), sealKey(priv(1), pass, TEST_KDF));
+
+      for (const h of tables) equal(h.isUnlocked(), false);
+
+      const cap = capture();
+      const r = await runCli({
+        argv: ['unlock'],
+        stdout: cap.stdout, stderr: cap.stderr,
+        env: { SIGIL_HOME: home },
+        passphrase: () => Buffer.from('hunter2'),
+      });
+      equal(r.code, 0);
+      ok(/unlocked 3 sessions/.test(cap.out()), `expected "unlocked 3 sessions" in: ${cap.out()}`);
+      ok(/evm:bot/.test(cap.out()));
+      // Every session's in-memory table is now unlocked.
+      for (const h of tables) ok(h.isUnlocked(), 'each session should be unlocked');
+    });
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli lock: one lock fans out to ALL live sessions', async () => {
+  const home = mkTmpHome();
+  try {
+    await withRunningMcps(home, [211, 212], async (tables) => {
+      for (const h of tables) h.markUnlocked();
+      const cap = capture();
+      const r = await runCli({
+        argv: ['lock'],
+        stdout: cap.stdout, stderr: cap.stderr,
+        env: { SIGIL_HOME: home },
+      });
+      equal(r.code, 0);
+      ok(/locked 2 sessions/.test(cap.out()), `expected "locked 2 sessions" in: ${cap.out()}`);
+      for (const h of tables) equal(h.isUnlocked(), false);
+    });
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli status: reports every live session', async () => {
+  const home = mkTmpHome();
+  try {
+    await withRunningMcps(home, [221, 222], async (tables) => {
+      tables[0]!.markUnlocked(); // one unlocked, one locked
+      const cap = capture();
+      const r = await runCli({
+        argv: ['status'],
+        stdout: cap.stdout, stderr: cap.stderr,
+        env: { SIGIL_HOME: home },
+      });
+      equal(r.code, 0);
+      const parsed = JSON.parse(cap.out()) as {
+        mcpRunning: boolean;
+        sessions: { pid: number; unlocked: boolean }[];
+      };
+      equal(parsed.mcpRunning, true);
+      equal(parsed.sessions.length, 2);
+      // Sorted by pid: 221 unlocked, 222 locked.
+      equal(parsed.sessions[0]!.pid, 221);
+      equal(parsed.sessions[0]!.unlocked, true);
+      equal(parsed.sessions[1]!.pid, 222);
+      equal(parsed.sessions[1]!.unlocked, false);
+    });
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
 
 test('runCli unlock: server down → exits 1 with clear message', async () => {
   const home = mkTmpHome();
@@ -79,7 +193,7 @@ test('runCli unlock: happy path loads portals', async () => {
         passphrase: () => Buffer.from('hunter2'),
       });
       equal(r.code, 0);
-      ok(/unlocked 1 portal/.test(cap.out()), `expected "unlocked 1 portal" in: ${cap.out()}`);
+      ok(/unlocked 1 session/.test(cap.out()), `expected "unlocked 1 session" in: ${cap.out()}`);
       ok(/evm:bot/.test(cap.out()));
       ok(handles.isUnlocked());
     });
@@ -111,7 +225,10 @@ test('runCli unlock: wrong passphrase exits 2', async () => {
   }
 });
 
-test('runCli unlock: already unlocked → exits 1 with helpful message', async () => {
+test('runCli unlock: already-unlocked session is idempotent → exits 0', async () => {
+  // With per-session fan-out, re-running unlock against a session that's
+  // already unlocked is a no-op success (ALREADY_UNLOCKED counts as unlocked),
+  // not an error — the user's goal "every session is unlocked" is satisfied.
   const home = mkTmpHome();
   try {
     await withRunningMcp(home, async (handles) => {
@@ -123,8 +240,9 @@ test('runCli unlock: already unlocked → exits 1 with helpful message', async (
         env: { SIGIL_HOME: home },
         passphrase: () => Buffer.from('x'),
       });
-      equal(r.code, 1);
-      ok(/already unlocked/.test(cap.err()));
+      equal(r.code, 0);
+      ok(/unlocked 1 session/.test(cap.out()), `expected success in: ${cap.out()}`);
+      ok(handles.isUnlocked());
     });
   } finally {
     rmSync(home, { recursive: true });
@@ -204,13 +322,15 @@ test('runCli status: reports running + unlocked + portals when MCP is alive', as
       });
       equal(r.code, 0);
       const parsed = JSON.parse(cap.out()) as {
-        mcpRunning: boolean; mcpPid: number; unlocked: boolean; portals: { handle: string }[];
+        mcpRunning: boolean;
+        sessions: { pid: number; unlocked: boolean; portals: { handle: string }[] }[];
       };
       equal(parsed.mcpRunning, true);
-      equal(parsed.mcpPid, 12345);
-      equal(parsed.unlocked, true);
-      equal(parsed.portals.length, 1);
-      equal(parsed.portals[0]!.handle, 'evm:bot');
+      equal(parsed.sessions.length, 1);
+      equal(parsed.sessions[0]!.pid, 12345);
+      equal(parsed.sessions[0]!.unlocked, true);
+      equal(parsed.sessions[0]!.portals.length, 1);
+      equal(parsed.sessions[0]!.portals[0]!.handle, 'evm:bot');
     });
   } finally {
     rmSync(home, { recursive: true });

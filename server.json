@@ -19,13 +19,13 @@
       "environmentVariables": [
         {
           "name": "SIGIL_HOME",
-          "description": "Override the default ~/.sigil directory for keyfiles, audit log, and control socket.",
+          "description": "Override the default ~/.sigil directory for keyfiles, audit log, and control sockets.",
           "isRequired": false,
           "isSecret": false
         },
         {
-          "name": "SIGIL_CONTROL_SOCK",
-          "description": "Override the default control socket path (~/.sigil/control.sock).",
+          "name": "SIGIL_CONTROL_DIR",
+          "description": "Override the default control-socket directory (~/.sigil/control/), which holds one <pid>.sock per running sigil-mcp.",
           "isRequired": false,
           "isSecret": false
         }

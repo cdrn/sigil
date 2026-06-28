@@ -1,66 +1,59 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import {
-  ControlClientError,
-  controlRequest,
+  broadcast,
   isControlError,
   type PortalSummary,
 } from '../control/index.js';
 import type { SigilPaths } from './paths.js';
+
+export interface SessionStatus {
+  /** Process ID of the running sigil-mcp. */
+  pid: number;
+  /** Whether this session's HandleTable is unlocked. */
+  unlocked: boolean;
+  /** Portals loaded in this session (empty when locked). */
+  portals: PortalSummary[];
+}
 
 export interface StatusReport {
   /** Number of *.sigil files in the keys directory. */
   keyfilesOnDisk: number;
   /** Path the audit log lives at. Useful for `tail`-ing during incidents. */
   auditLog: string;
-  /** True if the control socket responded — i.e. sigil-mcp is alive. */
+  /** True if at least one sigil-mcp session answered the control socket. */
   mcpRunning: boolean;
-  /** Process ID of the running sigil-mcp; null when not running. */
-  mcpPid: number | null;
-  /** True if the HandleTable has been unlocked. False when mcp is down or locked. */
-  unlocked: boolean;
-  /** Portals currently loaded in the running sigil-mcp. Empty when locked or down. */
-  portals: PortalSummary[];
+  /** Per-session live state, one entry per reachable sigil-mcp. */
+  sessions: SessionStatus[];
 }
 
 /**
  * Reports the on-disk + live state of sigil. Does NOT require the passphrase.
  *
  * Disk side: counts encrypted keyfiles.
- * Live side: probes the control socket. If the server is unreachable, marks
- * mcpRunning=false; this is the common case when no Claude Code session is
- * open. Any other client error is also treated as not-running — the user
- * can re-run "sigil unlock" or check the socket file directly for more
- * detailed diagnosis.
+ * Live side: fans a status probe out across every per-session control socket.
+ * Each reachable sigil-mcp contributes a SessionStatus; stale sockets (from
+ * hard-killed sessions) are reaped during the broadcast. When no Claude Code
+ * session is open, `sessions` is empty and `mcpRunning` is false.
  */
 export async function status(paths: SigilPaths): Promise<StatusReport> {
   const keyfilesOnDisk = countKeyfiles(paths.keysDir);
-  let mcpRunning = false;
-  let mcpPid: number | null = null;
-  let unlocked = false;
-  let portals: PortalSummary[] = [];
-  try {
-    const resp = await controlRequest({
-      socketPath: paths.controlSocket,
-      request: { method: 'status' },
-      timeoutMs: 1_000,
-    });
-    if (!isControlError(resp)) {
-      mcpRunning = true;
-      mcpPid = resp.pid;
-      unlocked = resp.unlocked;
-      portals = resp.portals;
+  const results = await broadcast(paths.controlDir, { method: 'status' }, 1_000);
+  const sessions: SessionStatus[] = [];
+  for (const r of results) {
+    if (r.response && !isControlError(r.response)) {
+      sessions.push({
+        pid: r.response.pid,
+        unlocked: r.response.unlocked,
+        portals: r.response.portals,
+      });
     }
-  } catch (err) {
-    if (!(err instanceof ControlClientError)) throw err;
-    // SERVER_DOWN / CONNECT_FAILED / TIMEOUT all → mcpRunning=false.
   }
+  sessions.sort((a, b) => a.pid - b.pid);
   return {
     keyfilesOnDisk,
     auditLog: paths.auditLog,
-    mcpRunning,
-    mcpPid,
-    unlocked,
-    portals,
+    mcpRunning: sessions.length > 0,
+    sessions,
   };
 }
 

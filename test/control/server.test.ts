@@ -106,7 +106,7 @@ test('control server: unlock with wrong passphrase returns WRONG_PASSPHRASE + le
   }
 });
 
-test('control server: unlock when already unlocked returns ALREADY_UNLOCKED', async () => {
+test('control server: unlock when already unlocked is idempotent success', async () => {
   const h = await setUp();
   try {
     h.handles.markUnlocked();
@@ -114,8 +114,11 @@ test('control server: unlock when already unlocked returns ALREADY_UNLOCKED', as
       socketPath: h.socketPath,
       request: { method: 'unlock', passphraseB64: Buffer.from('x').toString('base64') },
     });
-    ok(isControlError(resp));
-    if (isControlError(resp)) equal(resp.code, 'ALREADY_UNLOCKED');
+    // Idempotent: already in the desired state → success echoing current state,
+    // not an error. (Fan-out unlock relies on this so a mix of locked +
+    // already-unlocked sessions all report as unlocked.)
+    ok(!isControlError(resp));
+    if (!isControlError(resp)) equal(resp.unlocked, true);
   } finally {
     await h.close();
   }

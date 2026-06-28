@@ -21,3 +21,9 @@ export {
   ControlClientError,
   controlRequest,
 } from './client.js';
+export {
+  type SessionSocket,
+  type SessionResult,
+  broadcast,
+  listSessionSockets,
+} from './broadcast.js';
