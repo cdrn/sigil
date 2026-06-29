@@ -71,6 +71,29 @@ allow_typed_data = false
 # ~/.sigil/config.toml; without one, sigil-mcp refuses to start.
 # Example: confirm anything above 0.01 ETH.
 # require_confirm_above_wei = "10000000000000000"
+
+# --- Solana (SVM) ----------------------------------------------------------
+# The same key also controls a Solana (ed25519) address — see its base58 in
+# "sigil portal list". These rules gate signing with it.
+
+# Sign arbitrary off-chain ed25519 messages (e.g. Sign-In With Solana).
+allow_svm_message_signing = false
+
+# Allowed recipients for native SOL transfers (base58). Empty = none.
+# sigil only decodes System-Program SOL transfers offline; any Solana tx it
+# can't fully decode (SPL tokens, program calls, address-lookup-table
+# accounts) is routed to the confirm gate instead of auto-allowed.
+# Example: svm_allow_to = ["So11111111111111111111111111111111111111112"]
+svm_allow_to = []
+
+# Per-tx cap on total transferred lamports (1 SOL = 1000000000). Default 0 =
+# no SOL transfers allowed. Quoted to stay clear of TOML int limits.
+svm_max_lamports = "0"
+
+# Optional: above this lamport total — OR for any tx sigil can't fully decode
+# — push a confirm to your phone. Must be strictly less than svm_max_lamports.
+# Example: confirm anything above 0.1 SOL.
+# require_confirm_above_lamports = "100000000"
 `;
 
 export type PolicyMode = 'permissive' | 'strict';

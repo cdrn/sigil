@@ -85,11 +85,49 @@ const ethSignTypedData: Tool = {
   handler: (args, ctx) => callMethod('sigil_eth_sign_typed_data', args, ctx),
 };
 
+const svmSignMessage: Tool = {
+  definition: {
+    name: 'sigil_svm_sign_message',
+    description:
+      'Sign an arbitrary off-chain message with the portal\'s Solana (ed25519) key — the same key whose address is `svmAddress`. The message is base64-encoded bytes. Returns the 64-byte signature as a base58 string.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        portal: { type: 'string', description: 'Portal handle, e.g. "evm:executor".' },
+        message: { type: 'string', description: 'base64 of the bytes to sign.' },
+      },
+      required: ['portal', 'message'],
+      additionalProperties: false,
+    },
+  },
+  handler: (args, ctx) => callMethod('sigil_svm_sign_message', args, ctx),
+};
+
+const svmSignTransaction: Tool = {
+  definition: {
+    name: 'sigil_svm_sign_transaction',
+    description:
+      'Sign a Solana transaction message with the portal\'s ed25519 key. Pass the SERIALIZED transaction message (the bytes between the signature array and that you build with your Solana SDK, e.g. message.serialize()) as base64. sigil ed25519-signs those exact bytes and returns the signature as base58 — assemble it into the transaction yourself. Policy decodes native SOL transfers to gate destination/amount; anything it can\'t decode offline is routed to out-of-band confirm. Supports legacy and v0 messages.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        portal: { type: 'string', description: 'Portal handle.' },
+        message: { type: 'string', description: 'base64 of the serialized Solana transaction message.' },
+      },
+      required: ['portal', 'message'],
+      additionalProperties: false,
+    },
+  },
+  handler: (args, ctx) => callMethod('sigil_svm_sign_transaction', args, ctx),
+};
+
 export const TOOLS: readonly Tool[] = Object.freeze([
   listPortals,
   ethSignMessage,
   ethSignTransaction,
   ethSignTypedData,
+  svmSignMessage,
+  svmSignTransaction,
 ]);
 
 export function findTool(name: string): Tool | undefined {

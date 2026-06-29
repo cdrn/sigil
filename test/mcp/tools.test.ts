@@ -35,14 +35,16 @@ function tearDown(h: H): void {
   rmSync(h.dir, { recursive: true });
 }
 
-test('TOOLS lists exactly the four sigil tools', () => {
-  equal(TOOLS.length, 4);
+test('TOOLS lists exactly the sigil tools', () => {
+  equal(TOOLS.length, 6);
   const names = TOOLS.map((t) => t.definition.name).sort();
   equal(JSON.stringify(names), JSON.stringify([
     'sigil_eth_sign_message',
     'sigil_eth_sign_transaction',
     'sigil_eth_sign_typed_data',
     'sigil_list_portals',
+    'sigil_svm_sign_message',
+    'sigil_svm_sign_transaction',
   ]));
 });
 
