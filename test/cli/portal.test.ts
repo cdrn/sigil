@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { unsealKey } from '../../src/crypto/index.js';
 import { addressFromPrivateKey } from '../../src/eth/index.js';
+import { svmAddressFromSecret } from '../../src/svm/index.js';
 import { resolvePaths } from '../../src/cli/paths.js';
 import { policyInit, portalAdd, portalAddress, portalListFromDisk, portalNew, portalRemove } from '../../src/cli/portal.js';
 import { parsePolicy } from '../../src/policy/index.js';
@@ -184,6 +185,8 @@ test('portalListFromDisk: returns each portal with derived address, sorted', () 
     const list = portalListFromDisk(paths, pass);
     deepEqual(list.map((p) => p.handle), ['evm:aaa', 'evm:mmm', 'evm:zzz']);
     equal(list.find((p) => p.handle === 'evm:zzz')!.address, addressFromPrivateKey(priv(1)));
+    // Same secret also yields the Solana (ed25519) address.
+    equal(list.find((p) => p.handle === 'evm:zzz')!.svmAddress, svmAddressFromSecret(priv(1)));
   } finally {
     rmSync(home, { recursive: true });
   }

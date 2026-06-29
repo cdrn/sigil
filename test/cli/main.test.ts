@@ -127,7 +127,10 @@ test('runCli: portal list — shows handles and addresses', async () => {
       kdfParams: TEST_KDF,
     });
     equal(r.code, 0);
-    ok(/evm:bot\t0x/.test(cap.out()));
+    // Dual-address output: handle, then evm + svm lines.
+    ok(/evm:bot/.test(cap.out()));
+    ok(/evm: 0x[0-9a-f]{40}/.test(cap.out()), `expected evm line in: ${cap.out()}`);
+    ok(/svm: [1-9A-HJ-NP-Za-km-z]{32,44}/.test(cap.out()), `expected svm line in: ${cap.out()}`);
   } finally {
     rmSync(home, { recursive: true });
   }

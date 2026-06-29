@@ -190,7 +190,9 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
           if (portals.length === 0) {
             out.write('(no portals)\n');
           } else {
-            for (const p of portals) out.write(`${p.handle}\t${p.address}\n`);
+            for (const p of portals) {
+              out.write(`${p.handle}\n  evm: ${p.address}\n  svm: ${p.svmAddress}\n`);
+            }
           }
         } finally {
           passphrase.fill(0);

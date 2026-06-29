@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync,
 import { join } from 'node:path';
 import { type KdfParams, sealKey, SecretBuffer, unsealKey } from '../crypto/index.js';
 import { addressFromPrivateKey, randomSecretKey } from '../eth/index.js';
+import { svmAddressFromSecret } from '../svm/index.js';
 import { HandleTable } from '../daemon/handles.js';
 import { type PolicyMode, policyTemplate } from '../policy/index.js';
 import type { SigilPaths } from './paths.js';
@@ -137,7 +138,10 @@ function provisionPortal(
 export interface PortalInfo {
   handle: string;
   kind: 'evm';
+  /** EVM address (secp256k1). */
   address: string;
+  /** Solana address (ed25519) derived from the same secret. */
+  svmAddress: string;
 }
 
 /**
@@ -155,7 +159,12 @@ export function portalListFromDisk(paths: SigilPaths, passphrase: Buffer): Porta
     const blob = readFileSync(join(paths.keysDir, filename));
     const sb = unsealKey(blob, passphrase);
     try {
-      out.push({ handle, kind: 'evm', address: addressFromPrivateKey(sb.bytes()) });
+      out.push({
+        handle,
+        kind: 'evm',
+        address: addressFromPrivateKey(sb.bytes()),
+        svmAddress: svmAddressFromSecret(sb.bytes()),
+      });
     } finally {
       sb.dispose();
     }

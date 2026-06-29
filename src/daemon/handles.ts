@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { addressFromPrivateKey } from '../eth/address.js';
+import { svmAddressFromSecret } from '../svm/index.js';
 import {
   type SecretBuffer,
   unsealKey,
@@ -22,7 +23,10 @@ const HANDLE_RE = /^(evm):([a-zA-Z0-9_-]+)$/;
 export interface PortalInfo {
   handle: string;
   kind: 'evm';
+  /** EVM address (secp256k1) — 0x-prefixed, lowercase. */
   address: string;
+  /** Solana address (ed25519) derived from the same secret — base58. */
+  svmAddress: string;
 }
 
 export class HandleLoadError extends Error {
@@ -135,9 +139,10 @@ export class HandleTable {
       throw new HandleLoadError(`duplicate handle "${handle}"`);
     }
     const address = addressFromPrivateKey(secret.bytes());
+    const svmAddress = svmAddressFromSecret(secret.bytes());
     this.#entries.set(handle, {
       secret,
-      info: { handle, kind: 'evm', address },
+      info: { handle, kind: 'evm', address, svmAddress },
     });
   }
 

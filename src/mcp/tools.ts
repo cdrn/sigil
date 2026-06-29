@@ -18,7 +18,7 @@ const listPortals: Tool = {
   definition: {
     name: 'sigil_list_portals',
     description:
-      'List the signing portals currently loaded in sigil. Returns each portal handle (e.g. "evm:executor"), its kind, and the public address it controls.',
+      'List the signing portals currently loaded in sigil. Returns each portal handle (e.g. "evm:executor"), its kind, the EVM address (`address`, secp256k1, 0x-prefixed) and the Solana address (`svmAddress`, ed25519, base58) — both controlled by the same key.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   handler: (args, ctx) => callMethod('sigil_list_portals', args, ctx),

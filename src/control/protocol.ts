@@ -43,7 +43,10 @@ export interface ControlSuccess {
 export interface PortalSummary {
   handle: string;
   kind: 'evm';
+  /** EVM address (secp256k1). */
   address: string;
+  /** Solana address (ed25519) derived from the same secret. */
+  svmAddress: string;
 }
 
 export interface ControlError {
