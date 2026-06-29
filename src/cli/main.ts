@@ -33,8 +33,9 @@ the MCP server in ~/.claude.json (with --user) or <root>/.mcp.json
 to get a locked-down template you fill in before any sign succeeds.
 "sigil policy init" provisions a policy file for an existing portal
 whose policy is missing (e.g. keyfile from an older sigil version).
-"sigil unlock" prompts for the passphrase and pushes it to the running
-sigil-mcp process (spawned by Claude Code) over the control socket.
+"sigil unlock" prompts for the passphrase and pushes it to every running
+sigil-mcp session (one per Claude Code window) over their control sockets,
+so a single unlock covers all open windows.
 Set SIGIL_HOME to override ~/.sigil.
 `;
 
@@ -98,8 +99,8 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
     if (head === 'unlock') {
       const passphrase = await askPassphrase();
       try {
-        const result = await unlock({ paths, passphrase });
-        const { message, code } = formatResult('unlock', result);
+        const sessions = await unlock({ paths, passphrase });
+        const { message, code } = formatResult('unlock', sessions);
         (code === 0 ? out : err).write(message + '\n');
         return { code };
       } finally {
@@ -107,8 +108,8 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
       }
     }
     if (head === 'lock') {
-      const result = await lock({ paths });
-      const { message, code } = formatResult('lock', result);
+      const sessions = await lock({ paths });
+      const { message, code } = formatResult('lock', sessions);
       (code === 0 ? out : err).write(message + '\n');
       return { code };
     }

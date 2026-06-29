@@ -77,7 +77,10 @@ export async function controlRequest(opts: ControlRequestOpts): Promise<ControlR
     sock.on('error', (err: NodeJS.ErrnoException) => {
       const code = err.code;
       let mapped: ControlClientErrorCode = 'CONNECT_FAILED';
-      if (code === 'ENOENT' || code === 'ECONNREFUSED') mapped = 'SERVER_DOWN';
+      // ENOENT: socket file gone. ECONNREFUSED: socket exists but no listener
+      // (process died). ENOTSOCK: the path is a non-socket file (junk). All
+      // three mean "no live server here" — the caller treats them as reapable.
+      if (code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'ENOTSOCK') mapped = 'SERVER_DOWN';
       finish(() => reject(new ControlClientError(
         `control socket: ${err.message}`,
         mapped,

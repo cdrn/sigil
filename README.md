@@ -14,7 +14,7 @@ One MCP server process, four bins, five runtime deps (all pinned, zero transitiv
 2. **`sigil`** — control CLI. `init`, `status`, `portal add`/`list`/`remove`, `unlock`, `lock`.
 3. **`sigil-hook-pre` / `sigil-hook-post`** — Claude Code hook binaries that block reads of common key paths and redact key-shaped strings from tool output.
 
-`sigil-mcp` boots **locked**: empty in-memory handle table, no keys loaded. Sign methods return `DAEMON_LOCKED` (-32003) with a "run sigil unlock" message until you push the passphrase in from a separate terminal via `sigil unlock`. That CLI connects to a Unix socket at `~/.sigil/control.sock` (0600) that `sigil-mcp` opens at startup. After unlock, signs work for the rest of the session; `sigil lock` zeroizes the table without killing the process.
+`sigil-mcp` boots **locked**: empty in-memory handle table, no keys loaded. Sign methods return `DAEMON_LOCKED` (-32003) with a "run sigil unlock" message until you push the passphrase in from a separate terminal via `sigil unlock`. That CLI connects to a per-session Unix socket at `~/.sigil/control/<pid>.sock` (0600) that `sigil-mcp` opens at startup — and fans out to every such socket so one `sigil unlock` reaches all open windows. After unlock, signs work for the rest of the session; `sigil lock` zeroizes the table without killing the process.
 
 Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transactions, EIP-712 typed data.
 
@@ -57,9 +57,9 @@ sigil portal add evm:bot --key-file ./private.hex
 # 3. Open Claude Code. It spawns sigil-mcp automatically via your MCP config.
 #    sigil-mcp boots locked — the first sign attempt will return DAEMON_LOCKED.
 
-# 4. In a separate terminal, push the passphrase to the running sigil-mcp.
+# 4. In a separate terminal, push the passphrase to every running sigil-mcp.
 sigil unlock
-# → prompts for the passphrase, decrypts every keyfile in ~/.sigil/keys/
+# → prompts once, decrypts every keyfile in ~/.sigil/keys/ into each open window
 
 # 5. Use Claude Code. The four sigil_* tools will work for the rest of the session.
 
@@ -117,26 +117,31 @@ sigil portal remove <handle>
   Delete a keyfile from disk.
 
 sigil unlock
-  Prompt for the passphrase and push it to the running sigil-mcp over
-  the control socket. After unlock, sign calls succeed for the rest
-  of the Claude session. Fails if sigil-mcp is not running (start a
-  Claude Code session first) or if already unlocked.
+  Prompt for the passphrase and push it to every running sigil-mcp at
+  once (one per Claude window). After unlock, sign calls succeed for the
+  rest of each session. Idempotent — sessions already unlocked are left
+  as-is. Fails if no sigil-mcp is running (start a Claude Code session
+  first).
 
 sigil lock
-  Tell sigil-mcp to zeroize and clear its in-memory keys. Re-unlock
-  with sigil unlock — sigil-mcp keeps running.
+  Tell every running sigil-mcp to zeroize and clear its in-memory keys.
+  Re-unlock with sigil unlock — the sigil-mcp processes keep running.
 
 sigil status
-  Report whether sigil-mcp is running (probes ~/.sigil/control.sock),
-  its PID, whether it's unlocked, what portals it has loaded, and
-  how many keyfiles exist on disk. Does not require the passphrase.
+  Report which sigil-mcp sessions are running (one entry per window,
+  with PID, unlocked flag, and loaded portals) and how many keyfiles
+  exist on disk. Does not require the passphrase.
 ```
 
-Set `SIGIL_HOME` to override `~/.sigil`. Set `SIGIL_CONTROL_SOCK` to override the control socket path.
+Set `SIGIL_HOME` to override `~/.sigil`. Set `SIGIL_CONTROL_DIR` to override the control-socket directory.
 
 ## Multi-window behaviour
 
-Each Claude Code window spawns its own `sigil-mcp`. They share the on-disk keyfiles + audit log but have separate in-memory handle tables — you `sigil unlock` once per window. (The first MCP to start owns `control.sock`; further sessions will get their own socket once flock-based per-instance sockets land in Phase C of [#23](https://github.com/cdrn/sigil/issues/23). Until then, only the first window's `sigil-mcp` is reachable from the CLI.)
+Each Claude Code window spawns its own `sigil-mcp`, and each binds its own control socket at `~/.sigil/control/<pid>.sock`. They share the on-disk keyfiles + audit log but keep separate in-memory handle tables.
+
+`sigil unlock` / `lock` / `status` fan out across **every** socket in `~/.sigil/control/`, so a single `sigil unlock` loads keys into all currently-open windows — no more guessing which process the CLI reaches. Sockets left behind by hard-killed sessions are detected and cleaned up automatically on the next CLI call.
+
+Each window still holds its own decrypted keys only for its own lifetime: closing a window zeroizes that session's keys, and a window opened *after* you unlock starts locked (run `sigil unlock` again to include it). Keys never outlive the Claude sessions that use them — a deliberate property from [#23](https://github.com/cdrn/sigil/issues/23).
 
 OS-keychain integration (planned, v0.3) will make unlock zero-touch for users who set it up.
 

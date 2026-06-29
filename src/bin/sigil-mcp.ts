@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import { AuditWriter } from '../audit/index.js';
-import { resolvePaths } from '../cli/paths.js';
+import { resolvePaths, sessionSocketPath } from '../cli/paths.js';
 import {
   ConfirmGate,
   enforceConfirmTransportPresence,
@@ -21,15 +21,19 @@ import { FileSystemPolicyResolver } from '../policy/index.js';
  * session via the .claude/settings.json mcpServers entry.
  *
  * Lifecycle:
- *   - On startup: ensures ~/.sigil/{,keys/} exist (0o700), opens the audit
- *     log, constructs an EMPTY (locked) HandleTable, binds the control
- *     socket at ~/.sigil/control.sock (0o600).
+ *   - On startup: ensures ~/.sigil/{,keys/,control/} exist (0o700), opens the
+ *     audit log, constructs an EMPTY (locked) HandleTable, binds a per-session
+ *     control socket at ~/.sigil/control/<pid>.sock (0o600).
  *   - During the session: runs the MCP wire loop on stdio. Sign methods
  *     return DAEMON_LOCKED until the user runs `sigil unlock`, which pushes
  *     the passphrase over the control socket; the HandleTable loads the
  *     encrypted keyfiles from disk and the session is unlocked.
  *   - On stdin close (Claude exited): closes the control socket, locks +
  *     disposes the HandleTable, closes the audit writer, exits.
+ *
+ * Each session owns a distinct socket (named for its PID), so multiple Claude
+ * windows no longer contend for a single control.sock — `sigil unlock` fans
+ * out across every socket in the directory and unlocks them all at once.
  *
  * The control socket is unref'd so it doesn't keep the loop alive on its own;
  * stdin alone gates process lifetime.
@@ -39,6 +43,12 @@ async function main(): Promise<void> {
   mkdirSync(paths.home, { recursive: true, mode: 0o700 });
   mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.controlDir, { recursive: true, mode: 0o700 });
+  // mkdir's `mode` only applies to a freshly-created dir (and is masked by
+  // umask), so re-assert 0o700 in case the dir pre-existed with looser perms.
+  // The per-socket file gets its own 0o600 from the control server on bind.
+  try { chmodSync(paths.controlDir, 0o700); } catch { /* best-effort */ }
+  const socketPath = sessionSocketPath(paths.controlDir, process.pid);
 
   // Load config + fail-closed check. If any portal policy requires OOB
   // confirmation but no transport is configured, refuse to start — running
@@ -73,22 +83,20 @@ async function main(): Promise<void> {
   let control: Awaited<ReturnType<typeof startControlServer>> | null = null;
   try {
     control = await startControlServer({
-      socketPath: paths.controlSocket,
+      socketPath,
       keysDir: paths.keysDir,
       policyDir: paths.policyDir,
       handles,
       onLog: (e) => process.stderr.write(`control: ${JSON.stringify(e)}\n`),
     });
   } catch (err) {
-    // Another sigil-mcp already owns the control socket (or some other bind
-    // failure). Stay up without a control socket so the MCP stdio still
-    // works, but warn — this session will be permanently locked, since the
-    // primary sigil-mcp is what `sigil unlock` reaches.
+    // The per-PID socket is ours alone, so this is genuinely exceptional
+    // (e.g. controlDir not writable). Stay up so the MCP stdio still works,
+    // but warn — without a control socket this session can't be unlocked and
+    // sign calls will return DAEMON_LOCKED.
     process.stderr.write(
-      `sigil-mcp: control socket unavailable (${(err as Error).message}). ` +
-      `This session will stay locked; sign calls will return DAEMON_LOCKED. ` +
-      `Run "sigil unlock" against the primary sigil-mcp from your first ` +
-      `Claude session — phase C of #23 will lift this limitation.\n`,
+      `sigil-mcp: control socket unavailable at ${socketPath} (${(err as Error).message}). ` +
+      `This session will stay locked; sign calls will return DAEMON_LOCKED.\n`,
     );
   }
 
@@ -97,7 +105,7 @@ async function main(): Promise<void> {
       `sigil-mcp: ready (locked; run "sigil unlock" to load keys from ${paths.keysDir})\n`,
     );
   } else {
-    process.stderr.write(`sigil-mcp: ready (permanently locked — no control socket)\n`);
+    process.stderr.write(`sigil-mcp: ready (locked — no control socket; cannot be unlocked)\n`);
   }
 
   const shutdown = (): void => {
