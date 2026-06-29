@@ -1,6 +1,7 @@
 import {
   type AuditWriter,
 } from '../audit/index.js';
+import type { ConfirmGate } from '../confirm/index.js';
 import {
   type Eip1559Tx,
   type Hex,
@@ -50,9 +51,16 @@ export interface MethodContext {
    * filesystem.
    */
   policy: PolicyResolver;
+  /**
+   * Out-of-band confirm gate. Optional: only consulted when the policy
+   * evaluator returns a `confirm` decision (today, only sign_transaction
+   * can trigger this). When undefined, a confirm decision becomes a hard
+   * deny — fail closed.
+   */
+  confirm?: ConfirmGate;
 }
 
-export type MethodHandler = (params: unknown, ctx: MethodContext) => unknown;
+export type MethodHandler = (params: unknown, ctx: MethodContext) => unknown | Promise<unknown>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,18 +111,32 @@ function requirePortal(handles: HandleTable, handle: string): Buffer {
  * caller's mistakes (wrong handle, daemon locked) error before we touch the
  * policy file at all.
  */
+/**
+ * Result of the policy gate:
+ *   - 'allow': caller proceeds to sign.
+ *   - 'confirm': caller must run the OOB confirm flow before signing; the
+ *     audit entry for the request will be appended by the caller after the
+ *     confirm decision resolves.
+ *
+ * Deny is not returned: gatePolicy throws RPC_POLICY_DENIED directly.
+ */
+type GateResult =
+  | { proceed: 'allow' }
+  | { proceed: 'confirm'; summary: string };
+
 function gatePolicy(
   ctx: MethodContext,
   handle: string,
   kind: string,
   payload: unknown,
   request: PolicyRequest,
-): void {
+): GateResult {
   let reason: string;
   try {
     const policy = ctx.policy.resolve(handle);
     const decision = evaluate(request, policy);
-    if (decision.allow) return;
+    if (decision.kind === 'allow') return { proceed: 'allow' };
+    if (decision.kind === 'confirm') return { proceed: 'confirm', summary: decision.summary };
     reason = decision.reason;
   } catch (err) {
     if (err instanceof PolicyLoadError) {
@@ -250,7 +272,7 @@ function asTx(obj: Record<string, unknown>): SignableTx {
   return tx;
 }
 
-const sigil_eth_sign_transaction: MethodHandler = (params, ctx) => {
+const sigil_eth_sign_transaction: MethodHandler = async (params, ctx) => {
   const obj = asObject(params, 'eth_sign_transaction');
   const portal = asString(obj, 'portal', 'eth_sign_transaction');
   const txObj = obj['tx'];
@@ -259,7 +281,12 @@ const sigil_eth_sign_transaction: MethodHandler = (params, ctx) => {
   }
   const tx = asTx(txObj as Record<string, unknown>);
   const priv = requirePortal(ctx.handles, portal);
-  gatePolicy(ctx, portal, 'eth_sign_transaction', { tx: txObj }, { kind: 'transaction', tx });
+  const gate = gatePolicy(ctx, portal, 'eth_sign_transaction', { tx: txObj }, {
+    kind: 'transaction', tx,
+  });
+  if (gate.proceed === 'confirm') {
+    await runConfirmGate(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.summary);
+  }
   const signed = signTransaction(tx, priv);
   ctx.audit.append({
     kind: 'eth_sign_transaction',
@@ -270,6 +297,42 @@ const sigil_eth_sign_transaction: MethodHandler = (params, ctx) => {
   });
   return { signed };
 };
+
+/**
+ * The confirm half of the sign path. Pulled out so each sign method that
+ * eventually opts in (today: sign_transaction; later: sign_typed_data with
+ * a separate toggle) reuses the same audit + error semantics.
+ *
+ * If the gate is not configured, this is a hard deny — the sign request
+ * cannot be honoured under the policy in force, so we refuse rather than
+ * silently ignore the confirm requirement.
+ *
+ * Approve: returns silently, sign proceeds.
+ * Deny / timeout / transport_error: audit a deny + throw POLICY_DENIED.
+ */
+async function runConfirmGate(
+  ctx: MethodContext,
+  portal: string,
+  kind: string,
+  payload: unknown,
+  summary: string,
+): Promise<void> {
+  if (!ctx.confirm) {
+    const reason =
+      'policy requires out-of-band confirmation, but no confirm transport ' +
+      'is configured — add a [confirm.ntfy] block to ~/.sigil/config.toml';
+    ctx.audit.append({ kind, portal, payload, decision: 'deny', reason });
+    throw new RpcMethodError(RPC_POLICY_DENIED, reason);
+  }
+  const decision = await ctx.confirm.request({ portal, summary });
+  if (decision.kind === 'approved') return;
+  const reason =
+    decision.kind === 'denied' ? `confirm denied by human (transport=${ctx.confirm.transportName})`
+    : decision.kind === 'timeout' ? `confirm timed out — no ack within window (transport=${ctx.confirm.transportName})`
+    : `confirm transport error: ${decision.message}`;
+  ctx.audit.append({ kind, portal, payload, decision: 'deny', reason });
+  throw new RpcMethodError(RPC_POLICY_DENIED, reason);
+}
 
 const sigil_eth_sign_typed_data: MethodHandler = (params, ctx) => {
   const obj = asObject(params, 'eth_sign_typed_data');
@@ -312,14 +375,20 @@ export const METHODS: Readonly<Record<string, MethodHandler>> = Object.freeze({
 });
 
 /**
- * Dispatch a parsed RPC request to the matching method.
+ * Dispatch a parsed RPC request to the matching method. Always async — even
+ * for handlers that are synchronous — so callers can await uniformly.
+ *
  * Throws RpcMethodError on user errors or method-not-found, or other Error
  * for unexpected internals.
  */
-export function dispatch(method: string, params: unknown, ctx: MethodContext): unknown {
+export async function dispatch(
+  method: string,
+  params: unknown,
+  ctx: MethodContext,
+): Promise<unknown> {
   const handler = METHODS[method];
   if (!handler) {
     throw new RpcMethodError(RPC_METHOD_NOT_FOUND, `method not found: ${method}`);
   }
-  return handler(params, ctx);
+  return await handler(params, ctx);
 }

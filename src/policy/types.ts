@@ -27,6 +27,14 @@ export interface Policy {
   allowedSelectors: readonly string[];
   allowMessageSigning: boolean;
   allowTypedData: boolean;
+  /**
+   * If set, transactions whose value exceeds this threshold require an
+   * out-of-band human confirmation before signing. Independent of mode:
+   * applies in both permissive and strict. `undefined` = no confirm gate.
+   * A value > maxValueWei in strict mode would never trigger (the deny
+   * fires first); validation catches that misconfiguration at load time.
+   */
+  requireConfirmAboveWei?: bigint;
 }
 
 /** What the evaluator gets asked about. */
@@ -35,10 +43,20 @@ export type PolicyRequest =
   | { kind: 'message'; messageBytes: Buffer }
   | { kind: 'typed_data'; typedData: TypedData };
 
-/** Evaluator output. Reason is human-readable + audit-loggable on Deny. */
+/**
+ * Evaluator output. Three arms, discriminated by `kind`:
+ *   - 'allow': sign without further checks.
+ *   - 'deny': hard reject with a human-readable, audit-loggable reason.
+ *   - 'confirm': static checks all passed, but the policy says this request
+ *     needs an out-of-band human ack before signing. The caller (sign
+ *     methods) gates on the confirm transport before proceeding. `summary`
+ *     is the one-line description shown to the user in the push
+ *     notification — keep it tight ("0.5 ETH → 0xabc…").
+ */
 export type PolicyDecision =
-  | { allow: true }
-  | { allow: false; reason: string };
+  | { kind: 'allow' }
+  | { kind: 'deny'; reason: string }
+  | { kind: 'confirm'; summary: string };
 
 /**
  * Resolves a portal handle to its current policy. Wrapped in an interface so

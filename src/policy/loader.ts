@@ -33,6 +33,13 @@ export function parsePolicy(source: string): Policy {
     throw new PolicyLoadError(`policy.mode must be "permissive" or "strict" (got ${JSON.stringify(mode)})`);
   }
 
+  // require_confirm_above_wei is mode-independent: it's an opt-in safety net
+  // that applies whether or not the rest of the file is strict.
+  const requireConfirmAboveWei = parseOptionalWei(
+    raw['require_confirm_above_wei'],
+    'require_confirm_above_wei',
+  );
+
   if (mode === 'permissive') {
     return {
       mode: 'permissive',
@@ -42,6 +49,7 @@ export function parsePolicy(source: string): Policy {
       allowedSelectors: [],
       allowMessageSigning: true,
       allowTypedData: true,
+      ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
     };
   }
 
@@ -74,6 +82,22 @@ export function parsePolicy(source: string): Policy {
   const allowMessageSigning = asBool(raw['allow_message_signing'], 'allow_message_signing', false);
   const allowTypedData = asBool(raw['allow_typed_data'], 'allow_typed_data', false);
 
+  // Catch the misconfiguration where the confirm threshold sits above the
+  // hard cap: nothing would ever trigger the confirm path, the deny would
+  // fire first. Easier to surface at load time than to wonder why your
+  // phone never buzzed.
+  if (
+    requireConfirmAboveWei !== undefined &&
+    requireConfirmAboveWei >= maxValueWei &&
+    maxValueWei !== 0n
+  ) {
+    throw new PolicyLoadError(
+      `policy.require_confirm_above_wei (${requireConfirmAboveWei}) must be less than ` +
+      `max_value_wei (${maxValueWei}) — otherwise the value cap fires first and the ` +
+      `confirm gate never triggers`,
+    );
+  }
+
   return {
     mode: 'strict',
     chainIds,
@@ -82,6 +106,7 @@ export function parsePolicy(source: string): Policy {
     allowedSelectors,
     allowMessageSigning,
     allowTypedData,
+    ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
   };
 }
 
@@ -178,6 +203,21 @@ function parseMaxValue(v: unknown): bigint {
   if (!DEC_RE.test(v)) {
     throw new PolicyLoadError(
       `policy.max_value_wei must be a decimal integer string (got ${JSON.stringify(v)})`,
+    );
+  }
+  return BigInt(v);
+}
+
+function parseOptionalWei(v: unknown, name: string): bigint | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== 'string') {
+    throw new PolicyLoadError(
+      `policy.${name} must be a decimal string (e.g. "100000000000000000"); got ${typeof v}`,
+    );
+  }
+  if (!DEC_RE.test(v)) {
+    throw new PolicyLoadError(
+      `policy.${name} must be a decimal integer string (got ${JSON.stringify(v)})`,
     );
   }
   return BigInt(v);

@@ -4,7 +4,7 @@
 
 `sigil` is a local signing tool and Claude Code integration that lets agentic coding tools use private keys without ever putting key material in the model's context window.
 
-**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, and policy engine (static checks) all work end-to-end. Out-of-band confirmation, rolling-window value caps, and EIP-712 domain allowlists are not yet implemented. Until they land — and until the supply-chain attestations promised for v0.1.0 ship — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
+**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, policy engine (static checks), and out-of-band confirmation via ntfy all work end-to-end. Rolling-window value caps and EIP-712 domain allowlists are not yet implemented. Until they land — and until the supply-chain attestations promised for v0.1.0 ship — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
 
 ## What it is
 
@@ -163,11 +163,35 @@ allowed_selectors = []                    # 4-byte function selectors, e.g. "0xa
 
 allow_message_signing = false             # EIP-191 personal_sign (e.g. SIWE)
 allow_typed_data = false                  # EIP-712 (Permit, OpenSea — can be financial)
+
+# Optional: above this value, sigil pushes a notification to your phone and
+# waits for an approve/deny tap before signing. See "Out-of-band confirm"
+# below. Must be strictly less than max_value_wei.
+require_confirm_above_wei = "10000000000000000"   # 0.01 ETH
 ```
 
 A failed rule throws `POLICY_DENIED` (-32001) back to the agent with the human-readable reason ("tx denied — value X exceeds max_value_wei Y"), and the deny is appended to the hash-chained audit log alongside allows. Denies are forensically the more interesting half — they're the prompt-injection canary.
 
-What's deferred to follow-up PRs (still in [#3](https://github.com/cdrn/sigil/issues/3)): rolling-window value caps (e.g. 1 ETH/day per portal), EIP-712 domain + primary-type allowlists, decoded-calldata arg checks, and the `require_confirm_above_wei` outcome that hooks into the OOB push gate ([#4](https://github.com/cdrn/sigil/issues/4)).
+What's deferred to follow-up PRs (still in [#3](https://github.com/cdrn/sigil/issues/3)): rolling-window value caps (e.g. 1 ETH/day per portal), EIP-712 domain + primary-type allowlists, decoded-calldata arg checks.
+
+## Out-of-band confirm
+
+For sign requests above `require_confirm_above_wei`, sigil pushes a notification to a channel you control (not the agent) and waits for an explicit human ack before signing. Today the only transport is [ntfy](https://ntfy.sh) — zero-setup, no accounts. SMS and Telegram transports are wired behind the same `ConfirmTransport` interface and will land in follow-ups.
+
+Wire it up in `~/.sigil/config.toml`:
+
+```toml
+[confirm.ntfy]
+topic  = "your-unguessable-string-here"     # the topic name IS the credential
+# server = "https://ntfy.example.com"       # optional, default https://ntfy.sh
+
+[confirm]
+# timeout_ms = 60000                        # default 60s; timeout = deny
+```
+
+Install the ntfy app on your phone, subscribe to that topic, and you'll get a push with **Approve** / **Deny** buttons every time the threshold is crossed. The buttons hit a local `127.0.0.1` listener inside `sigil-mcp` with a one-time, request-bound token — a leaked or replayed token can't approve a different sign. Timeout, deny click, and push-provider outage all fail closed.
+
+If any policy file sets `require_confirm_above_wei` but no transport is configured, `sigil-mcp` refuses to start with a clear error rather than silently degrading every confirm-gated sign to a deny.
 
 ## Supply chain posture
 

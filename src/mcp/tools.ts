@@ -3,7 +3,7 @@ import { MCP_INTERNAL_ERROR, type ToolDefinition, type ToolResult } from './prot
 
 export type ToolHandlerCtx = MethodContext;
 
-export type ToolHandler = (args: unknown, ctx: ToolHandlerCtx) => ToolResult;
+export type ToolHandler = (args: unknown, ctx: ToolHandlerCtx) => Promise<ToolResult>;
 
 export interface Tool {
   definition: ToolDefinition;
@@ -117,9 +117,9 @@ export class ToolError extends Error {
  * not-found method) into `ToolError` with the same code, so the original
  * error semantics flow through to the MCP client unchanged.
  */
-function callMethod(methodName: string, args: unknown, ctx: MethodContext): ToolResult {
+async function callMethod(methodName: string, args: unknown, ctx: MethodContext): Promise<ToolResult> {
   try {
-    const result = dispatch(methodName, args, ctx);
+    const result = await dispatch(methodName, args, ctx);
     return textResult(result);
   } catch (err) {
     if (err instanceof RpcMethodError) {

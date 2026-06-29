@@ -18,6 +18,7 @@ export interface SigilPaths {
   readonly policyDir: string;
   readonly controlDir: string;
   readonly auditLog: string;
+  readonly configFile: string;
 }
 
 export function resolvePaths(env: NodeJS.ProcessEnv = process.env): SigilPaths {
@@ -28,6 +29,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): SigilPaths {
     policyDir: join(home, 'policy'),
     controlDir: env['SIGIL_CONTROL_DIR'] ?? join(home, 'control'),
     auditLog: join(home, 'audit.log'),
+    configFile: join(home, 'config.toml'),
   };
 }
 

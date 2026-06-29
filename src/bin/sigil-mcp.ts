@@ -2,6 +2,15 @@
 import { chmodSync, mkdirSync } from 'node:fs';
 import { AuditWriter } from '../audit/index.js';
 import { resolvePaths, sessionSocketPath } from '../cli/paths.js';
+import {
+  ConfirmGate,
+  enforceConfirmTransportPresence,
+  loadConfig,
+  NtfyTransport,
+  startAckServer,
+  type AckServer,
+  type ConfirmTransport,
+} from '../confirm/index.js';
 import { startControlServer } from '../control/index.js';
 import { HandleTable } from '../daemon/handles.js';
 import { runMcpStdio } from '../mcp/server.js';
@@ -40,6 +49,31 @@ async function main(): Promise<void> {
   // The per-socket file gets its own 0o600 from the control server on bind.
   try { chmodSync(paths.controlDir, 0o700); } catch { /* best-effort */ }
   const socketPath = sessionSocketPath(paths.controlDir, process.pid);
+
+  // Load config + fail-closed check. If any portal policy requires OOB
+  // confirmation but no transport is configured, refuse to start — running
+  // would silently degrade every confirm-gated sign to a deny.
+  const config = loadConfig(paths.configFile);
+  enforceConfirmTransportPresence(config, paths.policyDir);
+
+  // Stand up the confirm pipeline only if a transport is configured. When
+  // it's absent, sign_transaction will reject any tx that hits a confirm
+  // threshold via the gatePolicy fail-closed path inside daemon/methods.ts.
+  let confirmGate: ConfirmGate | undefined;
+  let ackServer: AckServer | undefined;
+  if (config.confirm?.ntfy) {
+    const transport: ConfirmTransport = new NtfyTransport(config.confirm.ntfy);
+    ackServer = await startAckServer();
+    const opts: ConstructorParameters<typeof ConfirmGate>[0] = {
+      transport,
+      ackServer,
+      ...(config.confirm.timeoutMs !== undefined ? { timeoutMs: config.confirm.timeoutMs } : {}),
+    };
+    confirmGate = new ConfirmGate(opts);
+    process.stderr.write(
+      `sigil-mcp: confirm transport "${transport.name}" ready (ack on ${ackServer.baseUrl})\n`,
+    );
+  }
 
   const handles = new HandleTable();
   const audit = new AuditWriter(paths.auditLog);
@@ -81,13 +115,21 @@ async function main(): Promise<void> {
       controlClosed = true;
       control.close().catch(() => { /* best-effort */ });
     }
+    if (ackServer) {
+      ackServer.close().catch(() => { /* best-effort */ });
+    }
   };
   process.on('exit', shutdown);
   process.on('SIGINT', () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
 
   await runMcpStdio({
-    context: { handles, audit, policy },
+    context: {
+      handles,
+      audit,
+      policy,
+      ...(confirmGate ? { confirm: confirmGate } : {}),
+    },
     stdin: process.stdin,
     stdout: process.stdout,
     onLog: (e) => process.stderr.write(JSON.stringify(e) + '\n'),
@@ -99,6 +141,7 @@ async function main(): Promise<void> {
     controlClosed = true;
     await control.close();
   }
+  if (ackServer) await ackServer.close();
   process.exit(0);
 }
 
