@@ -51,6 +51,16 @@ function encodeAccessList(list: AccessListItem[]): RlpInput {
 }
 
 /**
+ * RLP-encode a signature component (r or s). These arrive as fixed 32-byte buffers, but RLP integer
+ * fields must be minimal big-endian with no leading zero bytes. When r or s has a high byte of 0x00
+ * (~1/256 of signatures), emitting the raw 32 bytes is a non-canonical integer and nodes reject the
+ * tx with "rlp: non-canonical integer (leading zero bytes)". Route through encodeInt to strip them.
+ */
+function encodeSigValue(buf: Buffer): Buffer {
+  return encodeInt(BigInt('0x' + buf.toString('hex')));
+}
+
+/**
  * Returns the 32-byte keccak digest that should be signed for the given tx.
  * For legacy this is the EIP-155 digest; for EIP-1559 it is the type-prefixed digest.
  */
@@ -104,8 +114,8 @@ export function signTransaction(tx: SignableTx, privateKey: Buffer | Uint8Array)
       encodeInt(tx.value),
       hexToBuf(tx.data),
       encodeInt(v),
-      sig.r,
-      sig.s,
+      encodeSigValue(sig.r),
+      encodeSigValue(sig.s),
     ];
     return ('0x' + rlpEncode(fields).toString('hex')) as Hex;
   }
@@ -122,8 +132,8 @@ export function signTransaction(tx: SignableTx, privateKey: Buffer | Uint8Array)
     hexToBuf(tx.data),
     encodeAccessList(tx.accessList ?? []),
     encodeInt(sig.recovery),
-    sig.r,
-    sig.s,
+    encodeSigValue(sig.r),
+    encodeSigValue(sig.s),
   ];
   return ('0x02' + rlpEncode(fields).toString('hex')) as Hex;
 }
