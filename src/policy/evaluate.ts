@@ -1,5 +1,5 @@
 import type { SignableTx } from '../eth/index.js';
-import type { Policy, PolicyDecision, PolicyRequest } from './types.js';
+import type { Policy, PolicyDecision, PolicyRequest, SvmTransferView } from './types.js';
 
 /**
  * Pure evaluator. Returns Allow, Deny(reason), or ConfirmRequired(summary).
@@ -21,6 +21,10 @@ export function evaluate(request: PolicyRequest, policy: Policy): PolicyDecision
   if (policy.mode === 'permissive') {
     if (request.kind === 'transaction') {
       const confirm = confirmForTx(request.tx, policy);
+      if (confirm) return confirm;
+    }
+    if (request.kind === 'svm_transaction') {
+      const confirm = confirmForSvmTx(request, policy);
       if (confirm) return confirm;
     }
     return { kind: 'allow' };
@@ -47,7 +51,90 @@ export function evaluate(request: PolicyRequest, policy: Policy): PolicyDecision
             kind: 'deny',
             reason: 'EIP-712 typed-data denied — strict mode + allow_typed_data=false',
           };
+    case 'svm_message':
+      return policy.allowSvmMessageSigning
+        ? { kind: 'allow' }
+        : {
+            kind: 'deny',
+            reason: 'svm message signing denied — strict mode + allow_svm_message_signing=false',
+          };
+    case 'svm_transaction': {
+      const decision = evaluateSvmTxStrict(request, policy);
+      if (decision) return decision;
+      const confirm = confirmForSvmTx(request, policy);
+      if (confirm) return confirm;
+      return { kind: 'allow' };
+    }
   }
+}
+
+/**
+ * Strict-mode Solana transaction check. All-or-nothing decode:
+ *   - if any instruction couldn't be decoded offline, we can't reason about
+ *     what it does → route to a human confirm (NOT a silent allow);
+ *   - otherwise every transfer's destination must be allowlisted and the
+ *     total must be within the cap, else hard deny.
+ * Returns a deny/confirm decision, or null when the static checks pass (the
+ * caller then applies the value-based confirm threshold).
+ */
+function evaluateSvmTxStrict(
+  req: Extract<PolicyRequest, { kind: 'svm_transaction' }>,
+  policy: Policy,
+): ({ kind: 'deny'; reason: string } | { kind: 'confirm'; summary: string }) | null {
+  if (!req.allDecoded) {
+    return {
+      kind: 'confirm',
+      summary: `unrecognized Solana tx — ${req.instructionCount} instruction${req.instructionCount === 1 ? '' : 's'}, contents not decodable offline`,
+    };
+  }
+  let total = 0n;
+  for (const t of req.transfers) {
+    if (!policy.svmAllowTo.includes(t.to)) {
+      return { kind: 'deny', reason: `svm tx denied — recipient ${t.to} not in svm_allow_to` };
+    }
+    total += t.lamports;
+  }
+  if (total > policy.svmMaxLamports) {
+    return {
+      kind: 'deny',
+      reason: `svm tx denied — total ${total} lamports exceeds svm_max_lamports ${policy.svmMaxLamports}`,
+    };
+  }
+  return null;
+}
+
+/**
+ * If require_confirm_above_lamports is set and the total transferred exceeds
+ * it, return a Confirm. Only sums the decoded transfers — in permissive mode
+ * an undecoded tx contributes nothing here (permissive allows it outright).
+ */
+function confirmForSvmTx(
+  req: Extract<PolicyRequest, { kind: 'svm_transaction' }>,
+  policy: Policy,
+): ({ kind: 'confirm'; summary: string }) | null {
+  if (policy.requireConfirmAboveLamports === undefined) return null;
+  let total = 0n;
+  for (const t of req.transfers) total += t.lamports;
+  if (total <= policy.requireConfirmAboveLamports) return null;
+  return { kind: 'confirm', summary: `${formatSol(total)} SOL → ${svmDest(req.transfers)}` };
+}
+
+function svmDest(transfers: readonly SvmTransferView[]): string {
+  if (transfers.length === 1) return shortB58(transfers[0]!.to);
+  return `${transfers.length} recipients`;
+}
+
+function shortB58(addr: string): string {
+  return addr.length > 12 ? `${addr.slice(0, 4)}…${addr.slice(-4)}` : addr;
+}
+
+function formatSol(lamports: bigint): string {
+  const LAMPORTS_PER_SOL = 1_000_000_000n;
+  const whole = lamports / LAMPORTS_PER_SOL;
+  const frac = lamports % LAMPORTS_PER_SOL;
+  if (frac === 0n) return whole.toString();
+  const fracStr = frac.toString().padStart(9, '0').slice(0, 6).replace(/0+$/, '');
+  return fracStr === '' ? whole.toString() : `${whole}.${fracStr}`;
 }
 
 /**

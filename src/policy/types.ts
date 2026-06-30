@@ -35,13 +35,49 @@ export interface Policy {
    * fires first); validation catches that misconfiguration at load time.
    */
   requireConfirmAboveWei?: bigint;
+
+  // --- Solana (SVM) -------------------------------------------------------
+  // The same secp256k1 secret also backs an ed25519 Solana key; these fields
+  // gate signing with it. Strict mode enforces all of them; permissive
+  // ignores them except requireConfirmAboveLamports (mode-independent, like
+  // its wei sibling).
+  /** Allow signing arbitrary off-chain ed25519 messages with this key. */
+  allowSvmMessageSigning: boolean;
+  /** base58 recipient allowlist for native SOL transfers (strict). */
+  svmAllowTo: readonly string[];
+  /** Per-transaction cap on total transferred lamports (strict). 0 = none. */
+  svmMaxLamports: bigint;
+  /**
+   * If set, a Solana tx whose total transferred lamports exceeds this — OR
+   * whose instructions can't all be decoded offline — requires an out-of-band
+   * confirm. Mode-independent for the value threshold; the undecodable-tx
+   * confirm only applies in strict mode (permissive allows them outright).
+   */
+  requireConfirmAboveLamports?: bigint;
+}
+
+/** A native SOL transfer the evaluator was handed, pre-decoded by the caller. */
+export interface SvmTransferView {
+  /** base58 recipient. */
+  to: string;
+  lamports: bigint;
 }
 
 /** What the evaluator gets asked about. */
 export type PolicyRequest =
   | { kind: 'transaction'; tx: SignableTx }
   | { kind: 'message'; messageBytes: Buffer }
-  | { kind: 'typed_data'; typedData: TypedData };
+  | { kind: 'typed_data'; typedData: TypedData }
+  | { kind: 'svm_message'; messageBytes: Buffer }
+  | {
+      kind: 'svm_transaction';
+      /** Decoded native SOL transfers (may be a subset if allDecoded is false). */
+      transfers: readonly SvmTransferView[];
+      /** True iff every instruction decoded to a recognized System transfer. */
+      allDecoded: boolean;
+      /** Total instruction count, for the confirm summary. */
+      instructionCount: number;
+    };
 
 /**
  * Evaluator output. Three arms, discriminated by `kind`:

@@ -18,6 +18,12 @@ import {
   type PolicyRequest,
   type PolicyResolver,
 } from '../policy/index.js';
+import {
+  base58Encode,
+  decodeTx,
+  getPublicKey as svmGetPublicKey,
+  sign as svmSign,
+} from '../svm/index.js';
 import { type HandleTable } from './handles.js';
 
 // Error codes — these match JSON-RPC 2.0 standard error codes plus a
@@ -86,6 +92,19 @@ function hexToBuf(s: string, methodName: string, key: string): Buffer {
     throw new RpcMethodError(RPC_INVALID_PARAMS, `${methodName}: ${key} must be 0x-prefixed hex`);
   }
   return Buffer.from(s.slice(2), 'hex');
+}
+
+/** Decode a base64 byte payload, rejecting anything that isn't valid base64. */
+function b64ToBuf(s: string, methodName: string, key: string): Buffer {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(s)) {
+    throw new RpcMethodError(RPC_INVALID_PARAMS, `${methodName}: ${key} must be base64`);
+  }
+  const buf = Buffer.from(s, 'base64');
+  // Buffer.from is lenient (drops stray chars); re-encode to confirm a clean round-trip.
+  if (buf.toString('base64').replace(/=+$/, '') !== s.replace(/=+$/, '')) {
+    throw new RpcMethodError(RPC_INVALID_PARAMS, `${methodName}: ${key} is not valid base64`);
+  }
+  return buf;
 }
 
 function requirePortal(handles: HandleTable, handle: string): Buffer {
@@ -367,11 +386,87 @@ const sigil_eth_sign_typed_data: MethodHandler = (params, ctx) => {
   return { signature: sigHex };
 };
 
+// ---------------------------------------------------------------------------
+// Solana (SVM) — same secret, ed25519 key. Byte payloads are base64; the
+// returned signature is base58 (Solana convention).
+// ---------------------------------------------------------------------------
+
+const sigil_svm_sign_message: MethodHandler = (params, ctx) => {
+  const obj = asObject(params, 'svm_sign_message');
+  const portal = asString(obj, 'portal', 'svm_sign_message');
+  const messageB64 = asString(obj, 'message', 'svm_sign_message');
+  const message = b64ToBuf(messageB64, 'svm_sign_message', 'message');
+  const secret = requirePortal(ctx.handles, portal);
+  gatePolicy(ctx, portal, 'svm_sign_message', { message: messageB64 }, {
+    kind: 'svm_message', messageBytes: message,
+  });
+  const sig = base58Encode(svmSign(message, secret));
+  ctx.audit.append({
+    kind: 'svm_sign_message',
+    portal,
+    payload: { message: messageB64 },
+    decision: 'allow',
+    sig,
+  });
+  return { signature: sig };
+};
+
+const sigil_svm_sign_transaction: MethodHandler = async (params, ctx) => {
+  const obj = asObject(params, 'svm_sign_transaction');
+  const portal = asString(obj, 'portal', 'svm_sign_transaction');
+  const messageB64 = asString(obj, 'message', 'svm_sign_transaction');
+  const messageBytes = b64ToBuf(messageB64, 'svm_sign_transaction', 'message');
+  const secret = requirePortal(ctx.handles, portal);
+
+  let decoded: ReturnType<typeof decodeTx>;
+  try {
+    decoded = decodeTx(messageBytes);
+  } catch (err) {
+    throw new RpcMethodError(
+      RPC_INVALID_PAYLOAD,
+      `svm_sign_transaction: not a valid Solana message — ${(err as Error).message}`,
+    );
+  }
+
+  // Refuse to sign a message where our key isn't actually a required signer —
+  // signing it would produce a signature in the wrong slot (or no slot at all).
+  const pub = svmGetPublicKey(secret);
+  const signers = decoded.message.staticAccountKeys.slice(0, decoded.message.numRequiredSignatures);
+  if (!signers.some((k) => Buffer.from(k).equals(pub))) {
+    throw new RpcMethodError(
+      RPC_INVALID_PAYLOAD,
+      `svm_sign_transaction: portal "${portal}" (${base58Encode(pub)}) is not a required signer of this message`,
+    );
+  }
+
+  const gate = gatePolicy(ctx, portal, 'svm_sign_transaction', { message: messageB64 }, {
+    kind: 'svm_transaction',
+    transfers: decoded.transfers.map((t) => ({ to: t.to, lamports: t.lamports })),
+    allDecoded: decoded.allDecoded,
+    instructionCount: decoded.message.instructions.length,
+  });
+  if (gate.proceed === 'confirm') {
+    await runConfirmGate(ctx, portal, 'svm_sign_transaction', { message: messageB64 }, gate.summary);
+  }
+
+  const sig = base58Encode(svmSign(messageBytes, secret));
+  ctx.audit.append({
+    kind: 'svm_sign_transaction',
+    portal,
+    payload: { message: messageB64 },
+    decision: 'allow',
+    sig,
+  });
+  return { signature: sig };
+};
+
 export const METHODS: Readonly<Record<string, MethodHandler>> = Object.freeze({
   sigil_list_portals,
   sigil_eth_sign_message,
   sigil_eth_sign_transaction,
   sigil_eth_sign_typed_data,
+  sigil_svm_sign_message,
+  sigil_svm_sign_transaction,
 });
 
 /**

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import toml from '@iarna/toml';
+import { base58Decode } from '../svm/index.js';
 import { type Policy, PolicyLoadError, type PolicyResolver } from './types.js';
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -39,6 +40,10 @@ export function parsePolicy(source: string): Policy {
     raw['require_confirm_above_wei'],
     'require_confirm_above_wei',
   );
+  const requireConfirmAboveLamports = parseOptionalDec(
+    raw['require_confirm_above_lamports'],
+    'require_confirm_above_lamports',
+  );
 
   if (mode === 'permissive') {
     return {
@@ -49,7 +54,11 @@ export function parsePolicy(source: string): Policy {
       allowedSelectors: [],
       allowMessageSigning: true,
       allowTypedData: true,
+      allowSvmMessageSigning: true,
+      svmAllowTo: [],
+      svmMaxLamports: 0n,
       ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
+      ...(requireConfirmAboveLamports !== undefined ? { requireConfirmAboveLamports } : {}),
     };
   }
 
@@ -82,6 +91,22 @@ export function parsePolicy(source: string): Policy {
   const allowMessageSigning = asBool(raw['allow_message_signing'], 'allow_message_signing', false);
   const allowTypedData = asBool(raw['allow_typed_data'], 'allow_typed_data', false);
 
+  const allowSvmMessageSigning = asBool(raw['allow_svm_message_signing'], 'allow_svm_message_signing', false);
+  const svmAllowToRaw = asStringArray(raw['svm_allow_to'], 'svm_allow_to');
+  const svmAllowTo = svmAllowToRaw.map((s, i) => {
+    let decoded: Uint8Array;
+    try {
+      decoded = base58Decode(s);
+    } catch {
+      throw new PolicyLoadError(`policy.svm_allow_to[${i}] is not valid base58: ${JSON.stringify(s)}`);
+    }
+    if (decoded.length !== 32) {
+      throw new PolicyLoadError(`policy.svm_allow_to[${i}] must decode to a 32-byte address (got ${decoded.length} bytes)`);
+    }
+    return s;
+  });
+  const svmMaxLamports = parseOptionalDec(raw['svm_max_lamports'], 'svm_max_lamports') ?? 0n;
+
   // Catch the misconfiguration where the confirm threshold sits above the
   // hard cap: nothing would ever trigger the confirm path, the deny would
   // fire first. Easier to surface at load time than to wonder why your
@@ -97,6 +122,16 @@ export function parsePolicy(source: string): Policy {
       `confirm gate never triggers`,
     );
   }
+  if (
+    requireConfirmAboveLamports !== undefined &&
+    requireConfirmAboveLamports >= svmMaxLamports &&
+    svmMaxLamports !== 0n
+  ) {
+    throw new PolicyLoadError(
+      `policy.require_confirm_above_lamports (${requireConfirmAboveLamports}) must be less than ` +
+      `svm_max_lamports (${svmMaxLamports}) — otherwise the cap denies first and the confirm never triggers`,
+    );
+  }
 
   return {
     mode: 'strict',
@@ -106,7 +141,11 @@ export function parsePolicy(source: string): Policy {
     allowedSelectors,
     allowMessageSigning,
     allowTypedData,
+    allowSvmMessageSigning,
+    svmAllowTo,
+    svmMaxLamports,
     ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
+    ...(requireConfirmAboveLamports !== undefined ? { requireConfirmAboveLamports } : {}),
   };
 }
 
@@ -124,6 +163,9 @@ export function permissivePolicyResolver(): PolicyResolver {
     allowedSelectors: [],
     allowMessageSigning: true,
     allowTypedData: true,
+    allowSvmMessageSigning: true,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
   };
   return { resolve: () => policy };
 }
@@ -209,10 +251,19 @@ function parseMaxValue(v: unknown): bigint {
 }
 
 function parseOptionalWei(v: unknown, name: string): bigint | undefined {
+  return parseOptionalDec(v, name);
+}
+
+/**
+ * Parse an optional non-negative integer supplied as a decimal string (TOML
+ * int64 can't hold uint256 wei or, for safety, large lamport totals). Returns
+ * undefined when the field is absent.
+ */
+function parseOptionalDec(v: unknown, name: string): bigint | undefined {
   if (v === undefined) return undefined;
   if (typeof v !== 'string') {
     throw new PolicyLoadError(
-      `policy.${name} must be a decimal string (e.g. "100000000000000000"); got ${typeof v}`,
+      `policy.${name} must be a decimal string (e.g. "1000000000"); got ${typeof v}`,
     );
   }
   if (!DEC_RE.test(v)) {

@@ -22,7 +22,7 @@ function unlocked(...handles: string[]): SessionResult {
       version: CONTROL_SOCKET_VERSION,
       pid: 0,
       unlocked: true,
-      portals: handles.map((h) => ({ handle: h, kind: 'evm' as const, address: '0x' + h })),
+      portals: handles.map((h) => ({ handle: h, kind: 'evm' as const, address: '0x' + h, svmAddress: 'So' + h })),
     },
   };
 }

@@ -314,7 +314,7 @@ function migrateLegacyEthPrefix(
 
 function statusResponse(handles: HandleTable, pid: number): ControlSuccess {
   const portals: PortalSummary[] = handles.isUnlocked()
-    ? handles.list().map((p) => ({ handle: p.handle, kind: p.kind, address: p.address }))
+    ? handles.list().map((p) => ({ handle: p.handle, kind: p.kind, address: p.address, svmAddress: p.svmAddress }))
     : [];
   return {
     ok: true,

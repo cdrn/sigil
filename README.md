@@ -8,7 +8,7 @@
 
 ## What it is
 
-One MCP server process, four bins, five runtime deps (all pinned, zero transitive):
+One MCP server process, four bins, six runtime deps (all pinned, zero transitive):
 
 1. **`sigil-mcp`** — the only thing that runs. Claude Code spawns it per session via your `mcpServers` config; it dies when Claude exits. Holds unlocked keys in process memory (zeroized on shutdown, `sigil lock`, or unlock-failure; mlock against swap is planned). Keys at rest are encrypted with XChaCha20-Poly1305 and an Argon2id-derived key. Signs over stdio using a DIY MCP wire protocol (~200 lines, no SDK dep). Claude never sees key material — only opaque handles like `evm:executor`.
 2. **`sigil`** — control CLI. `init`, `status`, `portal add`/`list`/`remove`, `unlock`, `lock`.
@@ -16,7 +16,7 @@ One MCP server process, four bins, five runtime deps (all pinned, zero transitiv
 
 `sigil-mcp` boots **locked**: empty in-memory handle table, no keys loaded. Sign methods return `DAEMON_LOCKED` (-32003) with a "run sigil unlock" message until you push the passphrase in from a separate terminal via `sigil unlock`. That CLI connects to a per-session Unix socket at `~/.sigil/control/<pid>.sock` (0600) that `sigil-mcp` opens at startup — and fans out to every such socket so one `sigil unlock` reaches all open windows. After unlock, signs work for the rest of the session; `sigil lock` zeroizes the table without killing the process.
 
-Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transactions, EIP-712 typed data.
+Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transactions, EIP-712 typed data, plus Solana (ed25519) message + transaction signing — see [Solana support](#solana-svm) below.
 
 ## What it isn't
 
@@ -61,7 +61,7 @@ sigil portal add evm:bot --key-file ./private.hex
 sigil unlock
 # → prompts once, decrypts every keyfile in ~/.sigil/keys/ into each open window
 
-# 5. Use Claude Code. The four sigil_* tools will work for the rest of the session.
+# 5. Use Claude Code. The sigil_* tools (EVM + Solana) will work for the rest of the session.
 
 # Optional: re-lock without restarting Claude.
 sigil lock
@@ -193,15 +193,38 @@ Install the ntfy app on your phone, subscribe to that topic, and you'll get a pu
 
 If any policy file sets `require_confirm_above_wei` but no transport is configured, `sigil-mcp` refuses to start with a clear error rather than silently degrading every confirm-gated sign to a deny.
 
+## Solana (SVM)
+
+Every portal also controls a **Solana address**, derived from the *same secret*. EVM uses secp256k1; Solana uses ed25519 — different curves, so you can't share a public key. But the portal's raw 32-byte secret doubles as an ed25519 seed, yielding one secret → two addresses:
+
+```
+$ sigil portal list
+evm:executor
+  evm: 0x1234…abcd
+  svm: 7vWxK…Qm9f          # base58 ed25519 address, same key
+```
+
+This is exactly the derivation Phantom/Solflare perform on **"import private key"**, so the Solana address is recoverable there (it does *not* match a seed-phrase / BIP44 account — it's the raw-key account).
+
+Two MCP tools:
+
+- **`sigil_svm_sign_message`** — sign arbitrary off-chain bytes (e.g. Sign-In With Solana) with the ed25519 key. Input is base64; returns a base58 signature.
+- **`sigil_svm_sign_transaction`** — pass a serialized Solana transaction *message* (base64, legacy or v0); sigil ed25519-signs those bytes and returns the base58 signature for you to assemble into the transaction.
+
+**Policy.** Solana hides most semantics behind account indices and on-chain state, so sigil only decodes what it can offline: **native SOL (System Program) transfers**, which it gates on `svm_allow_to` (base58 recipient allowlist) and `svm_max_lamports` (per-tx cap), exactly like EVM. Anything it *can't* fully decode — SPL tokens, program calls, address-lookup-table accounts — is **routed to the out-of-band confirm gate**, never silently allowed. Auto-allow is all-or-nothing: a tx is only signed without a human tap if **every** instruction decoded and passed policy. `require_confirm_above_lamports` adds a value threshold (and, in strict mode, the undecodable-tx confirm); in strict mode an undecodable tx with no confirm transport configured fails closed (deny).
+
+Relevant policy fields (`~/.sigil/policy/<handle>.toml`): `allow_svm_message_signing`, `svm_allow_to`, `svm_max_lamports`, `require_confirm_above_lamports`.
+
 ## Supply chain posture
 
 Key-management libraries die from supply chain compromise, not from clever attacks on the code. Given the npm ecosystem in 2026 (Mini Shai-Hulud, Axios, pgserve, TanStack), `sigil` commits to:
 
 - **Zero install scripts.** No `postinstall`, `preinstall`, `prepare`. CI-enforced (planned: a CI guard that fails if any dep adds one).
-- **Five runtime deps, all version-pinned** (no caret ranges), all zero-transitive — the entire `npm ls --omit dev` tree is exactly these five packages:
+- **Six runtime deps, all version-pinned** (no caret ranges), all zero-transitive — the entire `npm ls --omit dev` tree is exactly these six packages:
   - [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) for XChaCha20-Poly1305
-  - [`@noble/hashes`](https://github.com/paulmillr/noble-hashes) for Argon2id, keccak256, sha2, HMAC
-  - [`@noble/secp256k1`](https://github.com/paulmillr/noble-secp256k1) for ECDSA
+  - [`@noble/hashes`](https://github.com/paulmillr/noble-hashes) for Argon2id, keccak256, sha2/sha512, HMAC
+  - [`@noble/secp256k1`](https://github.com/paulmillr/noble-secp256k1) for ECDSA (EVM)
+  - [`@noble/ed25519`](https://github.com/paulmillr/noble-ed25519) for EdDSA (Solana)
   - [`@iarna/toml`](https://github.com/iarna/iarna-toml) for parsing per-portal policy TOML files
   - [`qrcode-generator`](https://github.com/kazuhikoarase/qrcode-generator) for `sigil portal qr` rendering
 - **No MCP SDK.** The official `@modelcontextprotocol/sdk` pulls 92 transitive deps (ajv, hono, cors, cross-spawn, etc) — unacceptable surface. We implement the MCP wire protocol directly in ~200 lines.
