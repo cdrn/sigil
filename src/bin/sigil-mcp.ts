@@ -13,8 +13,10 @@ import {
 } from '../confirm/index.js';
 import { startControlServer } from '../control/index.js';
 import { HandleTable } from '../daemon/handles.js';
+import type { MethodContext } from '../daemon/index.js';
 import { runMcpStdio } from '../mcp/server.js';
 import { FileSystemPolicyResolver } from '../policy/index.js';
+import { startRpcServer, type RpcProxyServer } from '../rpc/index.js';
 
 /**
  * sigil-mcp: single-process MCP server for sigil. Spawned by Claude Code per
@@ -79,6 +81,42 @@ async function main(): Promise<void> {
   const audit = new AuditWriter(paths.auditLog);
   const policy = new FileSystemPolicyResolver(paths.policyDir);
 
+  const context: MethodContext = {
+    handles,
+    audit,
+    policy,
+    ...(confirmGate ? { confirm: confirmGate } : {}),
+  };
+
+  // Local JSON-RPC signing proxy (forge/hardhat/cast integration). Shares
+  // `context` with the MCP loop, so its signs run the identical policy →
+  // confirm → audit pipeline. Multiple Claude windows each spawn a
+  // sigil-mcp; only the first binds the port — the others log and carry on,
+  // since any one session's proxy serves the machine.
+  let rpcServer: RpcProxyServer | undefined;
+  if (config.rpc) {
+    try {
+      rpcServer = await startRpcServer({
+        config: config.rpc,
+        ctx: context,
+        onLog: (e) => process.stderr.write(`rpc: ${JSON.stringify(e)}\n`),
+      });
+      const upstreamOrigin = new URL(config.rpc.upstream).origin;
+      process.stderr.write(
+        `sigil-mcp: json-rpc signing proxy on ${rpcServer.url} ` +
+        `(portal "${config.rpc.portal}", upstream ${upstreamOrigin})\n`,
+      );
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+        process.stderr.write(
+          `sigil-mcp: rpc port busy — another sigil-mcp session already serves the proxy\n`,
+        );
+      } else {
+        throw err;
+      }
+    }
+  }
+
   let controlClosed = false;
   let control: Awaited<ReturnType<typeof startControlServer>> | null = null;
   try {
@@ -118,18 +156,16 @@ async function main(): Promise<void> {
     if (ackServer) {
       ackServer.close().catch(() => { /* best-effort */ });
     }
+    if (rpcServer) {
+      rpcServer.close().catch(() => { /* best-effort */ });
+    }
   };
   process.on('exit', shutdown);
   process.on('SIGINT', () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
 
   await runMcpStdio({
-    context: {
-      handles,
-      audit,
-      policy,
-      ...(confirmGate ? { confirm: confirmGate } : {}),
-    },
+    context,
     stdin: process.stdin,
     stdout: process.stdout,
     onLog: (e) => process.stderr.write(JSON.stringify(e) + '\n'),
@@ -142,6 +178,7 @@ async function main(): Promise<void> {
     await control.close();
   }
   if (ackServer) await ackServer.close();
+  if (rpcServer) await rpcServer.close();
   process.exit(0);
 }
 

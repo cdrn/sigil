@@ -14,6 +14,8 @@ export {
   type SigilConfig,
   type ConfirmConfig,
   type NtfyConfigToml,
+  type RpcConfigToml,
+  RPC_TOKEN_MIN_LENGTH,
   SigilConfigError,
   parseConfig,
   loadConfig,

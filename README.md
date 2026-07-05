@@ -196,6 +196,38 @@ Install the ntfy app on your phone, subscribe to that topic, and you'll get a pu
 
 If any policy file sets `require_confirm_above_wei` but no transport is configured, `sigil-mcp` refuses to start with a clear error rather than silently degrading every confirm-gated sign to a deny.
 
+## JSON-RPC signing proxy (Foundry / Hardhat / any web3 tool)
+
+sigil can expose a local JSON-RPC endpoint that makes any portal a drop-in signer for tooling that expects an unlocked node account — the same pattern Clef and web3signer use. Contract bytecode goes from `forge` straight into sigil; it never transits the agent's context or an MCP tool parameter.
+
+Enable it in `~/.sigil/config.toml`:
+
+```toml
+[rpc]
+portal   = "evm:bot"                        # which portal signs
+upstream = "https://sepolia.example/v3/KEY" # real node for everything else
+token    = "<openssl rand -hex 24>"         # required — guards the endpoint
+# port   = 8547                             # default 8547 (clear of anvil's 8545)
+```
+
+Then point any tool at it, with the token as the Basic-auth password:
+
+```bash
+forge script script/Deploy.s.sol \
+  --rpc-url "http://sigil:<token>@127.0.0.1:8547" \
+  --unlocked --sender 0xYourPortalAddress --broadcast
+```
+
+The proxy serves three things with the portal key and forwards everything else (`eth_call`, `eth_estimateGas`, `eth_getTransactionReceipt`, …) to the upstream:
+
+- `eth_accounts` → the portal address (empty while locked)
+- `eth_signTransaction` → fills nonce/gas/fees if missing, signs, returns the raw tx
+- `eth_sendTransaction` → same, then broadcasts via the upstream and returns the hash
+
+**Security properties.** The listener binds `127.0.0.1` only; every request must present the config token (constant-time compared) and a loopback `Host` header (DNS-rebinding defence). Signing runs through the *identical* daemon pipeline as the MCP tools — policy checks, the out-of-band confirm gate, and the hash-chained audit log all apply, so this surface adds a transport, not a privilege. The filled transaction carries the **upstream's** chain id, so a strict policy's `chain_ids` allowlist binds the proxy to the network you configured. Message/typed-data methods (`eth_sign`, `personal_sign`, `eth_signTypedData*`) are rejected on this surface — use the MCP tools, which have their own policy toggles. A strict policy with `allow_contract_creation = true` gives you confirm-gated `forge script` deploys: forge submits, your phone buzzes, the tx signs when you tap approve.
+
+With multiple Claude windows open, each `sigil-mcp` tries to bind the port; the first wins and the rest log and continue — any one session's proxy serves the machine.
+
 ## Solana (SVM)
 
 Every portal also controls a **Solana address**, derived from the *same secret*. EVM uses secp256k1; Solana uses ed25519 — different curves, so you can't share a public key. But the portal's raw 32-byte secret doubles as an ed25519 seed, yielding one secret → two addresses:

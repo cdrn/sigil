@@ -31,6 +31,17 @@ The unlock path:
 
 This shape was chosen so the agent has no path to trigger unlock — only a human at the local TTY can. `sigil lock` zeroizes the in-memory table without killing the process; subsequent signs return `DAEMON_LOCKED` again until the next `sigil unlock`.
 
+### The JSON-RPC signing proxy surface
+
+With a `[rpc]` block in `~/.sigil/config.toml`, `sigil-mcp` additionally listens on `127.0.0.1:<port>` and serves `eth_accounts` / `eth_signTransaction` / `eth_sendTransaction` with the configured portal's key (proxying every other method to the configured upstream node). This is a deliberate second way to reach a key, added so Foundry/Hardhat-class tooling can sign without transaction payloads transiting the agent's context. Its containment:
+
+- **Same pipeline, no proxy privilege.** Proxy signs are dispatched through the identical daemon path as the MCP tools — policy evaluation, the out-of-band confirm gate, and the hash-chained audit log all apply. There is no signing branch unique to the proxy.
+- **Mandatory shared token.** Every request must present the config token (min 16 chars, constant-time compared) as a Bearer credential or the Basic-auth password. Without it, any local process could ask a permissive-mode portal to sign arbitrary transactions. The token lives in `~/.sigil/config.toml` (0700 home dir) — it gates *other software on the machine*, not the user's own agent, which is handed the URL on purpose.
+- **Loopback binding + Host allowlist.** The listener binds 127.0.0.1 only and rejects any request whose `Host` header is not a loopback name, which closes DNS-rebinding attacks from a browser tab even if the token leaks into a page-visible URL.
+- **Chain binding.** The proxy fills transactions with the *upstream's* `eth_chainId`; a strict policy's `chain_ids` allowlist therefore pins the proxy to the intended network, and a client-supplied `chainId` that disagrees with the upstream is rejected outright.
+- **Fail-closed inheritance.** Locked handle table, policy deny, confirm deny/timeout, missing confirm transport — each surfaces as a JSON-RPC error and no signature is produced. `eth_sign`/`personal_sign`/`eth_signTypedData*` are rejected on this surface entirely.
+- **Residual risk, stated plainly:** with a **permissive** portal and the token, anything that can POST to loopback signs at will — same authority the MCP tools already grant the agent, now reachable by any tool the user (or agent) runs. Use a strict policy on any proxy-exposed portal that holds real value, and a confirm threshold for the rest. The upstream node also becomes an availability and privacy dependency: it sees every proxied call and the broadcast of every signed tx.
+
 ## In scope
 
 ### 1. Preventing key ingestion by the agent

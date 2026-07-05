@@ -111,6 +111,70 @@ test('loadConfig: reads file from disk', () => {
 });
 
 // ---------------------------------------------------------------------------
+// [rpc] block
+// ---------------------------------------------------------------------------
+
+const RPC_OK = `
+  [rpc]
+  portal = "evm:bot"
+  upstream = "https://sepolia.example/v3/KEY"
+  token = "0123456789abcdef0123456789abcdef"
+`;
+
+test('parseConfig: [rpc] block parses with defaults', () => {
+  const c = parseConfig(RPC_OK);
+  equal(c.rpc!.portal, 'evm:bot');
+  equal(c.rpc!.upstream, 'https://sepolia.example/v3/KEY');
+  equal(c.rpc!.token, '0123456789abcdef0123456789abcdef');
+  equal(c.rpc!.port, undefined);
+});
+
+test('parseConfig: [rpc] port is parsed and validated', () => {
+  const c = parseConfig(RPC_OK + `port = 8545\n`);
+  equal(c.rpc!.port, 8545);
+  throws(() => parseConfig(RPC_OK + `port = 0\n`), /port must be an integer/);
+  throws(() => parseConfig(RPC_OK + `port = 70000\n`), /port must be an integer/);
+  throws(() => parseConfig(RPC_OK + `port = "8545"\n`), /port must be an integer/);
+});
+
+test('parseConfig: [rpc] portal/upstream/token are all required', () => {
+  throws(
+    () => parseConfig(`[rpc]\nupstream = "https://x.example"\ntoken = "0123456789abcdef"`),
+    /rpc\.portal is required/,
+  );
+  throws(
+    () => parseConfig(`[rpc]\nportal = "evm:bot"\ntoken = "0123456789abcdef"`),
+    /rpc\.upstream is required/,
+  );
+  throws(
+    () => parseConfig(`[rpc]\nportal = "evm:bot"\nupstream = "https://x.example"`),
+    /rpc\.token is required/,
+  );
+});
+
+test('parseConfig: [rpc] token shorter than 16 chars is rejected', () => {
+  throws(
+    () => parseConfig(`[rpc]\nportal = "evm:bot"\nupstream = "https://x.example"\ntoken = "short"`),
+    /token must be at least 16/,
+  );
+});
+
+test('parseConfig: [rpc] upstream must be an http(s) URL', () => {
+  throws(
+    () => parseConfig(`[rpc]\nportal = "evm:bot"\nupstream = "not a url"\ntoken = "0123456789abcdef"`),
+    /not a valid URL/,
+  );
+  throws(
+    () => parseConfig(`[rpc]\nportal = "evm:bot"\nupstream = "ws://x.example"\ntoken = "0123456789abcdef"`),
+    /must be http/,
+  );
+});
+
+test('parseConfig: [rpc] absent leaves config.rpc undefined', () => {
+  equal(parseConfig(`[confirm.ntfy]\ntopic = "x"`).rpc, undefined);
+});
+
+// ---------------------------------------------------------------------------
 // anyPolicyRequiresConfirm
 // ---------------------------------------------------------------------------
 
