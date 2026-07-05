@@ -56,6 +56,13 @@ max_value_wei = "0"
 #   "0x23b872dd"  ERC-20 transferFrom(address,address,uint256)
 allowed_selectors = []
 
+# Contract creation (deploys, to = null). Initcode is arbitrary code that no
+# allowlist can vet, so even when enabled every deploy still respects
+# max_value_wei and ALWAYS routes to the out-of-band confirm gate — a
+# [confirm.ntfy] block in ~/.sigil/config.toml is required, otherwise
+# sigil-mcp refuses to start.
+allow_contract_creation = false
+
 # EIP-191 personal_sign — typically safe (used by Sign-In With Ethereum and
 # similar login flows). Set true to permit.
 allow_message_signing = false

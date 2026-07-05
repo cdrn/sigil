@@ -796,3 +796,203 @@ test('confirm: strict-mode static deny fires before confirm gate (gate never inv
     equal(transport.captured, undefined, 'transport should not have been hit');
   } finally { await cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// Contract creation (deploys) — end-to-end
+// ---------------------------------------------------------------------------
+
+const INITCODE = '0x6080604052600080fd';
+
+function deployTx(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: 'eip1559', chainId: 1, nonce: 0,
+    maxPriorityFeePerGas: 1, maxFeePerGas: 1, gasLimit: 3000000,
+    to: null, value: 0, data: INITCODE,
+    ...over,
+  };
+}
+
+const DEPLOY_POLICY = `
+  mode = "strict"
+  chain_ids = [1]
+  allow_contract_creation = true
+`;
+
+test('deploy: strict mode denies by default, audits, and never hits the transport', async () => {
+  const { ctx, transport, cleanup, auditPath } = await makeCtxWithConfirm(`
+    mode = "strict"
+    chain_ids = [1]
+  `);
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', { portal: 'evm:bot', tx: deployTx() }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    ok(err instanceof RpcMethodError);
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/contract creation not allowed/.test(err!.message));
+    equal(transport.captured, undefined, 'transport should not have been hit');
+    const lines = readFileSync(auditPath, 'utf8').trim().split('\n');
+    equal(lines.length, 1);
+    const entry = JSON.parse(lines[0]!) as { decision: string; sig?: string };
+    equal(entry.decision, 'deny');
+    equal(entry.sig, undefined);
+  } finally { await cleanup(); }
+});
+
+test('deploy: allow_contract_creation pushes a confirm and signs a valid creation tx on approve', async () => {
+  const { ctx, transport, cleanup, auditPath } = await makeCtxWithConfirm(DEPLOY_POLICY);
+  try {
+    const signing = dispatch('sigil_eth_sign_transaction', {
+      portal: 'evm:bot', tx: deployTx(),
+    }, ctx) as Promise<{ signed: string }>;
+    signing.catch(() => { /* handled below via await */ });
+    await new Promise((r) => setImmediate(r));
+    ok(transport.captured, 'transport should have been hit');
+    // The push tells the human what is being deployed: no address, but the
+    // initcode size and chain.
+    ok(/contract creation/.test(transport.captured!.summary), transport.captured!.summary);
+    ok(/9-byte initcode/.test(transport.captured!.summary), transport.captured!.summary);
+    ok(/chain 1/.test(transport.captured!.summary), transport.captured!.summary);
+    await fetch(transport.captured!.approveUrl, { method: 'POST' });
+    const result = await signing;
+    ok(result.signed.startsWith('0x02'));
+
+    // The signed payload is a real creation tx: empty `to`, recovers to the
+    // portal address.
+    const payload = Buffer.from(result.signed.slice(4), 'hex');
+    const decoded = rlpDecode(payload);
+    if (!Array.isArray(decoded)) throw new Error('expected list');
+    const toBuf = decoded[5] as Buffer;
+    equal(toBuf.length, 0, 'creation tx must RLP-encode `to` as empty');
+    const yParityBuf = decoded[9] as Buffer;
+    const yParity = yParityBuf.length === 0 ? 0 : (yParityBuf[0]! as 0 | 1);
+    const txForDigest: Eip1559Tx = {
+      type: 'eip1559', chainId: 1, nonce: 0,
+      maxPriorityFeePerGas: 1n, maxFeePerGas: 1n, gasLimit: 3_000_000n,
+      to: null, value: 0n, data: INITCODE,
+    };
+    const pub = recoverPublicKey(txDigest(txForDigest), {
+      r: decoded[10] as Buffer, s: decoded[11] as Buffer, recovery: yParity,
+    });
+    equal(addressFromPublicKey(pub), addressFromPrivateKey(priv(1)));
+
+    ctx.audit.close();
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries.length, 1);
+    equal(entries[0]!.decision, 'allow');
+    equal(entries[0]!.sig, result.signed);
+  } finally { await cleanup(); }
+});
+
+test('deploy: legacy-type creation tx signs on approve too', async () => {
+  const { ctx, transport, cleanup } = await makeCtxWithConfirm(DEPLOY_POLICY);
+  try {
+    const signing = dispatch('sigil_eth_sign_transaction', {
+      portal: 'evm:bot',
+      tx: {
+        type: 'legacy', chainId: 1, nonce: 0,
+        gasPrice: '20000000000', gasLimit: 3000000,
+        to: null, value: 0, data: INITCODE,
+      },
+    }, ctx) as Promise<{ signed: string }>;
+    signing.catch(() => { /* handled below via await */ });
+    await new Promise((r) => setImmediate(r));
+    ok(transport.captured, 'transport should have been hit');
+    await fetch(transport.captured!.approveUrl, { method: 'POST' });
+    const result = await signing;
+    ok(result.signed.startsWith('0x'));
+    ok(!result.signed.startsWith('0x02'));
+    // Legacy creation: rlp([nonce, gasPrice, gasLimit, to, value, data, v, r, s]),
+    // `to` empty.
+    const decoded = rlpDecode(Buffer.from(result.signed.slice(2), 'hex'));
+    if (!Array.isArray(decoded)) throw new Error('expected list');
+    equal((decoded[3] as Buffer).length, 0);
+  } finally { await cleanup(); }
+});
+
+test('deploy: human deny click → POLICY_DENIED, audit deny, no signature', async () => {
+  const { ctx, transport, cleanup, auditPath } = await makeCtxWithConfirm(DEPLOY_POLICY);
+  try {
+    const signing = dispatch('sigil_eth_sign_transaction', {
+      portal: 'evm:bot', tx: deployTx(),
+    }, ctx);
+    signing.catch(() => { /* handled below */ });
+    await new Promise((r) => setImmediate(r));
+    await fetch(transport.captured!.denyUrl, { method: 'POST' });
+    let err: RpcMethodError | null = null;
+    try { await signing; } catch (e) { err = e as RpcMethodError; }
+    ok(err instanceof RpcMethodError);
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/confirm denied by human/.test(err!.message));
+    ctx.audit.close();
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries.length, 1);
+    equal(entries[0]!.decision, 'deny');
+    equal(entries[0]!.sig, undefined);
+  } finally { await cleanup(); }
+});
+
+test('deploy: no confirm gate in context → POLICY_DENIED, never signs (fail-closed)', async () => {
+  const { ctx, cleanup } = await makeCtxWithConfirm(DEPLOY_POLICY);
+  delete (ctx as { confirm?: unknown }).confirm;
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', { portal: 'evm:bot', tx: deployTx() }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/no confirm transport is configured/.test(err!.message));
+  } finally { await cleanup(); }
+});
+
+test('deploy: value over max_value_wei denies before the gate', async () => {
+  const { ctx, transport, cleanup } = await makeCtxWithConfirm(`
+    mode = "strict"
+    chain_ids = [1]
+    allow_contract_creation = true
+    max_value_wei = "100"
+  `);
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', {
+        portal: 'evm:bot', tx: deployTx({ value: 101 }),
+      }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/exceeds max_value_wei/.test(err!.message));
+    equal(transport.captured, undefined, 'transport should not have been hit');
+  } finally { await cleanup(); }
+});
+
+test('deploy: wrong chain denies before the gate', async () => {
+  const { ctx, transport, cleanup } = await makeCtxWithConfirm(DEPLOY_POLICY);
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', {
+        portal: 'evm:bot', tx: deployTx({ chainId: 137 }),
+      }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/chain 137 not in/.test(err!.message));
+    equal(transport.captured, undefined, 'transport should not have been hit');
+  } finally { await cleanup(); }
+});
+
+test('deploy: omitting `to` (instead of explicit null) is INVALID_PARAMS, not a deploy', async () => {
+  // A missing key must not silently become a contract creation — the caller
+  // has to say `to: null` on purpose.
+  const { ctx, cleanup } = makeCtx();
+  try {
+    const tx = deployTx();
+    delete tx['to'];
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', { portal: 'evm:bot', tx }, ctx);
+    } catch (e) { err = e as RpcMethodError; }
+    ok(err instanceof RpcMethodError);
+    equal(err!.code, RPC_INVALID_PARAMS);
+  } finally { cleanup(); }
+});

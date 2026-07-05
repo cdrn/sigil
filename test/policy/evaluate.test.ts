@@ -34,6 +34,7 @@ function strict(over: Partial<Omit<Policy, 'mode'>> = {}): Policy {
     allowTo: [DEAD],
     maxValueWei: 1_000_000_000_000_000n, // 0.001 eth
     allowedSelectors: [],
+    allowContractCreation: false,
     allowMessageSigning: false,
     allowTypedData: false,
     allowSvmMessageSigning: false, svmAllowTo: [], svmMaxLamports: 0n,
@@ -67,6 +68,7 @@ test('permissive mode allows transactions, messages, typed data', () => {
   const p: Policy = {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    allowContractCreation: true,
     allowMessageSigning: false, allowTypedData: false,
     allowSvmMessageSigning: false, svmAllowTo: [], svmMaxLamports: 0n,
   };
@@ -100,9 +102,90 @@ test('strict tx: rejects to outside allow_to', () => {
   ok(/not in allow_to/.test(denyReason(r)));
 });
 
-test('strict tx: rejects contract creation (to: null)', () => {
+test('strict tx: rejects contract creation (to: null) by default', () => {
   const r = evaluate(txReq(tx({ to: null })), strict());
-  ok(/contract creation/.test(denyReason(r)));
+  ok(/contract creation not allowed/.test(denyReason(r)));
+});
+
+// ---------------------------------------------------------------------------
+// transaction — contract creation (allow_contract_creation)
+// ---------------------------------------------------------------------------
+
+test('strict tx: allow_contract_creation=true routes a deploy to confirm, never plain allow', () => {
+  const r = evaluate(
+    txReq(tx({ to: null, data: '0x60806040' })),
+    strict({ allowContractCreation: true }),
+  );
+  const summary = confirmSummary(r);
+  ok(/contract creation/.test(summary), summary);
+  ok(/4-byte initcode/.test(summary), summary);
+  ok(/chain 1/.test(summary), summary);
+});
+
+test('strict tx: deploy skips allow_to and allowed_selectors (no address/selector to match)', () => {
+  // Empty allowlists would deny any call tx with this calldata; a creation
+  // tx carries initcode, not a selector, so neither list applies.
+  const r = evaluate(
+    txReq(tx({ to: null, data: '0x6080604052600080fd' })),
+    strict({ allowContractCreation: true, allowTo: [], allowedSelectors: [] }),
+  );
+  equal(r.kind, 'confirm');
+});
+
+test('strict tx: deploy still respects max_value_wei', () => {
+  const r = evaluate(
+    txReq(tx({ to: null, value: 2_000n })),
+    strict({ allowContractCreation: true, maxValueWei: 1_000n }),
+  );
+  ok(/exceeds max_value_wei/.test(denyReason(r)));
+});
+
+test('strict tx: deploy still respects chain_ids', () => {
+  const r = evaluate(
+    txReq(tx({ to: null, chainId: 42n })),
+    strict({ allowContractCreation: true, chainIds: [1] }),
+  );
+  ok(/chain 42 not in/.test(denyReason(r)));
+});
+
+test('strict tx: deploy value exactly at max_value_wei is allowed (routes to confirm)', () => {
+  const r = evaluate(
+    txReq(tx({ to: null, value: 1_000n })),
+    strict({ allowContractCreation: true, maxValueWei: 1_000n }),
+  );
+  equal(r.kind, 'confirm');
+});
+
+test('strict tx: legacy-type deploy routes to confirm the same way', () => {
+  const legacy: LegacyTx = {
+    type: 'legacy',
+    chainId: 1n,
+    nonce: 0n,
+    gasPrice: 1n,
+    gasLimit: 100_000n,
+    to: null,
+    value: 0n,
+    data: '0x6080',
+  };
+  const r = evaluate(txReq(legacy), strict({ allowContractCreation: true }));
+  const summary = confirmSummary(r);
+  ok(/2-byte initcode/.test(summary), summary);
+});
+
+test('strict tx: deploy summary counts initcode bytes for Buffer data too', () => {
+  const r = evaluate(
+    txReq(tx({ to: null, data: Buffer.from('60806040526000', 'hex') })),
+    strict({ allowContractCreation: true }),
+  );
+  ok(/7-byte initcode/.test(confirmSummary(r)));
+});
+
+test('strict tx: deploy summary includes the ETH value', () => {
+  const r = evaluate(
+    txReq(tx({ to: null, value: 500_000_000_000_000n })),
+    strict({ allowContractCreation: true, maxValueWei: 1_000_000_000_000_000n }),
+  );
+  ok(/^0\.0005 ETH /.test(confirmSummary(r)), confirmSummary(r));
 });
 
 test('strict tx: destination match is case-insensitive', () => {
@@ -236,6 +319,7 @@ test('confirm: permissive mode honours the confirm threshold', () => {
   const p: Policy = {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    allowContractCreation: true,
     allowMessageSigning: true, allowTypedData: true,
     allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
     requireConfirmAboveWei: 500n,
@@ -248,6 +332,7 @@ test('confirm: permissive mode without threshold → allow', () => {
   const p: Policy = {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    allowContractCreation: true,
     allowMessageSigning: true, allowTypedData: true,
     allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
   };
@@ -258,18 +343,22 @@ test('confirm: contract creation summary names "contract creation"', () => {
   const p: Policy = {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    allowContractCreation: true,
     allowMessageSigning: true, allowTypedData: true,
     allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
     requireConfirmAboveWei: 0n,
   };
-  const r = evaluate(txReq(tx({ to: null, value: 1n })), p);
-  ok(/contract creation/.test(confirmSummary(r)));
+  const r = evaluate(txReq(tx({ to: null, value: 1n, data: '0x6080604052' })), p);
+  const summary = confirmSummary(r);
+  ok(/contract creation/.test(summary), summary);
+  ok(/5-byte initcode/.test(summary), summary);
 });
 
 test('confirm: message/typed_data do not trigger confirm gate (deferred)', () => {
   const p: Policy = {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    allowContractCreation: true,
     allowMessageSigning: true, allowTypedData: true,
     allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
     requireConfirmAboveWei: 0n,
@@ -282,6 +371,7 @@ test('confirm: summary renders 0.5 ETH cleanly', () => {
   const p: Policy = {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    allowContractCreation: true,
     allowMessageSigning: true, allowTypedData: true,
     allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
     requireConfirmAboveWei: 0n,
@@ -294,6 +384,7 @@ test('confirm: summary renders whole-ETH amounts without a decimal', () => {
   const p: Policy = {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    allowContractCreation: true,
     allowMessageSigning: true, allowTypedData: true,
     allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
     requireConfirmAboveWei: 0n,
@@ -323,4 +414,23 @@ test('end-to-end: parse + evaluate a realistic ERC-20 transfer policy', () => {
   ok(!isAllow(evaluate(txReq(tx({ data: '0x', value: 1n })), p)));
   ok(!isAllow(evaluate(txReq(tx({ data: approveData, value: 0n })), p)));
   ok(!isAllow(evaluate(txReq(tx({ data: transferData, value: 0n, chainId: 137n })), p)));
+});
+
+test('end-to-end: parse + evaluate a deploy-enabled policy', () => {
+  const source = `
+    mode = "strict"
+    chain_ids = [1]
+    allow_contract_creation = true
+  `;
+  const p = parsePolicy(source);
+  const initcode = ('0x6080604052' + '00'.repeat(100)) as `0x${string}`;
+  // Deploy → confirm, never plain allow.
+  const deploy = evaluate(txReq(tx({ to: null, data: initcode })), p);
+  equal(deploy.kind, 'confirm');
+  // The toggle doesn't loosen anything else: a normal call is still denied
+  // by the (empty) allow_to list.
+  const call = evaluate(txReq(tx({ data: '0x', value: 0n })), p);
+  equal(call.kind, 'deny');
+  // Wrong chain still denies the deploy itself.
+  equal(evaluate(txReq(tx({ to: null, data: initcode, chainId: 137n })), p).kind, 'deny');
 });

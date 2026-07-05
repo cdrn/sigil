@@ -139,6 +139,34 @@ test('contract-creation tx (to=null) is supported', () => {
   equal(addressFromPublicKey(pub), ADDR);
 });
 
+test('legacy contract-creation tx (to=null) is supported', () => {
+  const tx: LegacyTx = {
+    type: 'legacy',
+    chainId: 1,
+    nonce: 0,
+    gasPrice: 20_000_000_000n,
+    gasLimit: 100000n,
+    to: null,
+    value: 0n,
+    data: '0x6080604052',
+  };
+  const signed = signTransaction(tx, PRIV);
+  // Parse: rlp([nonce, gasPrice, gasLimit, to, value, data, v, r, s])
+  const decoded = rlpDecode(hexToBuf(signed));
+  if (!Array.isArray(decoded)) throw new Error('expected list');
+  const [, , , toBuf, , , vBuf, rBuf, sBuf] = decoded;
+  // to should be empty for contract creation
+  equal(bufFromDecoded(toBuf).length, 0);
+  const v = BigInt('0x' + bufFromDecoded(vBuf).toString('hex'));
+  const recovery = Number(v - BigInt(tx.chainId as number) * 2n - 35n) as 0 | 1;
+  const pub = recoverPublicKey(txDigest(tx), {
+    r: bufFromDecoded(rBuf),
+    s: bufFromDecoded(sBuf),
+    recovery,
+  });
+  equal(addressFromPublicKey(pub), ADDR);
+});
+
 test('different nonces produce different signatures (so tx is bound to nonce)', () => {
   const base = {
     type: 'eip1559' as const,

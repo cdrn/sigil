@@ -8,7 +8,9 @@ import type { Policy, PolicyDecision, PolicyRequest, SvmTransferView } from './t
  * as the RPC_POLICY_DENIED error message — write it for a human.
  *
  * Order of checks for transactions:
- *   1. strict-mode static deny rules (chain, allow_to, value cap, selector)
+ *   1. strict-mode static deny rules (chain, contract creation, allow_to,
+ *      value cap, selector) — an allowed contract creation short-circuits
+ *      to a mandatory confirm here
  *   2. require_confirm_above_wei — independent of mode
  *   3. allow
  *
@@ -31,8 +33,8 @@ export function evaluate(request: PolicyRequest, policy: Policy): PolicyDecision
   }
   switch (request.kind) {
     case 'transaction': {
-      const deny = evaluateTransactionStrict(request.tx, policy);
-      if (deny) return deny;
+      const decision = evaluateTransactionStrict(request.tx, policy);
+      if (decision) return decision;
       const confirm = confirmForTx(request.tx, policy);
       if (confirm) return confirm;
       return { kind: 'allow' };
@@ -138,13 +140,14 @@ function formatSol(lamports: bigint): string {
 }
 
 /**
- * Strict-mode static checks. Returns a Deny decision on the first failure, or
- * `null` if everything passes (the caller then runs the confirm check).
+ * Strict-mode static checks. Returns a Deny decision on the first failure,
+ * a Confirm for an allowed contract creation, or `null` if everything passes
+ * (the caller then runs the confirm check).
  */
 function evaluateTransactionStrict(
   tx: SignableTx,
   policy: Policy,
-): ({ kind: 'deny'; reason: string }) | null {
+): ({ kind: 'deny'; reason: string } | { kind: 'confirm'; summary: string }) | null {
   // 1. chain ID
   if (!policy.chainIds.includes(Number(tx.chainId))) {
     return {
@@ -153,9 +156,24 @@ function evaluateTransactionStrict(
     };
   }
 
-  // 2. contract creation (to: null) — denied by default; future "allow_contract_creation" toggle
+  // 2. contract creation (to: null) — off by default. Initcode is arbitrary
+  //    code, so there is no address or selector to allowlist; when enabled,
+  //    a deploy still respects the value cap and ALWAYS routes to a human
+  //    confirm rather than an unconditional allow.
   if (tx.to === null) {
-    return { kind: 'deny', reason: 'tx denied — contract creation not allowed' };
+    if (!policy.allowContractCreation) {
+      return {
+        kind: 'deny',
+        reason: 'tx denied — contract creation not allowed (allow_contract_creation = false)',
+      };
+    }
+    if (tx.value > policy.maxValueWei) {
+      return {
+        kind: 'deny',
+        reason: `tx denied — value ${tx.value} wei exceeds max_value_wei ${policy.maxValueWei}`,
+      };
+    }
+    return { kind: 'confirm', summary: txSummary(tx) };
   }
 
   // 3. destination allowlist (case-insensitive; allow_to is pre-lowercased)
@@ -204,11 +222,22 @@ function confirmForTx(
   if (policy.requireConfirmAboveWei === undefined) return null;
   const value = BigInt(tx.value);
   if (value <= policy.requireConfirmAboveWei) return null;
-  const dest = tx.to === null ? 'contract creation' : shortAddr(tx.to);
-  return {
-    kind: 'confirm',
-    summary: `${formatWei(value)} ETH → ${dest} on chain ${BigInt(tx.chainId)}`,
-  };
+  return { kind: 'confirm', summary: txSummary(tx) };
+}
+
+/**
+ * One-line description of a tx for the confirm push. A deploy has no
+ * destination address, so it shows the initcode size instead — enough for
+ * the human to sanity-check against the deploy they actually asked for.
+ */
+function txSummary(tx: SignableTx): string {
+  const dest = tx.to === null ? `contract creation (${initcodeBytes(tx)}-byte initcode)` : shortAddr(tx.to);
+  return `${formatWei(BigInt(tx.value))} ETH → ${dest} on chain ${BigInt(tx.chainId)}`;
+}
+
+function initcodeBytes(tx: SignableTx): number {
+  const dataHex = typeof tx.data === 'string' ? tx.data : ('0x' + tx.data.toString('hex'));
+  return (dataHex.length - 2) / 2;
 }
 
 function shortAddr(addr: string): string {

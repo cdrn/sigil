@@ -20,6 +20,7 @@ test('STRICT_TEMPLATE parses back to a strict policy with conservative defaults'
   equal(p.maxValueWei, 0n);
   equal(p.allowTo.length, 0);
   equal(p.allowedSelectors.length, 0);
+  equal(p.allowContractCreation, false);
   equal(p.allowMessageSigning, false);
   equal(p.allowTypedData, false);
 });

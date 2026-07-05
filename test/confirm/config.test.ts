@@ -152,6 +152,32 @@ test('anyPolicyRequiresConfirm: one policy sets confirm → true', () => {
   }
 });
 
+test('anyPolicyRequiresConfirm: strict allow_contract_creation → true (deploys always confirm)', () => {
+  const dir = tmp();
+  try {
+    writeFileSync(
+      join(dir, 'evm:a.toml'),
+      `mode = "strict"\nchain_ids = [1]\nallow_contract_creation = true`,
+    );
+    equal(anyPolicyRequiresConfirm(dir), true);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('anyPolicyRequiresConfirm: permissive mode does not trip on allowContractCreation default', () => {
+  // Permissive policies parse with allowContractCreation=true (deploys are
+  // already allowed there, no confirm involved) — that must not force a
+  // transport requirement.
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, 'evm:a.toml'), `mode = "permissive"`);
+    equal(anyPolicyRequiresConfirm(dir), false);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test('anyPolicyRequiresConfirm: malformed policy file is skipped, not raised', () => {
   const dir = tmp();
   try {

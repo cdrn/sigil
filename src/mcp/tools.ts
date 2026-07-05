@@ -54,7 +54,7 @@ const ethSignTransaction: Tool = {
         tx: {
           type: 'object',
           description:
-            'Transaction fields. type="legacy" requires {chainId, nonce, gasPrice, gasLimit, to, value, data}. type="eip1559" requires {chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList?}. Numbers may be supplied as JSON numbers or decimal strings.',
+            'Transaction fields. type="legacy" requires {chainId, nonce, gasPrice, gasLimit, to, value, data}. type="eip1559" requires {chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList?}. To deploy a contract, set to=null (explicit JSON null, not omitted) and put the creation bytecode in data. Numbers may be supplied as JSON numbers or decimal strings.',
         },
       },
       required: ['portal', 'tx'],

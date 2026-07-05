@@ -25,6 +25,15 @@ export interface Policy {
   maxValueWei: bigint;
   /** 4-byte function selectors, lowercase 0x-prefixed, normalized at load time. */
   allowedSelectors: readonly string[];
+  /**
+   * Strict mode: permit contract-creation transactions (to: null). Initcode
+   * is arbitrary code that no allowlist can vet, so even when enabled every
+   * deploy is routed to the out-of-band confirm gate (a confirm transport
+   * must be configured or sigil-mcp refuses to start). Deploys still respect
+   * max_value_wei; allow_to and allowed_selectors don't apply to them.
+   * Permissive mode ignores this — deploys are already allowed there.
+   */
+  allowContractCreation: boolean;
   allowMessageSigning: boolean;
   allowTypedData: boolean;
   /**

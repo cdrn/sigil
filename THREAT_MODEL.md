@@ -56,6 +56,7 @@ The policy engine (per-portal `~/.sigil/policy/<handle>.toml`) is the layer that
 - Chain ID allowlist (`chain_ids`).
 - Per-tx value cap (`max_value_wei`).
 - Function selector allowlist (`allowed_selectors`) — 4-byte selector match, no calldata decoding.
+- Contract creation (`to: null`) denied by default; opt in with `allow_contract_creation = true`. Initcode is arbitrary code that no allowlist can vet, so even when enabled a deploy still respects `max_value_wei` and is **always routed to the out-of-band confirm gate** — never auto-allowed. sigil-mcp refuses to start if a strict policy enables it without a confirm transport configured.
 - On/off toggles for personal_sign (`allow_message_signing`) and EIP-712 typed data (`allow_typed_data`).
 - Append-only hash-chained audit log records both allow AND deny decisions. Denies are the prompt-injection canary.
 - Runtime fail-closed when the policy file is missing for a portal — keys can't be used without an explicit decision.
@@ -67,7 +68,6 @@ The policy engine (per-portal `~/.sigil/policy/<handle>.toml`) is the layer that
 - EIP-712 domain + primary-type allowlists (today `allow_typed_data` is binary; OpenSea-style approvals deserve finer control).
 - Decoded-calldata arg checks ("allow `transfer(addr, amt)` only when `amt <= 100e18` and `addr in list`"). Needs a BYO-ABI registry per portal.
 - Out-of-band human confirmation above a configurable value threshold (push to ntfy / Pushover / Telegram / Apple Push), [#4](https://github.com/cdrn/sigil/issues/4).
-- `allow_contract_creation` toggle — currently strict mode always denies tx with `to: null`.
 
 ### 3. Supply chain compromise of `sigil` itself
 

@@ -52,6 +52,7 @@ export function parsePolicy(source: string): Policy {
       allowTo: [],
       maxValueWei: 0n,
       allowedSelectors: [],
+      allowContractCreation: true,
       allowMessageSigning: true,
       allowTypedData: true,
       allowSvmMessageSigning: true,
@@ -88,6 +89,11 @@ export function parsePolicy(source: string): Policy {
     return s.toLowerCase();
   });
 
+  const allowContractCreation = asBool(
+    raw['allow_contract_creation'],
+    'allow_contract_creation',
+    false,
+  );
   const allowMessageSigning = asBool(raw['allow_message_signing'], 'allow_message_signing', false);
   const allowTypedData = asBool(raw['allow_typed_data'], 'allow_typed_data', false);
 
@@ -139,6 +145,7 @@ export function parsePolicy(source: string): Policy {
     allowTo,
     maxValueWei,
     allowedSelectors,
+    allowContractCreation,
     allowMessageSigning,
     allowTypedData,
     allowSvmMessageSigning,
@@ -161,6 +168,7 @@ export function permissivePolicyResolver(): PolicyResolver {
     allowTo: [],
     maxValueWei: 0n,
     allowedSelectors: [],
+    allowContractCreation: true,
     allowMessageSigning: true,
     allowTypedData: true,
     allowSvmMessageSigning: true,

@@ -105,9 +105,11 @@ export function loadConfig(path: string): SigilConfig {
 
 /**
  * Walk every *.toml under the policy dir, parse each, and return true if
- * any of them sets require_confirm_above_wei. A malformed policy file is
- * skipped (it'll surface its own error at sign time); we only need to know
- * whether some portal is *trying* to gate on confirm.
+ * any of them can route a sign to the confirm gate: require_confirm_above_wei,
+ * or strict-mode allow_contract_creation (deploys always confirm). A
+ * malformed policy file is skipped (it'll surface its own error at sign
+ * time); we only need to know whether some portal is *trying* to gate on
+ * confirm.
  */
 export function anyPolicyRequiresConfirm(policyDir: string): boolean {
   let entries: string[];
@@ -128,6 +130,7 @@ export function anyPolicyRequiresConfirm(policyDir: string): boolean {
     try {
       const p = parsePolicy(source);
       if (p.requireConfirmAboveWei !== undefined) return true;
+      if (p.mode === 'strict' && p.allowContractCreation) return true;
     } catch (err) {
       // Malformed policy file — not our problem here; the sign path will
       // raise PolicyLoadError when this portal is used. Skip.

@@ -161,6 +161,9 @@ allow_to = []                             # allowed destination addresses (lower
 max_value_wei = "0"                       # per-tx cap, in wei, as decimal string
 allowed_selectors = []                    # 4-byte function selectors, e.g. "0xa9059cbb"
 
+allow_contract_creation = false           # deploys (to = null); when true, every
+                                          # deploy still requires a confirm tap
+
 allow_message_signing = false             # EIP-191 personal_sign (e.g. SIWE)
 allow_typed_data = false                  # EIP-712 (Permit, OpenSea — can be financial)
 

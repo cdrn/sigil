@@ -52,6 +52,7 @@ test('parsePolicy: strict mode applies sensible defaults for everything else', (
   deepEqual(p.allowTo, []);
   equal(p.maxValueWei, 0n);
   deepEqual(p.allowedSelectors, []);
+  equal(p.allowContractCreation, false);
   equal(p.allowMessageSigning, false);
   equal(p.allowTypedData, false);
 });
@@ -67,6 +68,7 @@ test('parsePolicy: strict mode parses every field', () => {
     allow_to = ["0x000000000000000000000000000000000000DEAD"]
     max_value_wei = "100000000000000000"
     allowed_selectors = ["0xA9059CBB", "0x095ea7b3"]
+    allow_contract_creation = true
     allow_message_signing = true
     allow_typed_data = false
   `);
@@ -75,6 +77,7 @@ test('parsePolicy: strict mode parses every field', () => {
   deepEqual(p.allowTo, ['0x000000000000000000000000000000000000dead']);
   deepEqual(p.allowedSelectors, ['0xa9059cbb', '0x095ea7b3']);
   equal(p.maxValueWei, 100000000000000000n);
+  equal(p.allowContractCreation, true);
   equal(p.allowMessageSigning, true);
   equal(p.allowTypedData, false);
 });
@@ -217,6 +220,13 @@ test('parsePolicy: omitting require_confirm_above_wei leaves it undefined', () =
 test('parsePolicy: allow_message_signing / allow_typed_data must be booleans', () => {
   throws(
     () => parsePolicy(`mode = "strict"\nchain_ids = [1]\nallow_message_signing = "yes"`),
+    /must be a boolean/,
+  );
+});
+
+test('parsePolicy: allow_contract_creation must be a boolean', () => {
+  throws(
+    () => parsePolicy(`mode = "strict"\nchain_ids = [1]\nallow_contract_creation = "yes"`),
     /must be a boolean/,
   );
 });
