@@ -22,6 +22,14 @@ export interface McpServerOpts {
    */
   context: MethodContext;
   /**
+   * Extra text appended to a tool's description at tools/list time, keyed by
+   * tool name. Tool descriptions are the only channel through which the
+   * model discovers capabilities, and the static definitions can't know
+   * runtime config — this is how sigil-mcp advertises the JSON-RPC signing
+   * proxy endpoint when the [rpc] block is enabled.
+   */
+  toolNotes?: Readonly<Record<string, string>>;
+  /**
    * Optional log sink for protocol-level events. Defaults to a no-op.
    * The default binary entrypoint writes log events to stderr so they don't
    * collide with stdio MCP traffic on stdout.
@@ -88,7 +96,14 @@ async function dispatch(req: McpRequest, opts: McpServerOpts): Promise<unknown> 
         serverInfo: SERVER_INFO,
       };
     case 'tools/list':
-      return { tools: TOOLS.map((t) => t.definition) };
+      return {
+        tools: TOOLS.map((t) => {
+          const note = opts.toolNotes?.[t.definition.name];
+          return note === undefined
+            ? t.definition
+            : { ...t.definition, description: `${t.definition.description}\n\n${note}` };
+        }),
+      };
     case 'tools/call':
       return await invokeTool(req.params, opts);
     case 'ping':

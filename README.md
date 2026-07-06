@@ -228,6 +228,8 @@ The proxy serves three things with the portal key and forwards everything else (
 
 With multiple Claude windows open, each `sigil-mcp` tries to bind the port; the first wins and the rest log and continue — any one session's proxy serves the machine.
 
+When the proxy is enabled, sigil-mcp advertises the endpoint — including the authenticated URL — in the `sigil_eth_sign_transaction` tool description, so the agent discovers it on its own and reaches for `forge --unlocked` instead of transcribing bytecode through the MCP tool. This is deliberate: the token gates other local software, not your agent (see THREAT_MODEL.md).
+
 ## Solana (SVM)
 
 Every portal also controls a **Solana address**, derived from the *same secret*. EVM uses secp256k1; Solana uses ed25519 — different curves, so you can't share a public key. But the portal's raw 32-byte secret doubles as an ed25519 seed, yielding one secret → two addresses:

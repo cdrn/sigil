@@ -16,7 +16,7 @@ import { HandleTable } from '../daemon/handles.js';
 import type { MethodContext } from '../daemon/index.js';
 import { runMcpStdio } from '../mcp/server.js';
 import { FileSystemPolicyResolver } from '../policy/index.js';
-import { startRpcServer, type RpcProxyServer } from '../rpc/index.js';
+import { DEFAULT_RPC_PORT, startRpcServer, type RpcProxyServer } from '../rpc/index.js';
 
 /**
  * sigil-mcp: single-process MCP server for sigil. Spawned by Claude Code per
@@ -94,6 +94,7 @@ async function main(): Promise<void> {
   // sigil-mcp; only the first binds the port — the others log and carry on,
   // since any one session's proxy serves the machine.
   let rpcServer: RpcProxyServer | undefined;
+  let rpcProxyPort: number | undefined;
   if (config.rpc) {
     try {
       rpcServer = await startRpcServer({
@@ -101,6 +102,7 @@ async function main(): Promise<void> {
         ctx: context,
         onLog: (e) => process.stderr.write(`rpc: ${JSON.stringify(e)}\n`),
       });
+      rpcProxyPort = rpcServer.port;
       const upstreamOrigin = new URL(config.rpc.upstream).origin;
       process.stderr.write(
         `sigil-mcp: json-rpc signing proxy on ${rpcServer.url} ` +
@@ -108,6 +110,9 @@ async function main(): Promise<void> {
       );
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+        // Another session already serves the proxy on the configured port —
+        // still advertise it to the model below; it's the same config.
+        rpcProxyPort = config.rpc.port ?? DEFAULT_RPC_PORT;
         process.stderr.write(
           `sigil-mcp: rpc port busy — another sigil-mcp session already serves the proxy\n`,
         );
@@ -115,6 +120,25 @@ async function main(): Promise<void> {
         throw err;
       }
     }
+  }
+
+  // Tell the model the proxy exists — tool descriptions are its only
+  // discovery channel. The authenticated URL is included on purpose: the
+  // token gates other local software, not the agent (which is the intended
+  // client and cannot read the config file past the ward hooks).
+  let toolNotes: Record<string, string> | undefined;
+  if (config.rpc && rpcProxyPort !== undefined) {
+    const authedUrl = `http://sigil:${config.rpc.token}@127.0.0.1:${rpcProxyPort}`;
+    toolNotes = {
+      sigil_eth_sign_transaction:
+        `NOTE: sigil also serves a local JSON-RPC signing proxy for portal ` +
+        `"${config.rpc.portal}" at ${authedUrl} (chain per its configured upstream). ` +
+        `For Foundry/Hardhat/web3-tool workflows — especially contract deployments — ` +
+        `prefer that endpoint over transcribing calldata into this tool: e.g. ` +
+        `forge script <Script> --rpc-url '${authedUrl}' --unlocked --sender <portal address> --broadcast. ` +
+        `Its eth_sendTransaction fills nonce/gas/fees automatically, broadcasts via the ` +
+        `upstream, and runs the same policy, confirm, and audit pipeline as this tool.`,
+    };
   }
 
   let controlClosed = false;
@@ -166,6 +190,7 @@ async function main(): Promise<void> {
 
   await runMcpStdio({
     context,
+    ...(toolNotes ? { toolNotes } : {}),
     stdin: process.stdin,
     stdout: process.stdout,
     onLog: (e) => process.stderr.write(JSON.stringify(e) + '\n'),

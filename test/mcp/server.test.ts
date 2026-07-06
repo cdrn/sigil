@@ -94,6 +94,37 @@ test('handleLine: tools/list returns all tools with input schemas', async () => 
   } finally { tearDown(h); }
 });
 
+test('handleLine: toolNotes are appended to the named tool description only', async () => {
+  const h = setUp();
+  try {
+    const note = 'NOTE: signing proxy at http://sigil:tok@127.0.0.1:8547.';
+    const resp = await handleLine(
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      { context: h.ctx, toolNotes: { sigil_eth_sign_transaction: note } },
+    );
+    const r = JSON.parse(resp!) as { result: { tools: { name: string; description: string }[] } };
+    const signTx = r.result.tools.find((t) => t.name === 'sigil_eth_sign_transaction')!;
+    ok(signTx.description.endsWith(note), signTx.description);
+    // Original description text is preserved ahead of the note.
+    ok(/Sign an Ethereum transaction/.test(signTx.description));
+    // Other tools are untouched.
+    const msg = r.result.tools.find((t) => t.name === 'sigil_eth_sign_message')!;
+    ok(!msg.description.includes('NOTE:'));
+  } finally { tearDown(h); }
+});
+
+test('handleLine: without toolNotes descriptions are served verbatim', async () => {
+  const h = setUp();
+  try {
+    const resp = await handleLine(
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      { context: h.ctx },
+    );
+    const r = JSON.parse(resp!) as { result: { tools: { description: string }[] } };
+    for (const t of r.result.tools) ok(!t.description.includes('NOTE:'));
+  } finally { tearDown(h); }
+});
+
 test('handleLine: tools/call sigil_list_portals returns content + structuredContent', async () => {
   const h = setUp();
   try {
