@@ -109,6 +109,13 @@ sigil policy init <handle> [--strict]
   or remove it first. Defaults to permissive; --strict writes the
   locked-down template.
 
+sigil rpc init <handle> --upstream <url> [--port <n>]
+  Enable the JSON-RPC signing proxy for a portal: generates a strong
+  auth token and appends the [rpc] block to ~/.sigil/config.toml
+  (refuses if one exists; preserves the rest of the file). Prints the
+  ready-to-paste authenticated endpoint and forge invocation. Restart
+  Claude Code sessions to pick it up.
+
 sigil portal list
   List the encrypted keyfiles on disk with their derived addresses
   (EVM + Solana). Requires the passphrase.
@@ -204,7 +211,13 @@ If any policy file sets `require_confirm_above_wei` but no transport is configur
 
 sigil can expose a local JSON-RPC endpoint that makes any portal a drop-in signer for tooling that expects an unlocked node account — the same pattern Clef and web3signer use. Contract bytecode goes from `forge` straight into sigil; it never transits the agent's context or an MCP tool parameter.
 
-Enable it in `~/.sigil/config.toml`:
+Enable it with one command (generates the token, writes the config block, prints the forge invocation):
+
+```sh
+sigil rpc init evm:bot --upstream https://sepolia.example/v3/KEY
+```
+
+...or by hand in `~/.sigil/config.toml`:
 
 ```toml
 [rpc]

@@ -8,6 +8,7 @@ import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
 import { encode as encodeQr, renderTerminal } from '../qr/index.js';
 import { policyInit, portalAdd, portalAddress, portalListFromDisk, portalNew, portalRemove } from './portal.js';
+import { rpcInit } from './rpc.js';
 import { status } from './status.js';
 import { formatResult, lock, unlock } from './unlock.js';
 
@@ -23,6 +24,7 @@ Usage:
   sigil portal remove <handle>
   sigil policy show <handle>
   sigil policy init <handle> [--strict]
+  sigil rpc init <handle> --upstream <url> [--port <n>]
   sigil unlock
   sigil lock
 
@@ -33,6 +35,9 @@ the MCP server in ~/.claude.json (with --user) or <root>/.mcp.json
 to get a locked-down template you fill in before any sign succeeds.
 "sigil policy init" provisions a policy file for an existing portal
 whose policy is missing (e.g. keyfile from an older sigil version).
+"sigil rpc init" enables the local JSON-RPC signing proxy for a portal:
+generates the auth token and writes the [rpc] config block, so Foundry/
+Hardhat can use the portal as an unlocked signer.
 "sigil unlock" prompts for the passphrase and pushes it to every running
 sigil-mcp session (one per Claude Code window) over their control sockets,
 so a single unlock covers all open windows.
@@ -266,6 +271,38 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         }
         out.write(source);
         out.write(`# ${policyPath}\n`);
+        return { code: 0 };
+      }
+    }
+    if (head === 'rpc') {
+      const sub = parseSubcommand(rest, {
+        init: {
+          options: {
+            'upstream': { type: 'string' },
+            'port': { type: 'string' },
+          },
+        },
+      });
+      if (sub.command === 'init') {
+        const handle = sub.positionals[0];
+        if (!handle) throw new ArgsError('rpc init: missing handle');
+        const upstream = sub.options['upstream'];
+        if (typeof upstream !== 'string') {
+          throw new ArgsError('rpc init: --upstream <url> is required');
+        }
+        let port: number | undefined;
+        if (sub.options['port'] !== undefined) {
+          port = Number(sub.options['port']);
+        }
+        const result = rpcInit(paths, handle, upstream, port);
+        out.write(`${result.created ? 'wrote' : 'appended [rpc] block to'} ${result.configPath}\n`);
+        out.write(`proxy will listen on 127.0.0.1:${result.port} for portal "${result.portal}"\n\n`);
+        out.write(`endpoint (embeds the auth token — treat it like a password):\n`);
+        out.write(`  ${result.authedUrl}\n\n`);
+        out.write(`use with Foundry (get the sender address from "sigil portal list"):\n`);
+        out.write(`  forge script <Script> --rpc-url '${result.authedUrl}' \\\n`);
+        out.write(`    --unlocked --sender <portal address> --broadcast\n\n`);
+        out.write(`restart your Claude Code session(s) so sigil-mcp picks up the config.\n`);
         return { code: 0 };
       }
     }
