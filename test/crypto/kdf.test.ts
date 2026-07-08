@@ -42,6 +42,20 @@ test('deriveKey rejects invalid params', () => {
   throws(() => deriveKey(Buffer.from('p'), salt, { m: 256, t: 1, p: 0 }), /p must be >= 1/);
 });
 
+test('argon2id output is pinned across dependency upgrades (keyfile compatibility)', () => {
+  // Known-answer vector computed with @noble/hashes 1.8.0. If this fails
+  // after a dependency bump, DO NOT update the expected value — a changed
+  // KDF output means every keyfile already on disk becomes undecryptable.
+  // The round-trip tests above can't catch that: they seal and unseal with
+  // the same library version.
+  const salt = Buffer.from('000102030405060708090a0b0c0d0e0f', 'hex');
+  const key = deriveKey(Buffer.from('hunter2'), salt, TEST_PARAMS);
+  equal(
+    Buffer.from(key).toString('hex'),
+    'e268b563302ea3814ce80423551edcd4685cb5a8709823ab60be277428930a31',
+  );
+});
+
 test('DEFAULT_KDF_PARAMS reflects expected hardening level', () => {
   // Documented choice: 64 MiB memory, 3 iterations, 4 parallelism.
   equal(DEFAULT_KDF_PARAMS.m, 64 * 1024);
