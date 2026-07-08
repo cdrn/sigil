@@ -26,3 +26,9 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # @types/node majors track Node majors. Stay on the types matching the
+      # minimum supported runtime (engines.node >=22) — newer types would let
+      # code reference APIs that don't exist where sigil actually runs.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
