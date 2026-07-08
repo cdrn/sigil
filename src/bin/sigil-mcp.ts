@@ -49,7 +49,11 @@ async function main(): Promise<void> {
   // mkdir's `mode` only applies to a freshly-created dir (and is masked by
   // umask), so re-assert 0o700 in case the dir pre-existed with looser perms.
   // The per-socket file gets its own 0o600 from the control server on bind.
-  try { chmodSync(paths.controlDir, 0o700); } catch { /* best-effort */ }
+  try {
+    chmodSync(paths.controlDir, 0o700);
+  } catch {
+    /* best-effort */
+  }
   const socketPath = sessionSocketPath(paths.controlDir, process.pid);
 
   // Load config + fail-closed check. If any portal policy requires OOB
@@ -106,7 +110,7 @@ async function main(): Promise<void> {
       const upstreamOrigin = new URL(config.rpc.upstream).origin;
       process.stderr.write(
         `sigil-mcp: json-rpc signing proxy on ${rpcServer.url} ` +
-        `(portal "${config.rpc.portal}", upstream ${upstreamOrigin})\n`,
+          `(portal "${config.rpc.portal}", upstream ${upstreamOrigin})\n`,
       );
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
@@ -158,7 +162,7 @@ async function main(): Promise<void> {
     // sign calls will return DAEMON_LOCKED.
     process.stderr.write(
       `sigil-mcp: control socket unavailable at ${socketPath} (${(err as Error).message}). ` +
-      `This session will stay locked; sign calls will return DAEMON_LOCKED.\n`,
+        `This session will stay locked; sign calls will return DAEMON_LOCKED.\n`,
     );
   }
 
@@ -175,13 +179,19 @@ async function main(): Promise<void> {
     audit.close();
     if (!controlClosed && control) {
       controlClosed = true;
-      control.close().catch(() => { /* best-effort */ });
+      control.close().catch(() => {
+        /* best-effort */
+      });
     }
     if (ackServer) {
-      ackServer.close().catch(() => { /* best-effort */ });
+      ackServer.close().catch(() => {
+        /* best-effort */
+      });
     }
     if (rpcServer) {
-      rpcServer.close().catch(() => { /* best-effort */ });
+      rpcServer.close().catch(() => {
+        /* best-effort */
+      });
     }
   };
   process.on('exit', shutdown);

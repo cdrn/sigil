@@ -15,14 +15,29 @@ import {
 import { sessionSocketPath } from '../../src/cli/paths.js';
 import { HandleTable } from '../../src/daemon/handles.js';
 
-function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
-function mkTmp(): string { return mkdtempSync(join(tmpdir(), 'sigil-bcast-')); }
+function priv(b: number): Buffer {
+  const p = Buffer.alloc(32);
+  p[31] = b;
+  return p;
+}
+function mkTmp(): string {
+  return mkdtempSync(join(tmpdir(), 'sigil-bcast-'));
+}
 const TEST_KDF = { m: 256, t: 1, p: 1 };
 
-interface Session { pid: number; handles: HandleTable; ctl: ControlServerHandle; }
+interface Session {
+  pid: number;
+  handles: HandleTable;
+  ctl: ControlServerHandle;
+}
 
 /** Bind N control servers (distinct PIDs) sharing one keysDir/controlDir. */
-async function spinUp(controlDir: string, keysDir: string, policyDir: string, pids: number[]): Promise<Session[]> {
+async function spinUp(
+  controlDir: string,
+  keysDir: string,
+  policyDir: string,
+  pids: number[],
+): Promise<Session[]> {
   const sessions: Session[] = [];
   for (const pid of pids) {
     const handles = new HandleTable();
@@ -135,7 +150,9 @@ test('broadcast: a live-but-slow session times out but is NOT reaped', async () 
   // wedged-but-alive sigil-mcp. It must survive the broadcast (not be reaped).
   const slowPath = sessionSocketPath(controlDir, 555);
   const conns: import('node:net').Socket[] = [];
-  const slow: Server = createServer((sock) => { conns.push(sock); /* swallow, never reply */ });
+  const slow: Server = createServer((sock) => {
+    conns.push(sock); /* swallow, never reply */
+  });
   await new Promise<void>((resolve) => slow.listen(slowPath, () => resolve()));
   try {
     const results = await broadcast(controlDir, { method: 'status' }, 100);

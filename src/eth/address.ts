@@ -30,7 +30,9 @@ export function addressFromPublicKey(uncompressedPub: Buffer | Uint8Array): stri
     throw new Error(`expected 65-byte uncompressed pubkey, got ${uncompressedPub.length}`);
   }
   if (uncompressedPub[0] !== 0x04) {
-    throw new Error(`expected 0x04 prefix on uncompressed pubkey, got ${uncompressedPub[0]?.toString(16)}`);
+    throw new Error(
+      `expected 0x04 prefix on uncompressed pubkey, got ${uncompressedPub[0]?.toString(16)}`,
+    );
   }
   const hash = keccak256(uncompressedPub.subarray(1));
   return '0x' + bytesToHex(hash.subarray(12));
@@ -48,7 +50,7 @@ export function toChecksumAddress(address: string): string {
   let out = '0x';
   for (let i = 0; i < lower.length; i++) {
     const c = lower[i]!;
-    const nibble = hash[i >>> 1]! >>> (i % 2 === 0 ? 4 : 0) & 0xf;
+    const nibble = (hash[i >>> 1]! >>> (i % 2 === 0 ? 4 : 0)) & 0xf;
     out += nibble >= 8 ? c.toUpperCase() : c;
   }
   return out;

@@ -17,8 +17,14 @@ import {
   SERVER_INFO,
 } from '../../src/mcp/index.js';
 
-function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
-function mkTmp(): string { return mkdtempSync(join(tmpdir(), 'sigil-mcp-')); }
+function priv(b: number): Buffer {
+  const p = Buffer.alloc(32);
+  p[31] = b;
+  return p;
+}
+function mkTmp(): string {
+  return mkdtempSync(join(tmpdir(), 'sigil-mcp-'));
+}
 
 interface H {
   dir: string;
@@ -50,14 +56,17 @@ function tearDown(h: H): void {
 test('handleLine: initialize returns capabilities + serverInfo', async () => {
   const h = setUp();
   try {
-    const resp = await handleLine(
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
-      { context: h.ctx },
-    );
-    const r = JSON.parse(resp!) as { result: { protocolVersion: string; serverInfo: { name: string } } };
+    const resp = await handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }), {
+      context: h.ctx,
+    });
+    const r = JSON.parse(resp!) as {
+      result: { protocolVersion: string; serverInfo: { name: string } };
+    };
     equal(r.result.protocolVersion, PROTOCOL_VERSION);
     equal(r.result.serverInfo.name, SERVER_INFO.name);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: notifications/initialized has no response', async () => {
@@ -68,16 +77,17 @@ test('handleLine: notifications/initialized has no response', async () => {
       { context: h.ctx },
     );
     equal(resp, null);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: tools/list returns all tools with input schemas', async () => {
   const h = setUp();
   try {
-    const resp = await handleLine(
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-      { context: h.ctx },
-    );
+    const resp = await handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), {
+      context: h.ctx,
+    });
     const r = JSON.parse(resp!) as { result: { tools: { name: string; inputSchema: object }[] } };
     const names = r.result.tools.map((t) => t.name).sort();
     deepEqual(names, [
@@ -91,17 +101,19 @@ test('handleLine: tools/list returns all tools with input schemas', async () => 
     for (const t of r.result.tools) {
       ok(t.inputSchema, `tool ${t.name} has no inputSchema`);
     }
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: toolNotes are appended to the named tool description only', async () => {
   const h = setUp();
   try {
     const note = 'NOTE: signing proxy at http://sigil:tok@127.0.0.1:8547.';
-    const resp = await handleLine(
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-      { context: h.ctx, toolNotes: { sigil_eth_sign_transaction: note } },
-    );
+    const resp = await handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), {
+      context: h.ctx,
+      toolNotes: { sigil_eth_sign_transaction: note },
+    });
     const r = JSON.parse(resp!) as { result: { tools: { name: string; description: string }[] } };
     const signTx = r.result.tools.find((t) => t.name === 'sigil_eth_sign_transaction')!;
     ok(signTx.description.endsWith(note), signTx.description);
@@ -110,19 +122,22 @@ test('handleLine: toolNotes are appended to the named tool description only', as
     // Other tools are untouched.
     const msg = r.result.tools.find((t) => t.name === 'sigil_eth_sign_message')!;
     ok(!msg.description.includes('NOTE:'));
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: without toolNotes descriptions are served verbatim', async () => {
   const h = setUp();
   try {
-    const resp = await handleLine(
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-      { context: h.ctx },
-    );
+    const resp = await handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), {
+      context: h.ctx,
+    });
     const r = JSON.parse(resp!) as { result: { tools: { description: string }[] } };
     for (const t of r.result.tools) ok(!t.description.includes('NOTE:'));
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: tools/call sigil_list_portals returns content + structuredContent', async () => {
@@ -130,7 +145,9 @@ test('handleLine: tools/call sigil_list_portals returns content + structuredCont
   try {
     const resp = await handleLine(
       JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
         params: { name: 'sigil_list_portals', arguments: {} },
       }),
       { context: h.ctx },
@@ -145,7 +162,9 @@ test('handleLine: tools/call sigil_list_portals returns content + structuredCont
     const portals = JSON.parse(r.result.content[0]!.text) as { portals: { handle: string }[] };
     equal(portals.portals.length, 1);
     equal(r.result.structuredContent.portals[0]!.handle, 'evm:bot');
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: tools/call eth_sign_message succeeds end-to-end in-process', async () => {
@@ -154,8 +173,13 @@ test('handleLine: tools/call eth_sign_message succeeds end-to-end in-process', a
     const messageHex = '0x' + Buffer.from('hello mcp').toString('hex');
     const resp = await handleLine(
       JSON.stringify({
-        jsonrpc: '2.0', id: 9, method: 'tools/call',
-        params: { name: 'sigil_eth_sign_message', arguments: { portal: 'evm:bot', message: messageHex } },
+        jsonrpc: '2.0',
+        id: 9,
+        method: 'tools/call',
+        params: {
+          name: 'sigil_eth_sign_message',
+          arguments: { portal: 'evm:bot', message: messageHex },
+        },
       }),
       { context: h.ctx },
     );
@@ -164,7 +188,9 @@ test('handleLine: tools/call eth_sign_message succeeds end-to-end in-process', a
     };
     ok(r.result.structuredContent.signature.startsWith('0x'));
     equal(r.result.structuredContent.signature.length, 2 + 130);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: tools/call with unknown tool returns METHOD_NOT_FOUND', async () => {
@@ -172,14 +198,18 @@ test('handleLine: tools/call with unknown tool returns METHOD_NOT_FOUND', async 
   try {
     const resp = await handleLine(
       JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
         params: { name: 'nonexistent_tool', arguments: {} },
       }),
       { context: h.ctx },
     );
     const r = JSON.parse(resp!) as { error: { code: number } };
     equal(r.error.code, MCP_METHOD_NOT_FOUND);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: tools/call surfaces method error code (portal-not-found → -32000)', async () => {
@@ -187,7 +217,9 @@ test('handleLine: tools/call surfaces method error code (portal-not-found → -3
   try {
     const resp = await handleLine(
       JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
         params: {
           name: 'sigil_eth_sign_message',
           arguments: { portal: 'evm:nope', message: '0xff' },
@@ -198,7 +230,9 @@ test('handleLine: tools/call surfaces method error code (portal-not-found → -3
     const r = JSON.parse(resp!) as { error: { code: number; message: string } };
     equal(r.error.code, -32000);
     ok(/portal/.test(r.error.message));
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: tools/call with non-object params → INVALID_PARAMS', async () => {
@@ -206,14 +240,18 @@ test('handleLine: tools/call with non-object params → INVALID_PARAMS', async (
   try {
     const resp = await handleLine(
       JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
         params: 'oops',
       }),
       { context: h.ctx },
     );
     const r = JSON.parse(resp!) as { error: { code: number } };
     equal(r.error.code, MCP_INVALID_PARAMS);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: unknown method (not tools/call) returns METHOD_NOT_FOUND', async () => {
@@ -225,19 +263,22 @@ test('handleLine: unknown method (not tools/call) returns METHOD_NOT_FOUND', asy
     );
     const r = JSON.parse(resp!) as { error: { code: number } };
     equal(r.error.code, MCP_METHOD_NOT_FOUND);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: ping responds with empty object', async () => {
   const h = setUp();
   try {
-    const resp = await handleLine(
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
-      { context: h.ctx },
-    );
+    const resp = await handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }), {
+      context: h.ctx,
+    });
     const r = JSON.parse(resp!) as { result: object };
     deepEqual(r.result, {});
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handleLine: malformed JSON returns PARSE_ERROR with id=null', async () => {
@@ -247,7 +288,9 @@ test('handleLine: malformed JSON returns PARSE_ERROR with id=null', async () => 
     const r = JSON.parse(resp!) as { id: unknown; error: { code: number } };
     equal(r.id, null);
     equal(r.error.code, -32700);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -259,22 +302,37 @@ test('runMcpStdio: full handshake + tools/list + tools/call via in-memory stream
   try {
     const messageHex = '0x' + Buffer.from('e2e via stdio').toString('hex');
     const input =
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) + '\n' +
-      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n' +
-      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n' +
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) +
+      '\n' +
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) +
+      '\n' +
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) +
+      '\n' +
       JSON.stringify({
-        jsonrpc: '2.0', id: 3, method: 'tools/call',
-        params: { name: 'sigil_eth_sign_message', arguments: { portal: 'evm:bot', message: messageHex } },
-      }) + '\n';
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'sigil_eth_sign_message',
+          arguments: { portal: 'evm:bot', message: messageHex },
+        },
+      }) +
+      '\n';
 
     const stdin = Readable.from([input]);
     const out: string[] = [];
     const stdout = new Writable({
-      write(chunk, _enc, cb) { out.push(chunk.toString('utf8')); cb(); },
+      write(chunk, _enc, cb) {
+        out.push(chunk.toString('utf8'));
+        cb();
+      },
     });
     await runMcpStdio({ context: h.ctx, stdin, stdout });
 
-    const lines = out.join('').split('\n').filter((l) => l.length > 0);
+    const lines = out
+      .join('')
+      .split('\n')
+      .filter((l) => l.length > 0);
     // 3 responses: initialize, tools/list, tools/call (notification has no response)
     equal(lines.length, 3);
     const init = JSON.parse(lines[0]!) as { id: number; result: { protocolVersion: string } };
@@ -283,8 +341,13 @@ test('runMcpStdio: full handshake + tools/list + tools/call via in-memory stream
     const list = JSON.parse(lines[1]!) as { id: number; result: { tools: unknown[] } };
     equal(list.id, 2);
     equal(list.result.tools.length, 6);
-    const call = JSON.parse(lines[2]!) as { id: number; result: { structuredContent: { signature: string } } };
+    const call = JSON.parse(lines[2]!) as {
+      id: number;
+      result: { structuredContent: { signature: string } };
+    };
     equal(call.id, 3);
     ok(call.result.structuredContent.signature.startsWith('0x'));
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });

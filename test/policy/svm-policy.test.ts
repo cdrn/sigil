@@ -1,18 +1,30 @@
 import { test } from 'node:test';
 import { equal, ok, throws, match } from 'node:assert/strict';
-import { evaluate, parsePolicy, PolicyLoadError, type PolicyRequest } from '../../src/policy/index.js';
+import {
+  evaluate,
+  parsePolicy,
+  PolicyLoadError,
+  type PolicyRequest,
+} from '../../src/policy/index.js';
 import { base58Encode } from '../../src/svm/index.js';
 
 const RECIP = base58Encode(new Uint8Array(32).fill(2));
 
 function svmTx(transfers: { to: string; lamports: bigint }[], allDecoded = true): PolicyRequest {
-  return { kind: 'svm_transaction', transfers, allDecoded, instructionCount: transfers.length || 1 };
+  return {
+    kind: 'svm_transaction',
+    transfers,
+    allDecoded,
+    instructionCount: transfers.length || 1,
+  };
 }
 
 // --- evaluate: confirm thresholds ------------------------------------------
 
 test('evaluate svm: strict transfer above confirm threshold → confirm with SOL summary', () => {
-  const p = parsePolicy(`mode = "strict"\nchain_ids=[1]\nsvm_allow_to=["${RECIP}"]\nsvm_max_lamports="1000000000"\nrequire_confirm_above_lamports="100000000"`);
+  const p = parsePolicy(
+    `mode = "strict"\nchain_ids=[1]\nsvm_allow_to=["${RECIP}"]\nsvm_max_lamports="1000000000"\nrequire_confirm_above_lamports="100000000"`,
+  );
   // 0.5 SOL > 0.1 SOL threshold, recipient allowlisted, under cap → confirm.
   const d = evaluate(svmTx([{ to: RECIP, lamports: 500_000_000n }]), p);
   equal(d.kind, 'confirm');
@@ -20,7 +32,9 @@ test('evaluate svm: strict transfer above confirm threshold → confirm with SOL
 });
 
 test('evaluate svm: strict transfer below confirm threshold → allow', () => {
-  const p = parsePolicy(`mode = "strict"\nchain_ids=[1]\nsvm_allow_to=["${RECIP}"]\nsvm_max_lamports="1000000000"\nrequire_confirm_above_lamports="100000000"`);
+  const p = parsePolicy(
+    `mode = "strict"\nchain_ids=[1]\nsvm_allow_to=["${RECIP}"]\nsvm_max_lamports="1000000000"\nrequire_confirm_above_lamports="100000000"`,
+  );
   equal(evaluate(svmTx([{ to: RECIP, lamports: 1n }]), p).kind, 'allow');
 });
 
@@ -31,7 +45,9 @@ test('evaluate svm: permissive honours the lamport confirm threshold', () => {
 });
 
 test('evaluate svm: strict undecodable tx → confirm regardless of allowlist', () => {
-  const p = parsePolicy(`mode = "strict"\nchain_ids=[1]\nsvm_allow_to=["${RECIP}"]\nsvm_max_lamports="1000000000"`);
+  const p = parsePolicy(
+    `mode = "strict"\nchain_ids=[1]\nsvm_allow_to=["${RECIP}"]\nsvm_max_lamports="1000000000"`,
+  );
   const d = evaluate(svmTx([], /*allDecoded*/ false), p);
   equal(d.kind, 'confirm');
   if (d.kind === 'confirm') match(d.summary, /unrecognized Solana tx/);
@@ -61,7 +77,10 @@ test('loader: rejects svm_allow_to entries that do not decode to 32 bytes', () =
 
 test('loader: rejects a confirm threshold that is not below the lamport cap', () => {
   throws(
-    () => parsePolicy('mode="strict"\nchain_ids=[1]\nsvm_max_lamports="100"\nrequire_confirm_above_lamports="100"'),
+    () =>
+      parsePolicy(
+        'mode="strict"\nchain_ids=[1]\nsvm_max_lamports="100"\nrequire_confirm_above_lamports="100"',
+      ),
     (e: Error) => e instanceof PolicyLoadError && /must be less than/.test(e.message),
   );
 });

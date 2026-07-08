@@ -192,13 +192,17 @@ function installMcpServerInto(opts: InitOpts): { path: string; changed: boolean 
 
 function readJson<T extends object>(path: string): T {
   if (!existsSync(path)) return {} as T;
-  try { statSync(path); } catch { return {} as T; }
+  try {
+    statSync(path);
+  } catch {
+    return {} as T;
+  }
   try {
     const text = readFileSync(path, 'utf8');
     if (text.trim() === '') return {} as T;
     return JSON.parse(text) as T;
   } catch (err) {
-    throw new Error(`could not parse ${path}: ${(err as Error).message}`);
+    throw new Error(`could not parse ${path}: ${(err as Error).message}`, { cause: err });
   }
 }
 

@@ -22,7 +22,12 @@ function unlocked(...handles: string[]): SessionResult {
       version: CONTROL_SOCKET_VERSION,
       pid: 0,
       unlocked: true,
-      portals: handles.map((h) => ({ handle: h, kind: 'evm' as const, address: '0x' + h, svmAddress: 'So' + h })),
+      portals: handles.map((h) => ({
+        handle: h,
+        kind: 'evm' as const,
+        address: '0x' + h,
+        svmAddress: 'So' + h,
+      })),
     },
   };
 }
@@ -42,7 +47,9 @@ function down(reaped = true): SessionResult {
     ...base(),
     reaped,
     response: null,
-    clientError: Object.assign(new Error('control socket: ENOENT'), { code: 'SERVER_DOWN' }) as never,
+    clientError: Object.assign(new Error('control socket: ENOENT'), {
+      code: 'SERVER_DOWN',
+    }) as never,
   };
 }
 
@@ -111,7 +118,10 @@ test('formatResult unlock: one success + one KEYS_LOAD_FAILED → exit 0, notes 
 });
 
 test('formatResult unlock: all sessions fail to load → exit 1 with the error detail', () => {
-  const r = formatResult('unlock', [errored('KEYS_LOAD_FAILED', 'corrupt'), errored('INTERNAL', 'kaboom')]);
+  const r = formatResult('unlock', [
+    errored('KEYS_LOAD_FAILED', 'corrupt'),
+    errored('INTERNAL', 'kaboom'),
+  ]);
   equal(r.code, 1);
   match(r.message, /corrupt|kaboom/);
 });

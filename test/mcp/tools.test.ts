@@ -9,8 +9,14 @@ import { HandleTable, type MethodContext } from '../../src/daemon/index.js';
 import { permissivePolicyResolver } from '../../src/policy/index.js';
 import { findTool, MCP_INVALID_PARAMS, ToolError, TOOLS } from '../../src/mcp/index.js';
 
-function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
-function mkTmp(): string { return mkdtempSync(join(tmpdir(), 'sigil-tools-')); }
+function priv(b: number): Buffer {
+  const p = Buffer.alloc(32);
+  p[31] = b;
+  return p;
+}
+function mkTmp(): string {
+  return mkdtempSync(join(tmpdir(), 'sigil-tools-'));
+}
 
 interface H {
   dir: string;
@@ -38,14 +44,17 @@ function tearDown(h: H): void {
 test('TOOLS lists exactly the sigil tools', () => {
   equal(TOOLS.length, 6);
   const names = TOOLS.map((t) => t.definition.name).sort();
-  equal(JSON.stringify(names), JSON.stringify([
-    'sigil_eth_sign_message',
-    'sigil_eth_sign_transaction',
-    'sigil_eth_sign_typed_data',
-    'sigil_list_portals',
-    'sigil_svm_sign_message',
-    'sigil_svm_sign_transaction',
-  ]));
+  equal(
+    JSON.stringify(names),
+    JSON.stringify([
+      'sigil_eth_sign_message',
+      'sigil_eth_sign_transaction',
+      'sigil_eth_sign_typed_data',
+      'sigil_list_portals',
+      'sigil_svm_sign_message',
+      'sigil_svm_sign_transaction',
+    ]),
+  );
 });
 
 test('every tool has a description and input schema', () => {
@@ -57,9 +66,15 @@ test('every tool has a description and input schema', () => {
 
 test('input schemas declare required fields where appropriate', () => {
   const sign = findTool('sigil_eth_sign_message')!;
-  equal(JSON.stringify(sign.definition.inputSchema.required?.sort()), JSON.stringify(['message', 'portal']));
+  equal(
+    JSON.stringify(sign.definition.inputSchema.required?.sort()),
+    JSON.stringify(['message', 'portal']),
+  );
   const tx = findTool('sigil_eth_sign_transaction')!;
-  equal(JSON.stringify(tx.definition.inputSchema.required?.sort()), JSON.stringify(['portal', 'tx']));
+  equal(
+    JSON.stringify(tx.definition.inputSchema.required?.sort()),
+    JSON.stringify(['portal', 'tx']),
+  );
 });
 
 test('sigil_list_portals handler returns method result as text + structuredContent', async () => {
@@ -71,7 +86,9 @@ test('sigil_list_portals handler returns method result as text + structuredConte
     const parsed = JSON.parse(result.content[0]!.text) as { portals: unknown[] };
     equal(parsed.portals.length, 1);
     ok(result.structuredContent, 'structuredContent should be present');
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('sigil_eth_sign_message handler forwards args + returns a signature', async () => {
@@ -82,7 +99,9 @@ test('sigil_eth_sign_message handler forwards args + returns a signature', async
     const result = await tool.handler({ portal: 'evm:bot', message: messageHex }, h.ctx);
     const sc = result.structuredContent as { signature: string };
     ok(sc.signature.startsWith('0x'));
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handler raises ToolError(INVALID_PARAMS) on non-object args', async () => {
@@ -92,11 +111,16 @@ test('handler raises ToolError(INVALID_PARAMS) on non-object args', async () => 
     await rejects(() => tool.handler('oops', h.ctx), ToolError);
     await rejects(() => tool.handler(null, h.ctx), ToolError);
     let caught: ToolError | null = null;
-    try { await tool.handler([1, 2], h.ctx); }
-    catch (e) { caught = e as ToolError; }
+    try {
+      await tool.handler([1, 2], h.ctx);
+    } catch (e) {
+      caught = e as ToolError;
+    }
     ok(caught instanceof ToolError);
     equal(caught!.code, MCP_INVALID_PARAMS);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });
 
 test('handler surfaces method error code unchanged (PORTAL_NOT_FOUND → ToolError(-32000))', async () => {
@@ -104,9 +128,14 @@ test('handler surfaces method error code unchanged (PORTAL_NOT_FOUND → ToolErr
   try {
     const tool = findTool('sigil_eth_sign_message')!;
     let caught: ToolError | null = null;
-    try { await tool.handler({ portal: 'evm:nope', message: '0xff' }, h.ctx); }
-    catch (e) { caught = e as ToolError; }
+    try {
+      await tool.handler({ portal: 'evm:nope', message: '0xff' }, h.ctx);
+    } catch (e) {
+      caught = e as ToolError;
+    }
     ok(caught instanceof ToolError);
     equal(caught!.code, -32000);
-  } finally { tearDown(h); }
+  } finally {
+    tearDown(h);
+  }
 });

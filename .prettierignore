@@ -1,0 +1,5 @@
+dist/
+node_modules/
+package-lock.json
+# Markdown keeps hand-controlled line breaks (README tables, threat model).
+*.md

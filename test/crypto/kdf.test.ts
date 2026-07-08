@@ -32,10 +32,7 @@ test('deriveKey with different passphrases produces different keys', () => {
 });
 
 test('deriveKey rejects wrong-length salt', () => {
-  throws(
-    () => deriveKey(Buffer.from('p'), Buffer.alloc(8), TEST_PARAMS),
-    /salt must be 16 bytes/,
-  );
+  throws(() => deriveKey(Buffer.from('p'), Buffer.alloc(8), TEST_PARAMS), /salt must be 16 bytes/);
 });
 
 test('deriveKey rejects invalid params', () => {

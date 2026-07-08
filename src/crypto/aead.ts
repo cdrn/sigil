@@ -6,7 +6,9 @@ export const AEAD_TAG_LEN = 16;
 
 export class AeadVerifyError extends Error {
   constructor(cause?: unknown) {
-    super('AEAD verification failed (wrong key, wrong nonce, tampered ciphertext, or mismatched AAD)');
+    super(
+      'AEAD verification failed (wrong key, wrong nonce, tampered ciphertext, or mismatched AAD)',
+    );
     this.name = 'AeadVerifyError';
     if (cause !== undefined) this.cause = cause;
   }

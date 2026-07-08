@@ -73,8 +73,7 @@ export interface ToolDefinition {
   inputSchema: ToolInputSchema;
 }
 
-export type ToolContent =
-  | { type: 'text'; text: string };
+export type ToolContent = { type: 'text'; text: string };
 
 export interface ToolResult {
   content: ToolContent[];
@@ -114,7 +113,11 @@ export function parseMessage(line: string): ParseResult {
     return { kind: 'invalid', id: extractId(obj['id']), reason: 'jsonrpc must be "2.0"' };
   }
   if (typeof obj['method'] !== 'string' || obj['method'].length === 0) {
-    return { kind: 'invalid', id: extractId(obj['id']), reason: 'method must be a non-empty string' };
+    return {
+      kind: 'invalid',
+      id: extractId(obj['id']),
+      reason: 'method must be a non-empty string',
+    };
   }
   // Distinguish request vs notification by presence of id.
   if (!('id' in obj)) {

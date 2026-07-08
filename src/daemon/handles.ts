@@ -2,11 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { addressFromPrivateKey } from '../eth/address.js';
 import { svmAddressFromSecret } from '../svm/index.js';
-import {
-  type SecretBuffer,
-  unsealKey,
-  WrongPassphraseError,
-} from '../crypto/index.js';
+import { type SecretBuffer, unsealKey, WrongPassphraseError } from '../crypto/index.js';
 
 const KEYFILE_EXT = '.sigil';
 // Handle format: <kind>:<name> where kind is currently always "evm" and name

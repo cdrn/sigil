@@ -39,8 +39,8 @@ test('installInto: project scope writes hooks to settings.json and MCP to .mcp.j
     // Hooks landed here.
     ok(Array.isArray(settings.hooks.PreToolUse));
     ok(Array.isArray(settings.hooks.PostToolUse));
-    const pre = settings.hooks.PreToolUse.find((m: { matcher: string }) =>
-      m.matcher === 'Read|Bash',
+    const pre = settings.hooks.PreToolUse.find(
+      (m: { matcher: string }) => m.matcher === 'Read|Bash',
     );
     ok(pre);
     equal(pre.hooks[0].command, 'sigil-hook-pre');
@@ -96,7 +96,10 @@ test('installInto: preserves unrelated existing settings and other MCP servers',
         ],
       },
     };
-    writeFileSync(join(root, '.claude', 'settings.json'), JSON.stringify(existingSettings, null, 2));
+    writeFileSync(
+      join(root, '.claude', 'settings.json'),
+      JSON.stringify(existingSettings, null, 2),
+    );
     const existingMcp = {
       mcpServers: {
         otherthing: { type: 'stdio', command: '/usr/bin/other' },
@@ -214,8 +217,11 @@ test('installInto: malformed existing settings.json throws clearly', () => {
     mkdirSync(join(root, '.claude'), { recursive: true });
     writeFileSync(join(root, '.claude', 'settings.json'), '{not valid json');
     let caught: Error | null = null;
-    try { installInto({ scope: 'project', projectRoot: root }); }
-    catch (e) { caught = e as Error; }
+    try {
+      installInto({ scope: 'project', projectRoot: root });
+    } catch (e) {
+      caught = e as Error;
+    }
     ok(caught);
     ok(/could not parse/.test(caught!.message));
   } finally {
@@ -228,8 +234,11 @@ test('installInto: malformed existing .mcp.json throws clearly', () => {
   try {
     writeFileSync(join(root, '.mcp.json'), '{nope');
     let caught: Error | null = null;
-    try { installInto({ scope: 'project', projectRoot: root }); }
-    catch (e) { caught = e as Error; }
+    try {
+      installInto({ scope: 'project', projectRoot: root });
+    } catch (e) {
+      caught = e as Error;
+    }
     ok(caught);
     ok(/could not parse/.test(caught!.message));
   } finally {

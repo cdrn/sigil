@@ -6,17 +6,8 @@ export {
   signDigest,
   recoverPublicKey,
 } from './secp.js';
-export {
-  addressFromPrivateKey,
-  addressFromPublicKey,
-  toChecksumAddress,
-} from './address.js';
-export {
-  type RlpInput,
-  rlpEncode,
-  rlpDecode,
-  encodeInt,
-} from './rlp.js';
+export { addressFromPrivateKey, addressFromPublicKey, toChecksumAddress } from './address.js';
+export { type RlpInput, rlpEncode, rlpDecode, encodeInt } from './rlp.js';
 export {
   personalSign,
   personalSignDigest,

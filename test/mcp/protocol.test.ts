@@ -101,7 +101,9 @@ test('parseMessage: bad id type (object) → invalid id=null', () => {
 
 test('encodeSuccess produces a JSON-RPC success envelope', () => {
   deepEqual(JSON.parse(encodeSuccess(1, { ok: true })), {
-    jsonrpc: '2.0', id: 1, result: { ok: true },
+    jsonrpc: '2.0',
+    id: 1,
+    result: { ok: true },
   });
 });
 

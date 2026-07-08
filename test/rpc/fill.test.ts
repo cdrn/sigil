@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects } from 'node:assert/strict';
-import { fillTransaction, FillParamsError, UpstreamRpcError, type JsonRpcUpstream } from '../../src/rpc/index.js';
+import {
+  fillTransaction,
+  FillParamsError,
+  UpstreamRpcError,
+  type JsonRpcUpstream,
+} from '../../src/rpc/index.js';
 
 const FROM = '0x7e5f4552091a69125d5dfcb7b8c2659029395bdf';
 const DEST = '0x000000000000000000000000000000000000dead';
@@ -49,23 +54,30 @@ test('fill: minimal tx gets nonce, gas ×1.2, and EIP-1559 fees from upstream', 
     type: 'eip1559',
     chainId: '1',
     nonce: '5',
-    gasLimit: '25200',              // 21000 × 1.2
+    gasLimit: '25200', // 21000 × 1.2
     to: DEST,
     value: '0',
     data: '0x',
     maxPriorityFeePerGas: '1000000000',
-    maxFeePerGas: '3000000000',     // 2 × 1 gwei base + 1 gwei tip
+    maxFeePerGas: '3000000000', // 2 × 1 gwei base + 1 gwei tip
   });
 });
 
 test('fill: caller-provided nonce/gas/fees are respected — zero upstream calls', async () => {
   const up = new FakeUpstream(); // nothing scripted: any call would throw
-  const tx = await fillTransaction({
-    from: FROM, to: DEST,
-    nonce: '0x2a', gas: '0x30d40',
-    maxFeePerGas: '0x77359400', maxPriorityFeePerGas: GWEI,
-    value: '0x64', data: '0xa9059cbb',
-  }, ctx(up));
+  const tx = await fillTransaction(
+    {
+      from: FROM,
+      to: DEST,
+      nonce: '0x2a',
+      gas: '0x30d40',
+      maxFeePerGas: '0x77359400',
+      maxPriorityFeePerGas: GWEI,
+      value: '0x64',
+      data: '0xa9059cbb',
+    },
+    ctx(up),
+  );
   equal(tx['nonce'], '42');
   equal(tx['gasLimit'], '200000');
   equal(tx['maxFeePerGas'], '2000000000');
@@ -107,10 +119,16 @@ test('fill: tip falls back to 1 gwei when eth_maxPriorityFeePerGas is unsupporte
 test('fill: fetched tip is clamped to a caller-provided maxFeePerGas', async () => {
   const up = londonUpstream();
   up.responses.set('eth_maxPriorityFeePerGas', '0x77359400'); // 2 gwei tip...
-  const tx = await fillTransaction({
-    from: FROM, to: DEST, nonce: '0x0', gas: '0x5208',
-    maxFeePerGas: GWEI, // ...but cap is 1 gwei
-  }, ctx(up));
+  const tx = await fillTransaction(
+    {
+      from: FROM,
+      to: DEST,
+      nonce: '0x0',
+      gas: '0x5208',
+      maxFeePerGas: GWEI, // ...but cap is 1 gwei
+    },
+    ctx(up),
+  );
   equal(tx['maxPriorityFeePerGas'], '1000000000');
   equal(tx['maxFeePerGas'], '1000000000');
 });
@@ -158,7 +176,10 @@ test('fill: missing or non-portal `from` is rejected', async () => {
 
 test('fill: `from` match is case-insensitive', async () => {
   const up = londonUpstream();
-  const tx = await fillTransaction({ from: FROM.toUpperCase().replace('0X', '0x'), to: DEST }, ctx(up));
+  const tx = await fillTransaction(
+    { from: FROM.toUpperCase().replace('0X', '0x'), to: DEST },
+    ctx(up),
+  );
   equal(tx['type'], 'eip1559');
 });
 
@@ -184,10 +205,18 @@ test('fill: mixing gasPrice with 1559 fee fields is rejected', async () => {
 test('fill: caller maxFeePerGas below caller tip is rejected', async () => {
   const up = londonUpstream();
   await rejects(
-    () => fillTransaction({
-      from: FROM, to: DEST, nonce: '0x0', gas: '0x5208',
-      maxFeePerGas: GWEI, maxPriorityFeePerGas: '0x77359400',
-    }, ctx(up)),
+    () =>
+      fillTransaction(
+        {
+          from: FROM,
+          to: DEST,
+          nonce: '0x0',
+          gas: '0x5208',
+          maxFeePerGas: GWEI,
+          maxPriorityFeePerGas: '0x77359400',
+        },
+        ctx(up),
+      ),
     /less than maxPriorityFeePerGas/,
   );
 });
@@ -199,14 +228,8 @@ test('fill: malformed quantities and addresses are rejected', async () => {
     () => fillTransaction({ from: FROM, to: DEST, value: 'lots' }, ctx(up)),
     /tx\.value/,
   );
-  await rejects(
-    () => fillTransaction({ from: FROM, to: DEST, nonce: -1 }, ctx(up)),
-    /tx\.nonce/,
-  );
-  await rejects(
-    () => fillTransaction({ from: FROM, to: DEST, data: 'beef' }, ctx(up)),
-    /tx\.data/,
-  );
+  await rejects(() => fillTransaction({ from: FROM, to: DEST, nonce: -1 }, ctx(up)), /tx\.nonce/);
+  await rejects(() => fillTransaction({ from: FROM, to: DEST, data: 'beef' }, ctx(up)), /tx\.data/);
 });
 
 test('fill: malformed upstream quantity names the source method', async () => {

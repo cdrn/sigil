@@ -64,9 +64,7 @@ export async function broadcast(
   timeoutMs?: number,
 ): Promise<SessionResult[]> {
   const sockets = listSessionSockets(controlDir);
-  return Promise.all(
-    sockets.map((s) => sendOne(s, request, timeoutMs)),
-  );
+  return Promise.all(sockets.map((s) => sendOne(s, request, timeoutMs)));
 }
 
 async function sendOne(
@@ -87,9 +85,10 @@ async function sendOne(
     // failures, but guard against anything unexpected (e.g. a synchronous
     // throw from createConnection on a pathological path) so a single bad
     // socket can never reject the whole fan-out and sink the other sessions.
-    err = e instanceof ControlClientError
-      ? e
-      : new ControlClientError(`control socket: ${(e as Error).message}`, 'CONNECT_FAILED');
+    err =
+      e instanceof ControlClientError
+        ? e
+        : new ControlClientError(`control socket: ${(e as Error).message}`, 'CONNECT_FAILED');
   }
   // SERVER_DOWN means the file is gone (ENOENT), nothing is listening
   // (ECONNREFUSED), or the path isn't a socket (ENOTSOCK) — no live server, so
@@ -103,7 +102,12 @@ async function sendOne(
   // self-heals on its next restart. Acceptable given how narrow it is.
   let reaped = false;
   if (err.code === 'SERVER_DOWN') {
-    try { unlinkSync(s.socketPath); reaped = true; } catch { /* raced another reaper */ }
+    try {
+      unlinkSync(s.socketPath);
+      reaped = true;
+    } catch {
+      /* raced another reaper */
+    }
   }
   return { ...s, response: null, clientError: err, reaped };
 }

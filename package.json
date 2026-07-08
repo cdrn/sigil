@@ -50,7 +50,10 @@
   "scripts": {
     "build": "tsc && node scripts/post-build.mjs",
     "test": "npm run build && node --test 'dist/test/**/*.test.js'",
-    "test:watch": "node --watch --test 'dist/test/**/*.test.js'"
+    "test:watch": "node --watch --test 'dist/test/**/*.test.js'",
+    "lint": "eslint src test scripts eslint.config.mjs",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'scripts/**/*.mjs' eslint.config.mjs",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'scripts/**/*.mjs' eslint.config.mjs"
   },
   "dependencies": {
     "@iarna/toml": "2.2.5",
@@ -61,7 +64,12 @@
     "qrcode-generator": "2.0.4"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "@types/node": "^22.10.0",
-    "typescript": "^5.7.0"
+    "eslint": "10.6.0",
+    "globals": "17.7.0",
+    "prettier": "3.9.4",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "8.63.0"
   }
 }

@@ -75,10 +75,7 @@ export class HttpUpstream implements JsonRpcUpstream {
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
     } catch (err) {
-      throw new UpstreamTransportError(
-        `upstream RPC unreachable: ${(err as Error).message}`,
-        err,
-      );
+      throw new UpstreamTransportError(`upstream RPC unreachable: ${(err as Error).message}`, err);
     }
     if (!res.ok) {
       throw new UpstreamTransportError(`upstream RPC returned HTTP ${res.status}`);

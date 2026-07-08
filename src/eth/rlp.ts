@@ -37,7 +37,7 @@ export function rlpEncode(input: RlpInput): Buffer {
  * dropping leading zeros. 0 encodes to empty buffer (RLP convention).
  */
 export function encodeInt(n: number | bigint): Buffer {
-  let v = typeof n === 'bigint' ? n : BigInt(n);
+  const v = typeof n === 'bigint' ? n : BigInt(n);
   if (v < 0n) throw new Error('cannot encode negative integer');
   if (v === 0n) return Buffer.alloc(0);
   let hex = v.toString(16);

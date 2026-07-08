@@ -51,7 +51,9 @@ export function rpcInit(
     throw new Error(`rpc init: --upstream is not a valid URL: ${JSON.stringify(upstream)}`);
   }
   if (upstreamUrl.protocol !== 'http:' && upstreamUrl.protocol !== 'https:') {
-    throw new Error(`rpc init: --upstream must be http(s), got ${upstreamUrl.protocol.replace(/:$/, '')}`);
+    throw new Error(
+      `rpc init: --upstream must be http(s), got ${upstreamUrl.protocol.replace(/:$/, '')}`,
+    );
   }
   // The URL is embedded in a TOML basic string; the characters TOML would
   // interpret can't appear in a sane RPC URL, so reject rather than escape.

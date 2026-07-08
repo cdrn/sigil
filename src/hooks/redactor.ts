@@ -28,7 +28,8 @@ const RULES: readonly Rule[] = Object.freeze([
   // also caught by the hex/JWT rules.
   {
     reason: 'pem-private-key',
-    regex: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----[\s\S]+?-----END [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----/g,
+    regex:
+      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----[\s\S]+?-----END [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----/g,
   },
   // Generic PEM block — second-line check for "BEGIN ... KEY ...END ... KEY"
   // that didn't say PRIVATE explicitly (some tools emit just "KEY").

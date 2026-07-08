@@ -11,8 +11,14 @@ import { status } from '../../src/cli/status.js';
 import { startControlServer } from '../../src/control/index.js';
 import { HandleTable } from '../../src/daemon/handles.js';
 
-function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
-function mkTmpHome(): string { return mkdtempSync(join(tmpdir(), 'sigil-cli-status-')); }
+function priv(b: number): Buffer {
+  const p = Buffer.alloc(32);
+  p[31] = b;
+  return p;
+}
+function mkTmpHome(): string {
+  return mkdtempSync(join(tmpdir(), 'sigil-cli-status-'));
+}
 const TEST_KDF = { m: 256, t: 1, p: 1 };
 
 test('status: empty home reports zero keyfiles, mcp not running', async () => {
@@ -35,7 +41,12 @@ test('status: counts keyfiles in the keys directory', async () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const src = join(home, 'src.key');
     writeFileSync(src, priv(1));
-    portalAdd(paths, { handle: 'evm:bot', keyFile: src, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: src,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
 
     const report = await status(paths);
     equal(report.keyfilesOnDisk, 1);

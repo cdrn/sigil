@@ -113,7 +113,7 @@ function evaluateSvmTxStrict(
 function confirmForSvmTx(
   req: Extract<PolicyRequest, { kind: 'svm_transaction' }>,
   policy: Policy,
-): ({ kind: 'confirm'; summary: string }) | null {
+): { kind: 'confirm'; summary: string } | null {
   if (policy.requireConfirmAboveLamports === undefined) return null;
   let total = 0n;
   for (const t of req.transfers) total += t.lamports;
@@ -191,7 +191,7 @@ function evaluateTransactionStrict(
   }
 
   // 5. function selector allowlist (only for txs with calldata)
-  const dataHex = typeof tx.data === 'string' ? tx.data : ('0x' + tx.data.toString('hex'));
+  const dataHex = typeof tx.data === 'string' ? tx.data : '0x' + tx.data.toString('hex');
   if (dataHex.length > 2) {
     if (dataHex.length < 10) {
       return { kind: 'deny', reason: `tx denied — calldata too short to extract selector` };
@@ -215,10 +215,7 @@ function evaluateTransactionStrict(
  * The summary is what the human sees on their phone. The destination is
  * shortened so the notification preview isn't dominated by hex.
  */
-function confirmForTx(
-  tx: SignableTx,
-  policy: Policy,
-): ({ kind: 'confirm'; summary: string }) | null {
+function confirmForTx(tx: SignableTx, policy: Policy): { kind: 'confirm'; summary: string } | null {
   if (policy.requireConfirmAboveWei === undefined) return null;
   const value = BigInt(tx.value);
   if (value <= policy.requireConfirmAboveWei) return null;
@@ -231,12 +228,13 @@ function confirmForTx(
  * the human to sanity-check against the deploy they actually asked for.
  */
 function txSummary(tx: SignableTx): string {
-  const dest = tx.to === null ? `contract creation (${initcodeBytes(tx)}-byte initcode)` : shortAddr(tx.to);
+  const dest =
+    tx.to === null ? `contract creation (${initcodeBytes(tx)}-byte initcode)` : shortAddr(tx.to);
   return `${formatWei(BigInt(tx.value))} ETH → ${dest} on chain ${BigInt(tx.chainId)}`;
 }
 
 function initcodeBytes(tx: SignableTx): number {
-  const dataHex = typeof tx.data === 'string' ? tx.data : ('0x' + tx.data.toString('hex'));
+  const dataHex = typeof tx.data === 'string' ? tx.data : '0x' + tx.data.toString('hex');
   return (dataHex.length - 2) / 2;
 }
 

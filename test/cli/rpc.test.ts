@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import { equal, match, ok, throws } from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolvePaths } from '../../src/cli/paths.js';
@@ -37,7 +45,9 @@ test('rpcInit: creates config.toml with a parseable [rpc] block and strong token
     equal(cfg.rpc!.token, result.token);
     equal(cfg.rpc!.port, undefined); // default port is implied, not written
     equal(statSync(paths.configFile).mode & 0o777, 0o600);
-  } finally { rmSync(home, { recursive: true }); }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
 });
 
 test('rpcInit: explicit --port is validated and written', () => {
@@ -49,7 +59,9 @@ test('rpcInit: explicit --port is validated and written', () => {
     equal(result.port, 9000);
     equal(parseConfig(readFileSync(paths.configFile, 'utf8')).rpc!.port, 9000);
     ok(result.authedUrl.endsWith(':9000'));
-  } finally { rmSync(home, { recursive: true }); }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
 });
 
 test('rpcInit: appends to an existing config, preserving content and comments', () => {
@@ -67,7 +79,9 @@ test('rpcInit: appends to an existing config, preserving content and comments', 
     const cfg = parseConfig(content);
     equal(cfg.confirm!.ntfy!.topic, 'my-topic');
     equal(cfg.rpc!.portal, 'evm:bot');
-  } finally { rmSync(home, { recursive: true }); }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
 });
 
 test('rpcInit: refuses when an [rpc] block already exists', () => {
@@ -77,7 +91,9 @@ test('rpcInit: refuses when an [rpc] block already exists', () => {
     stubPortal(home, 'evm:bot');
     rpcInit(paths, 'evm:bot', UPSTREAM);
     throws(() => rpcInit(paths, 'evm:bot', UPSTREAM), /already has an \[rpc\] block/);
-  } finally { rmSync(home, { recursive: true }); }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
 });
 
 test('rpcInit: refuses for a portal with no keyfile on disk', () => {
@@ -86,7 +102,9 @@ test('rpcInit: refuses for a portal with no keyfile on disk', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     throws(() => rpcInit(paths, 'evm:absent', UPSTREAM), /not found.*portal new/);
     equal(existsSync(paths.configFile), false, 'must not write config on failure');
-  } finally { rmSync(home, { recursive: true }); }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
 });
 
 test('rpcInit: rejects bad handle, upstream, and port', () => {
@@ -97,12 +115,17 @@ test('rpcInit: rejects bad handle, upstream, and port', () => {
     throws(() => rpcInit(paths, 'nothandle', UPSTREAM));
     throws(() => rpcInit(paths, 'evm:bot', 'not a url'), /not a valid URL/);
     throws(() => rpcInit(paths, 'evm:bot', 'ws://x.example'), /must be http/);
-    throws(() => rpcInit(paths, 'evm:bot', 'https://x.example/"quoted'), /cannot be written to TOML/);
+    throws(
+      () => rpcInit(paths, 'evm:bot', 'https://x.example/"quoted'),
+      /cannot be written to TOML/,
+    );
     throws(() => rpcInit(paths, 'evm:bot', UPSTREAM, 0), /--port must be/);
     throws(() => rpcInit(paths, 'evm:bot', UPSTREAM, 70000), /--port must be/);
     throws(() => rpcInit(paths, 'evm:bot', UPSTREAM, 1.5), /--port must be/);
     equal(existsSync(paths.configFile), false);
-  } finally { rmSync(home, { recursive: true }); }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
 });
 
 test('rpcInit: refuses to append to a malformed config file', () => {
@@ -113,7 +136,9 @@ test('rpcInit: refuses to append to a malformed config file', () => {
     writeFileSync(paths.configFile, 'not = valid = toml');
     throws(() => rpcInit(paths, 'evm:bot', UPSTREAM));
     equal(readFileSync(paths.configFile, 'utf8'), 'not = valid = toml', 'file must be untouched');
-  } finally { rmSync(home, { recursive: true }); }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
 });
 
 test('rpcInit: two runs generate different tokens (per-init randomness)', () => {
@@ -125,5 +150,7 @@ test('rpcInit: two runs generate different tokens (per-init randomness)', () => 
     rmSync(paths.configFile);
     const second = rpcInit(paths, 'evm:bot', UPSTREAM);
     ok(first.token !== second.token);
-  } finally { rmSync(home, { recursive: true }); }
+  } finally {
+    rmSync(home, { recursive: true });
+  }
 });

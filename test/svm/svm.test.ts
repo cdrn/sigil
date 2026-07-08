@@ -40,7 +40,11 @@ test('base58Decode: rejects non-alphabet characters', () => {
 
 // --- ed25519 ----------------------------------------------------------------
 
-function seed(n: number): Buffer { const s = Buffer.alloc(32); s.fill(n); return s; }
+function seed(n: number): Buffer {
+  const s = Buffer.alloc(32);
+  s.fill(n);
+  return s;
+}
 
 /** Independent reference: derive the ed25519 public key via Node's native
  *  crypto (OpenSSL) by wrapping the seed in PKCS8, to cross-check noble. */
@@ -67,7 +71,8 @@ test('ed25519: sign/verify round-trips; tamper fails', () => {
   // Wrong message fails.
   ok(!verify(sig, Buffer.from('different'), pub));
   // Flipped signature byte fails.
-  const bad = Buffer.from(sig); bad[0] = bad[0]! ^ 0x01;
+  const bad = Buffer.from(sig);
+  bad[0] = bad[0]! ^ 0x01;
   ok(!verify(bad, msg, pub));
 });
 

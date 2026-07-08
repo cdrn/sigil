@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { type KdfParams, sealKey, SecretBuffer, unsealKey } from '../crypto/index.js';
 import { addressFromPrivateKey, randomSecretKey } from '../eth/index.js';
@@ -55,8 +62,11 @@ export function portalAdd(
     ...(opts.kdfParams ? { kdfParams: opts.kdfParams } : {}),
   });
   if (opts.removeSource !== false) {
-    try { unlinkSync(opts.keyFile); }
-    catch { /* best-effort cleanup; file may already be gone */ }
+    try {
+      unlinkSync(opts.keyFile);
+    } catch {
+      /* best-effort cleanup; file may already be gone */
+    }
   }
   return result;
 }
@@ -115,7 +125,9 @@ function provisionPortal(
   const policyPath = join(paths.policyDir, `${args.handle}.toml`);
   if (existsSync(policyPath)) {
     args.priv.fill(0);
-    throw new Error(`policy file for "${args.handle}" already exists at ${policyPath}; remove it first`);
+    throw new Error(
+      `policy file for "${args.handle}" already exists at ${policyPath}; remove it first`,
+    );
   }
 
   let address: string;
@@ -236,7 +248,11 @@ export function portalRemove(paths: SigilPaths, handle: string): PortalRemoveRes
   // missing but the policy file isn't, or vice versa — better to err on the
   // side of cleaning up orphans.
   if (existsSync(policyPath)) {
-    try { unlinkSync(policyPath); } catch { /* ignore */ }
+    try {
+      unlinkSync(policyPath);
+    } catch {
+      /* ignore */
+    }
   }
   return { removed: keyfileExisted, path: destPath };
 }

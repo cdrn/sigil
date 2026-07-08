@@ -75,7 +75,8 @@ test('typedDataDigest matches the EIP-712 spec value', () => {
 
 test('signTypedData recovers to signer address', () => {
   // Use a test private key; verify recovery.
-  const priv = Buffer.alloc(32); priv[31] = 1;
+  const priv = Buffer.alloc(32);
+  priv[31] = 1;
   const sig = signTypedData(MAIL_EXAMPLE, priv);
   equal(sig.length, 65);
   const parsed = deserializeEthSignature(sig);

@@ -31,7 +31,9 @@ export function parsePolicy(source: string): Policy {
 
   const mode = raw['mode'];
   if (mode !== 'permissive' && mode !== 'strict') {
-    throw new PolicyLoadError(`policy.mode must be "permissive" or "strict" (got ${JSON.stringify(mode)})`);
+    throw new PolicyLoadError(
+      `policy.mode must be "permissive" or "strict" (got ${JSON.stringify(mode)})`,
+    );
   }
 
   // require_confirm_above_wei is mode-independent: it's an opt-in safety net
@@ -84,7 +86,9 @@ export function parsePolicy(source: string): Policy {
   const selectorsRaw = asStringArray(raw['allowed_selectors'], 'allowed_selectors');
   const allowedSelectors = selectorsRaw.map((s, i) => {
     if (!SELECTOR_RE.test(s)) {
-      throw new PolicyLoadError(`policy.allowed_selectors[${i}] must be 0x + 4 hex bytes (got ${JSON.stringify(s)})`);
+      throw new PolicyLoadError(
+        `policy.allowed_selectors[${i}] must be 0x + 4 hex bytes (got ${JSON.stringify(s)})`,
+      );
     }
     return s.toLowerCase();
   });
@@ -97,17 +101,25 @@ export function parsePolicy(source: string): Policy {
   const allowMessageSigning = asBool(raw['allow_message_signing'], 'allow_message_signing', false);
   const allowTypedData = asBool(raw['allow_typed_data'], 'allow_typed_data', false);
 
-  const allowSvmMessageSigning = asBool(raw['allow_svm_message_signing'], 'allow_svm_message_signing', false);
+  const allowSvmMessageSigning = asBool(
+    raw['allow_svm_message_signing'],
+    'allow_svm_message_signing',
+    false,
+  );
   const svmAllowToRaw = asStringArray(raw['svm_allow_to'], 'svm_allow_to');
   const svmAllowTo = svmAllowToRaw.map((s, i) => {
     let decoded: Uint8Array;
     try {
       decoded = base58Decode(s);
     } catch {
-      throw new PolicyLoadError(`policy.svm_allow_to[${i}] is not valid base58: ${JSON.stringify(s)}`);
+      throw new PolicyLoadError(
+        `policy.svm_allow_to[${i}] is not valid base58: ${JSON.stringify(s)}`,
+      );
     }
     if (decoded.length !== 32) {
-      throw new PolicyLoadError(`policy.svm_allow_to[${i}] must decode to a 32-byte address (got ${decoded.length} bytes)`);
+      throw new PolicyLoadError(
+        `policy.svm_allow_to[${i}] must decode to a 32-byte address (got ${decoded.length} bytes)`,
+      );
     }
     return s;
   });
@@ -124,8 +136,8 @@ export function parsePolicy(source: string): Policy {
   ) {
     throw new PolicyLoadError(
       `policy.require_confirm_above_wei (${requireConfirmAboveWei}) must be less than ` +
-      `max_value_wei (${maxValueWei}) — otherwise the value cap fires first and the ` +
-      `confirm gate never triggers`,
+        `max_value_wei (${maxValueWei}) — otherwise the value cap fires first and the ` +
+        `confirm gate never triggers`,
     );
   }
   if (
@@ -135,7 +147,7 @@ export function parsePolicy(source: string): Policy {
   ) {
     throw new PolicyLoadError(
       `policy.require_confirm_above_lamports (${requireConfirmAboveLamports}) must be less than ` +
-      `svm_max_lamports (${svmMaxLamports}) — otherwise the cap denies first and the confirm never triggers`,
+        `svm_max_lamports (${svmMaxLamports}) — otherwise the cap denies first and the confirm never triggers`,
     );
   }
 

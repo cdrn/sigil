@@ -28,7 +28,10 @@ export async function controlRequest(opts: ControlRequestOpts): Promise<ControlR
   sock.setEncoding('utf8');
 
   let timer: NodeJS.Timeout | null = null;
-  const cleanupTimer = (): void => { if (timer) clearTimeout(timer); timer = null; };
+  const cleanupTimer = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
 
   return new Promise<ControlResponse>((resolve, reject) => {
     timer = setTimeout(() => {
@@ -58,19 +61,24 @@ export async function controlRequest(opts: ControlRequestOpts): Promise<ControlR
         const parsed = JSON.parse(line) as ControlResponse;
         finish(() => resolve(parsed));
       } catch {
-        finish(() => reject(new ControlClientError(
-          'control socket returned non-JSON response',
-          'BAD_RESPONSE',
-        )));
+        finish(() =>
+          reject(
+            new ControlClientError('control socket returned non-JSON response', 'BAD_RESPONSE'),
+          ),
+        );
       }
     });
     sock.on('end', () => {
       if (!resolved) {
         if (buf.length === 0) {
-          finish(() => reject(new ControlClientError(
-            'control socket closed without sending a response',
-            'NO_RESPONSE',
-          )));
+          finish(() =>
+            reject(
+              new ControlClientError(
+                'control socket closed without sending a response',
+                'NO_RESPONSE',
+              ),
+            ),
+          );
         }
       }
     });
@@ -80,21 +88,15 @@ export async function controlRequest(opts: ControlRequestOpts): Promise<ControlR
       // ENOENT: socket file gone. ECONNREFUSED: socket exists but no listener
       // (process died). ENOTSOCK: the path is a non-socket file (junk). All
       // three mean "no live server here" — the caller treats them as reapable.
-      if (code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'ENOTSOCK') mapped = 'SERVER_DOWN';
-      finish(() => reject(new ControlClientError(
-        `control socket: ${err.message}`,
-        mapped,
-      )));
+      if (code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'ENOTSOCK')
+        mapped = 'SERVER_DOWN';
+      finish(() => reject(new ControlClientError(`control socket: ${err.message}`, mapped)));
     });
   });
 }
 
 export type ControlClientErrorCode =
-  | 'SERVER_DOWN'
-  | 'CONNECT_FAILED'
-  | 'TIMEOUT'
-  | 'BAD_RESPONSE'
-  | 'NO_RESPONSE';
+  'SERVER_DOWN' | 'CONNECT_FAILED' | 'TIMEOUT' | 'BAD_RESPONSE' | 'NO_RESPONSE';
 
 export class ControlClientError extends Error {
   readonly code: ControlClientErrorCode;

@@ -26,7 +26,11 @@ function captureFetch(
 ): { fetch: FetchLike; calls: CapturedCall[] } {
   const calls: CapturedCall[] = [];
   const fetch: FetchLike = async (url, init) => {
-    calls.push({ url, headers: init.headers, ...(init.body !== undefined ? { body: init.body } : {}) });
+    calls.push({
+      url,
+      headers: init.headers,
+      ...(init.body !== undefined ? { body: init.body } : {}),
+    });
     return { ok: status >= 200 && status < 300, status, statusText };
   };
   return { fetch, calls };
@@ -106,7 +110,9 @@ test('ntfy: Actions header carries both Approve and Deny POST buttons', async ()
 
 test('ntfy: body carries the human-readable summary', async () => {
   const { fetch, calls } = captureFetch();
-  await new NtfyTransport({ topic: 't' }, fetch).send(req({ summary: '1.5 ETH → 0xabc…f0 on chain 8453' }));
+  await new NtfyTransport({ topic: 't' }, fetch).send(
+    req({ summary: '1.5 ETH → 0xabc…f0 on chain 8453' }),
+  );
   equal(calls[0]!.body, '1.5 ETH → 0xabc…f0 on chain 8453');
 });
 
@@ -121,7 +127,9 @@ test('ntfy: non-2xx response throws so the gate can fail closed', async () => {
 });
 
 test('ntfy: fetch throw (network down) propagates to the gate', async () => {
-  const fetch: FetchLike = async () => { throw new Error('ECONNREFUSED'); };
+  const fetch: FetchLike = async () => {
+    throw new Error('ECONNREFUSED');
+  };
   const t = new NtfyTransport({ topic: 't' }, fetch);
   await rejects(() => t.send(req()), /ECONNREFUSED/);
 });
@@ -141,8 +149,11 @@ test('ntfy: transport name is the literal "ntfy"', () => {
 test('ntfy: snapshot the exact header set we emit', async () => {
   const { fetch, calls } = captureFetch();
   await new NtfyTransport({ topic: 't' }, fetch).send(req());
-  deepEqual(
-    Object.keys(calls[0]!.headers).sort(),
-    ['Actions', 'Click', 'Content-Type', 'Priority', 'Title'],
-  );
+  deepEqual(Object.keys(calls[0]!.headers).sort(), [
+    'Actions',
+    'Click',
+    'Content-Type',
+    'Priority',
+    'Title',
+  ]);
 });

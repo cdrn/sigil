@@ -76,7 +76,7 @@ test('ack server: POST /deny resolves the pending settled promise as "deny"', as
   });
 });
 
-test('ack server: GET works too (fallback for clients that won\'t POST from a tap)', async () => {
+test("ack server: GET works too (fallback for clients that won't POST from a tap)", async () => {
   await withServer(async (s) => {
     const { approveUrl, settled } = s.pending();
     const resp = await http(approveUrl, 'GET');

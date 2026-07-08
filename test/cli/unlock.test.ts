@@ -10,16 +10,32 @@ import { resolvePaths, sessionSocketPath } from '../../src/cli/paths.js';
 import { startControlServer } from '../../src/control/index.js';
 import { HandleTable } from '../../src/daemon/handles.js';
 
-function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
-function mkTmpHome(): string { return mkdtempSync(join(tmpdir(), 'sigil-cli-unlock-')); }
+function priv(b: number): Buffer {
+  const p = Buffer.alloc(32);
+  p[31] = b;
+  return p;
+}
+function mkTmpHome(): string {
+  return mkdtempSync(join(tmpdir(), 'sigil-cli-unlock-'));
+}
 const TEST_KDF = { m: 256, t: 1, p: 1 };
 
 function capture(): { stdout: Writable; stderr: Writable; out: () => string; err: () => string } {
   const outBuf: string[] = [];
   const errBuf: string[] = [];
   return {
-    stdout: new Writable({ write(c, _e, cb) { outBuf.push(c.toString()); cb(); } }),
-    stderr: new Writable({ write(c, _e, cb) { errBuf.push(c.toString()); cb(); } }),
+    stdout: new Writable({
+      write(c, _e, cb) {
+        outBuf.push(c.toString());
+        cb();
+      },
+    }),
+    stderr: new Writable({
+      write(c, _e, cb) {
+        errBuf.push(c.toString());
+        cb();
+      },
+    }),
     out: () => outBuf.join(''),
     err: () => errBuf.join(''),
   };
@@ -67,13 +83,15 @@ async function withRunningMcps(
   for (const pid of pids) {
     const handles = new HandleTable();
     tables.push(handles);
-    ctls.push(await startControlServer({
-      socketPath: sessionSocketPath(paths.controlDir, pid),
-      keysDir: paths.keysDir,
-      policyDir: paths.policyDir,
-      handles,
-      pid,
-    }));
+    ctls.push(
+      await startControlServer({
+        socketPath: sessionSocketPath(paths.controlDir, pid),
+        keysDir: paths.keysDir,
+        policyDir: paths.policyDir,
+        handles,
+        pid,
+      }),
+    );
   }
   try {
     await fn(tables);
@@ -96,7 +114,8 @@ test('runCli unlock: one unlock fans out to ALL live sessions', async () => {
       const cap = capture();
       const r = await runCli({
         argv: ['unlock'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
         passphrase: () => Buffer.from('hunter2'),
       });
@@ -119,7 +138,8 @@ test('runCli lock: one lock fans out to ALL live sessions', async () => {
       const cap = capture();
       const r = await runCli({
         argv: ['lock'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
       });
       equal(r.code, 0);
@@ -139,7 +159,8 @@ test('runCli status: reports every live session', async () => {
       const cap = capture();
       const r = await runCli({
         argv: ['status'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
       });
       equal(r.code, 0);
@@ -166,7 +187,8 @@ test('runCli unlock: server down → exits 1 with clear message', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['unlock'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('whatever'),
     });
@@ -188,7 +210,8 @@ test('runCli unlock: happy path loads portals', async () => {
       const cap = capture();
       const r = await runCli({
         argv: ['unlock'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
         passphrase: () => Buffer.from('hunter2'),
       });
@@ -207,12 +230,16 @@ test('runCli unlock: wrong passphrase exits 2', async () => {
   try {
     await withRunningMcp(home, async (handles) => {
       const paths = resolvePaths({ SIGIL_HOME: home });
-      writeFileSync(join(paths.keysDir, 'evm:bot.sigil'), sealKey(priv(1), Buffer.from('right'), TEST_KDF));
+      writeFileSync(
+        join(paths.keysDir, 'evm:bot.sigil'),
+        sealKey(priv(1), Buffer.from('right'), TEST_KDF),
+      );
 
       const cap = capture();
       const r = await runCli({
         argv: ['unlock'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
         passphrase: () => Buffer.from('wrong'),
       });
@@ -236,7 +263,8 @@ test('runCli unlock: already-unlocked session is idempotent → exits 0', async 
       const cap = capture();
       const r = await runCli({
         argv: ['unlock'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
         passphrase: () => Buffer.from('x'),
       });
@@ -258,7 +286,8 @@ test('runCli unlock: passphrase buffer is zeroized after the call', async () => 
       const seen = Array.from(pass);
       await runCli({
         argv: ['unlock'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
         passphrase: () => pass,
       });
@@ -276,7 +305,8 @@ test('runCli lock: server down → exits 1', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['lock'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r.code, 1);
@@ -293,7 +323,8 @@ test('runCli lock: locks a previously unlocked table', async () => {
       const cap = capture();
       const r = await runCli({
         argv: ['lock'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
       });
       equal(r.code, 0);
@@ -317,7 +348,8 @@ test('runCli status: reports running + unlocked + portals when MCP is alive', as
       const cap = capture();
       const r = await runCli({
         argv: ['status'],
-        stdout: cap.stdout, stderr: cap.stderr,
+        stdout: cap.stdout,
+        stderr: cap.stderr,
         env: { SIGIL_HOME: home },
       });
       equal(r.code, 0);

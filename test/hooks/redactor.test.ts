@@ -36,11 +36,7 @@ test('redacts a PEM private key block', () => {
 });
 
 test('redacts a generic PEM KEY block (without explicit PRIVATE)', () => {
-  const text = [
-    '-----BEGIN EC KEY-----',
-    'BASE64BLOB',
-    '-----END EC KEY-----',
-  ].join('\n');
+  const text = ['-----BEGIN EC KEY-----', 'BASE64BLOB', '-----END EC KEY-----'].join('\n');
   const r = redact(text);
   ok(r.text.includes('<REDACTED:pem-key-block>') || r.text.includes('<REDACTED:pem-private-key>'));
 });

@@ -68,18 +68,29 @@ export interface DecodedTx {
 class Cursor {
   #buf: Uint8Array;
   #o = 0;
-  constructor(buf: Uint8Array) { this.#buf = buf; }
+  constructor(buf: Uint8Array) {
+    this.#buf = buf;
+  }
 
-  get offset(): number { return this.#o; }
-  get done(): boolean { return this.#o === this.#buf.length; }
+  get offset(): number {
+    return this.#o;
+  }
+  get done(): boolean {
+    return this.#o === this.#buf.length;
+  }
 
   #need(n: number): void {
     if (this.#o + n > this.#buf.length) {
-      throw new Error(`unexpected end of message: need ${n} bytes at offset ${this.#o}, have ${this.#buf.length - this.#o}`);
+      throw new Error(
+        `unexpected end of message: need ${n} bytes at offset ${this.#o}, have ${this.#buf.length - this.#o}`,
+      );
     }
   }
 
-  u8(): number { this.#need(1); return this.#buf[this.#o++]!; }
+  u8(): number {
+    this.#need(1);
+    return this.#buf[this.#o++]!;
+  }
 
   bytes(n: number): Uint8Array {
     this.#need(n);
@@ -190,7 +201,11 @@ export function decodeTx(bytes: Uint8Array): DecodedTx {
   return { message, transfers, allDecoded };
 }
 
-function decodeSystemTransfer(ix: SolInstruction, message: SolMessage, n: number): SolTransfer | null {
+function decodeSystemTransfer(
+  ix: SolInstruction,
+  message: SolMessage,
+  n: number,
+): SolTransfer | null {
   // Program must be a static account and the System Program.
   if (ix.programIdIndex >= n) return null;
   if (!isSystemProgram(message.staticAccountKeys[ix.programIdIndex]!)) return null;

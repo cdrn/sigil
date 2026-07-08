@@ -265,7 +265,11 @@ test('FileSystemPolicyResolver: missing file → PolicyLoadError with helpful me
   try {
     const r = new FileSystemPolicyResolver(dir);
     let err: PolicyLoadError | null = null;
-    try { r.resolve('evm:absent'); } catch (e) { err = e as PolicyLoadError; }
+    try {
+      r.resolve('evm:absent');
+    } catch (e) {
+      err = e as PolicyLoadError;
+    }
     ok(err instanceof PolicyLoadError);
     ok(/no policy file/.test(err!.message));
     // Error should steer users to the right command for an existing

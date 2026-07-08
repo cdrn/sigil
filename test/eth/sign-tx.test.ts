@@ -1,11 +1,6 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import {
-  type Eip1559Tx,
-  type LegacyTx,
-  signTransaction,
-  txDigest,
-} from '../../src/eth/sign-tx.js';
+import { type Eip1559Tx, type LegacyTx, signTransaction, txDigest } from '../../src/eth/sign-tx.js';
 import { rlpDecode } from '../../src/eth/rlp.js';
 import { addressFromPublicKey } from '../../src/eth/address.js';
 import { recoverPublicKey } from '../../src/eth/secp.js';

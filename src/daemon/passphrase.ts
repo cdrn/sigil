@@ -18,7 +18,9 @@ export function readPassphrase(prompt: string, deps: ReadPassphraseDeps = {}): P
 
   if (!stdin.isTTY) {
     return Promise.reject(
-      new Error('readPassphrase: stdin is not a TTY; pipe in via process substitution or use --passphrase-fd'),
+      new Error(
+        'readPassphrase: stdin is not a TTY; pipe in via process substitution or use --passphrase-fd',
+      ),
     );
   }
 
