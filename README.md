@@ -4,14 +4,14 @@
 
 `sigil` is a local signing tool and Claude Code integration that lets agentic coding tools use private keys without ever putting key material in the model's context window.
 
-**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, policy engine (static checks), and out-of-band confirmation via ntfy all work end-to-end. Rolling-window value caps and EIP-712 domain allowlists are not yet implemented. Until they land — and until the supply-chain attestations promised for v0.1.0 ship — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
+**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, policy engine (static checks), out-of-band confirmation via ntfy, Solana signing, and the JSON-RPC signing proxy (Foundry/Hardhat) all work end-to-end. Rolling-window value caps and EIP-712 domain allowlists are not yet implemented. Until they land — and until the supply-chain attestations promised for v0.1.0 ship — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
 
 ## What it is
 
-One MCP server process, four bins, six runtime deps (all pinned, zero transitive):
+One MCP server process, four bins (plus a legacy `sigild` alias), six runtime deps (all pinned, zero transitive):
 
 1. **`sigil-mcp`** — the only thing that runs. Claude Code spawns it per session via your `mcpServers` config; it dies when Claude exits. Holds unlocked keys in process memory (zeroized on shutdown, `sigil lock`, or unlock-failure; mlock against swap is planned). Keys at rest are encrypted with XChaCha20-Poly1305 and an Argon2id-derived key. Signs over stdio using a DIY MCP wire protocol (~200 lines, no SDK dep). Claude never sees key material — only opaque handles like `evm:executor`.
-2. **`sigil`** — control CLI. `init`, `status`, `portal add`/`list`/`remove`, `unlock`, `lock`.
+2. **`sigil`** — control CLI. `init`, `status`, `portal new`/`add`/`list`/`qr`/`remove`, `policy show`/`init`, `unlock`, `lock`.
 3. **`sigil-hook-pre` / `sigil-hook-post`** — Claude Code hook binaries that block reads of common key paths and redact key-shaped strings from tool output.
 
 `sigil-mcp` boots **locked**: empty in-memory handle table, no keys loaded. Sign methods return `DAEMON_LOCKED` (-32003) with a "run sigil unlock" message until you push the passphrase in from a separate terminal via `sigil unlock`. That CLI connects to a per-session Unix socket at `~/.sigil/control/<pid>.sock` (0600) that `sigil-mcp` opens at startup — and fans out to every such socket so one `sigil unlock` reaches all open windows. After unlock, signs work for the rest of the session; `sigil lock` zeroizes the table without killing the process.
@@ -22,7 +22,7 @@ Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transaction
 
 - Not a hardware wallet replacement. If you can use a Ledger or YubiKey, do that.
 - Not a custody solution. It runs on your laptop or VPS and protects you from one specific class of failure: leaking key material through an LLM agent.
-- A first cut of *bounding signing authority* via the policy engine — but not the full thing. v1 covers static checks (chain ID, destination allowlist, per-tx value cap, function-selector allowlist, on/off toggles for personal_sign and EIP-712). Rolling-window caps, EIP-712 domain allowlists, and out-of-band human confirmation are tracked in [#3](https://github.com/cdrn/sigil/issues/3) + [#4](https://github.com/cdrn/sigil/issues/4) and will land incrementally.
+- A first cut of *bounding signing authority* via the policy engine — but not the full thing. Shipped: static checks (chain ID, destination allowlist, per-tx value cap, function-selector allowlist, contract-creation gating, on/off toggles for personal_sign and EIP-712) plus out-of-band human confirmation via ntfy. Rolling-window caps and EIP-712 domain allowlists are tracked in [#3](https://github.com/cdrn/sigil/issues/3) and will land incrementally.
 
 ## Install
 
@@ -30,9 +30,9 @@ Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transaction
 npm install -g sigild
 ```
 
-This drops four binaries on your `$PATH`: `sigil`, `sigil-mcp`, `sigil-hook-pre`, `sigil-hook-post`. (The package name on npm is `sigild` for legacy reasons; the bins do not include a daemon any more.)
+This drops four binaries on your `$PATH`: `sigil`, `sigil-mcp`, `sigil-hook-pre`, `sigil-hook-post` (plus `sigild`, a legacy alias for `sigil-mcp`). (The package name on npm is `sigild` for legacy reasons; the bins do not include a daemon any more.)
 
-Requires Node 22+.
+Requires Node 22+, macOS or Linux. (The CLI ↔ session control channel uses Unix domain sockets; Windows is untested and currently unsupported.)
 
 ## Quick start
 
@@ -92,7 +92,7 @@ sigil portal new <handle> [--strict]
 sigil portal add <handle> --key-file <path> [--no-remove-source] [--strict]
   Import an existing private key. Encrypts it with your passphrase
   and stores at ~/.sigil/keys/<handle>.sigil (mode 0600). Handle
-  format is <kind>:<name> where kind is "eth". The source key file
+  format is <kind>:<name> where kind is "evm". The source key file
   is deleted by default — pass --no-remove-source to keep it.
   Also writes ~/.sigil/policy/<handle>.toml — permissive by default
   (signs anything), or --strict for a locked-down template you fill
@@ -110,8 +110,12 @@ sigil policy init <handle> [--strict]
   locked-down template.
 
 sigil portal list
-  List the encrypted keyfiles on disk with their derived addresses.
-  Requires the passphrase.
+  List the encrypted keyfiles on disk with their derived addresses
+  (EVM + Solana). Requires the passphrase.
+
+sigil portal qr <handle>
+  Render a portal's address as a terminal QR code (for funding it from
+  a phone wallet). Requires the passphrase.
 
 sigil portal remove <handle>
   Delete a keyfile from disk.
@@ -256,7 +260,7 @@ Relevant policy fields (`~/.sigil/policy/<handle>.toml`): `allow_svm_message_sig
 
 Key-management libraries die from supply chain compromise, not from clever attacks on the code. Given the npm ecosystem in 2026 (Mini Shai-Hulud, Axios, pgserve, TanStack), `sigil` commits to:
 
-- **Zero install scripts.** No `postinstall`, `preinstall`, `prepare`. CI-enforced (planned: a CI guard that fails if any dep adds one).
+- **Zero install scripts.** No `postinstall`, `preinstall`, `prepare`. CI-enforced: every PR runs a guard that fails if any package in the resolved tree declares one.
 - **Six runtime deps, all version-pinned** (no caret ranges), all zero-transitive — the entire `npm ls --omit dev` tree is exactly these six packages:
   - [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) for XChaCha20-Poly1305
   - [`@noble/hashes`](https://github.com/paulmillr/noble-hashes) for Argon2id, keccak256, sha2/sha512, HMAC
@@ -306,7 +310,7 @@ See [THREAT_MODEL.md](./THREAT_MODEL.md). Read it before trusting this with anyt
 git clone https://github.com/cdrn/sigil
 cd sigil
 npm install      # respects .npmrc ignore-scripts=true
-npm test         # builds + runs ~330 tests; should finish in under 10s
+npm test         # builds + runs 600+ tests; should finish in under 15s
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the PR-per-layer workflow.
