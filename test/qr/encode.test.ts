@@ -26,11 +26,33 @@ test('byte mode: short input yields a small square matrix', () => {
 });
 
 test('byte mode: 42-char lowercase ETH address fits V3 (29×29)', () => {
-  // V2-L byte capacity is 32 bytes; a 42-char address overflows to V3-L.
+  // V3-M byte capacity is exactly 42 bytes — the address fits with the
+  // stronger default error correction at no size cost vs V3-L.
   const addr = '0xf4e9ec89224d6ed085995af612feba4418ebf88a';
   const m = encode(addr);
   equal(m.length, versionSize(3));
   equal(m.length, 29);
+});
+
+test('default error correction is M; explicit L yields a different matrix', () => {
+  // Same input, same version, different EC level → different codewords.
+  // Guards against the default silently regressing to L (~7% tolerance),
+  // which is marginal for phone-scanning a QR off terminal glass.
+  const addr = '0xf4e9ec89224d6ed085995af612feba4418ebf88a';
+  const def = encode(addr);
+  const atL = encode(addr, { ecLevel: 'L' });
+  const atM = encode(addr, { ecLevel: 'M' });
+  equal(def.length, atM.length);
+  let defEqualsM = true;
+  let defEqualsL = true;
+  for (let r = 0; r < def.length; r++) {
+    for (let c = 0; c < def.length; c++) {
+      if (def[r]![c] !== atM[r]![c]) defEqualsM = false;
+      if (atL.length === def.length && def[r]![c] !== atL[r]![c]) defEqualsL = false;
+    }
+  }
+  ok(defEqualsM, 'default should be M');
+  ok(!defEqualsL || atL.length !== def.length, 'L should differ from the default');
 });
 
 test('finder patterns appear at the three corners', () => {
