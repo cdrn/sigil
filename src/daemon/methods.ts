@@ -1,6 +1,4 @@
-import {
-  type AuditWriter,
-} from '../audit/index.js';
+import { type AuditWriter } from '../audit/index.js';
 import type { ConfirmGate } from '../confirm/index.js';
 import {
   type Eip1559Tx,
@@ -139,9 +137,7 @@ function requirePortal(handles: HandleTable, handle: string): Buffer {
  *
  * Deny is not returned: gatePolicy throws RPC_POLICY_DENIED directly.
  */
-type GateResult =
-  | { proceed: 'allow' }
-  | { proceed: 'confirm'; summary: string };
+type GateResult = { proceed: 'allow' } | { proceed: 'confirm'; summary: string };
 
 function gatePolicy(
   ctx: MethodContext,
@@ -182,9 +178,16 @@ const sigil_eth_sign_message: MethodHandler = (params, ctx) => {
   const messageHex = asString(obj, 'message', 'eth_sign_message');
   const message = hexToBuf(messageHex, 'eth_sign_message', 'message');
   const priv = requirePortal(ctx.handles, portal);
-  gatePolicy(ctx, portal, 'eth_sign_message', { message: messageHex }, {
-    kind: 'message', messageBytes: message,
-  });
+  gatePolicy(
+    ctx,
+    portal,
+    'eth_sign_message',
+    { message: messageHex },
+    {
+      kind: 'message',
+      messageBytes: message,
+    },
+  );
   const sig = personalSign(message, priv);
   const sigHex = ('0x' + sig.toString('hex')) as Hex;
   ctx.audit.append({
@@ -264,7 +267,10 @@ function asTx(obj: Record<string, unknown>): SignableTx {
         throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: accessList[${i}].address`);
       }
       if (!Array.isArray(keys)) {
-        throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: accessList[${i}].storageKeys must be array`);
+        throw new RpcMethodError(
+          RPC_INVALID_PARAMS,
+          `tx: accessList[${i}].storageKeys must be array`,
+        );
       }
       for (const k of keys) {
         if (typeof k !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(k)) {
@@ -300,9 +306,16 @@ const sigil_eth_sign_transaction: MethodHandler = async (params, ctx) => {
   }
   const tx = asTx(txObj as Record<string, unknown>);
   const priv = requirePortal(ctx.handles, portal);
-  const gate = gatePolicy(ctx, portal, 'eth_sign_transaction', { tx: txObj }, {
-    kind: 'transaction', tx,
-  });
+  const gate = gatePolicy(
+    ctx,
+    portal,
+    'eth_sign_transaction',
+    { tx: txObj },
+    {
+      kind: 'transaction',
+      tx,
+    },
+  );
   if (gate.proceed === 'confirm') {
     await runConfirmGate(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.summary);
   }
@@ -346,9 +359,11 @@ async function runConfirmGate(
   const decision = await ctx.confirm.request({ portal, summary });
   if (decision.kind === 'approved') return;
   const reason =
-    decision.kind === 'denied' ? `confirm denied by human (transport=${ctx.confirm.transportName})`
-    : decision.kind === 'timeout' ? `confirm timed out — no ack within window (transport=${ctx.confirm.transportName})`
-    : `confirm transport error: ${decision.message}`;
+    decision.kind === 'denied'
+      ? `confirm denied by human (transport=${ctx.confirm.transportName})`
+      : decision.kind === 'timeout'
+        ? `confirm timed out — no ack within window (transport=${ctx.confirm.transportName})`
+        : `confirm transport error: ${decision.message}`;
   ctx.audit.append({ kind, portal, payload, decision: 'deny', reason });
   throw new RpcMethodError(RPC_POLICY_DENIED, reason);
 }
@@ -363,17 +378,21 @@ const sigil_eth_sign_typed_data: MethodHandler = (params, ctx) => {
   // We trust the typed-data shape minimally — sign-typed.ts will throw
   // on missing fields; we wrap that as INVALID_PARAMS for the caller.
   const priv = requirePortal(ctx.handles, portal);
-  gatePolicy(ctx, portal, 'eth_sign_typed_data', { typedData: td }, {
-    kind: 'typed_data', typedData: td as TypedData,
-  });
+  gatePolicy(
+    ctx,
+    portal,
+    'eth_sign_typed_data',
+    { typedData: td },
+    {
+      kind: 'typed_data',
+      typedData: td as TypedData,
+    },
+  );
   let sig: Buffer;
   try {
     sig = signTypedData(td as TypedData, priv);
   } catch (err) {
-    throw new RpcMethodError(
-      RPC_INVALID_PARAMS,
-      `eth_sign_typed_data: ${(err as Error).message}`,
-    );
+    throw new RpcMethodError(RPC_INVALID_PARAMS, `eth_sign_typed_data: ${(err as Error).message}`);
   }
   const sigHex = ('0x' + sig.toString('hex')) as Hex;
   ctx.audit.append({
@@ -397,9 +416,16 @@ const sigil_svm_sign_message: MethodHandler = (params, ctx) => {
   const messageB64 = asString(obj, 'message', 'svm_sign_message');
   const message = b64ToBuf(messageB64, 'svm_sign_message', 'message');
   const secret = requirePortal(ctx.handles, portal);
-  gatePolicy(ctx, portal, 'svm_sign_message', { message: messageB64 }, {
-    kind: 'svm_message', messageBytes: message,
-  });
+  gatePolicy(
+    ctx,
+    portal,
+    'svm_sign_message',
+    { message: messageB64 },
+    {
+      kind: 'svm_message',
+      messageBytes: message,
+    },
+  );
   const sig = base58Encode(svmSign(message, secret));
   ctx.audit.append({
     kind: 'svm_sign_message',
@@ -439,14 +465,26 @@ const sigil_svm_sign_transaction: MethodHandler = async (params, ctx) => {
     );
   }
 
-  const gate = gatePolicy(ctx, portal, 'svm_sign_transaction', { message: messageB64 }, {
-    kind: 'svm_transaction',
-    transfers: decoded.transfers.map((t) => ({ to: t.to, lamports: t.lamports })),
-    allDecoded: decoded.allDecoded,
-    instructionCount: decoded.message.instructions.length,
-  });
+  const gate = gatePolicy(
+    ctx,
+    portal,
+    'svm_sign_transaction',
+    { message: messageB64 },
+    {
+      kind: 'svm_transaction',
+      transfers: decoded.transfers.map((t) => ({ to: t.to, lamports: t.lamports })),
+      allDecoded: decoded.allDecoded,
+      instructionCount: decoded.message.instructions.length,
+    },
+  );
   if (gate.proceed === 'confirm') {
-    await runConfirmGate(ctx, portal, 'svm_sign_transaction', { message: messageB64 }, gate.summary);
+    await runConfirmGate(
+      ctx,
+      portal,
+      'svm_sign_transaction',
+      { message: messageB64 },
+      gate.summary,
+    );
   }
 
   const sig = base58Encode(svmSign(messageBytes, secret));

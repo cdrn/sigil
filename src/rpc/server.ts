@@ -102,7 +102,9 @@ export function startRpcServer(opts: StartRpcServerOpts): Promise<RpcProxyServer
       }
       return BigInt(raw);
     })();
-    chainIdPromise.catch(() => { chainIdPromise = undefined; });
+    chainIdPromise.catch(() => {
+      chainIdPromise = undefined;
+    });
     return chainIdPromise;
   };
 
@@ -155,7 +157,7 @@ export function startRpcServer(opts: StartRpcServerOpts): Promise<RpcProxyServer
           throw new RpcMethodError(
             -32601,
             `${method} is not served by the sigil rpc proxy — message/typed-data ` +
-            `signing is available through sigil's MCP tools with their own policy toggles`,
+              `signing is available through sigil's MCP tools with their own policy toggles`,
           );
         }
         // Transparent pass-through. Re-issued as a fresh request built from
@@ -185,11 +187,11 @@ export function startRpcServer(opts: StartRpcServerOpts): Promise<RpcProxyServer
     });
     // The whole point: same dispatch as the MCP tools → same policy checks,
     // same confirm gate, same audit entries. This surface adds no privilege.
-    const result = await dispatch(
+    const result = (await dispatch(
       'sigil_eth_sign_transaction',
       { portal: config.portal, tx },
       ctx,
-    ) as { signed: string };
+    )) as { signed: string };
     return result.signed;
   };
 
@@ -239,7 +241,11 @@ export function startRpcServer(opts: StartRpcServerOpts): Promise<RpcProxyServer
         return;
       }
       const responses = await Promise.all(parsed.map(handleOne));
-      replyJson(res, 200, responses.filter((r) => r !== null));
+      replyJson(
+        res,
+        200,
+        responses.filter((r) => r !== null),
+      );
       return;
     }
     const response = await handleOne(parsed);

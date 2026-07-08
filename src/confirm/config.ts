@@ -152,8 +152,8 @@ function parseRpcBlock(rpcRaw: unknown): RpcConfigToml | undefined {
   if (token.length < RPC_TOKEN_MIN_LENGTH) {
     throw new SigilConfigError(
       `config.rpc.token must be at least ${RPC_TOKEN_MIN_LENGTH} characters — ` +
-      `it is the only credential guarding the signing endpoint. ` +
-      `Generate one with: openssl rand -hex 24`,
+        `it is the only credential guarding the signing endpoint. ` +
+        `Generate one with: openssl rand -hex 24`,
     );
   }
   const port = rpcRaw['port'];
@@ -229,19 +229,16 @@ export function anyPolicyRequiresConfirm(policyDir: string): boolean {
  * cannot honour that policy — bail with a clear message instead of running
  * with a half-built safety net.
  */
-export function enforceConfirmTransportPresence(
-  config: SigilConfig,
-  policyDir: string,
-): void {
+export function enforceConfirmTransportPresence(config: SigilConfig, policyDir: string): void {
   const needsTransport = anyPolicyRequiresConfirm(policyDir);
   if (!needsTransport) return;
   const haveTransport = config.confirm?.ntfy !== undefined;
   if (haveTransport) return;
   throw new SigilConfigError(
     `at least one portal policy in ${policyDir} sets require_confirm_above_wei, ` +
-    `but no OOB confirm transport is configured. ` +
-    `Add a [confirm.ntfy] block to ~/.sigil/config.toml with a topic, ` +
-    `or remove require_confirm_above_wei from the affected policy files.`,
+      `but no OOB confirm transport is configured. ` +
+      `Add a [confirm.ntfy] block to ~/.sigil/config.toml with a topic, ` +
+      `or remove require_confirm_above_wei from the affected policy files.`,
   );
 }
 

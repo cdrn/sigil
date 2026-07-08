@@ -8,10 +8,10 @@ test('parseControlRequest: lock/status methods', () => {
 });
 
 test('parseControlRequest: unlock requires passphraseB64 string', () => {
-  deepEqual(
-    parseControlRequest(JSON.stringify({ method: 'unlock', passphraseB64: 'YWJj' })),
-    { method: 'unlock', passphraseB64: 'YWJj' },
-  );
+  deepEqual(parseControlRequest(JSON.stringify({ method: 'unlock', passphraseB64: 'YWJj' })), {
+    method: 'unlock',
+    passphraseB64: 'YWJj',
+  });
   const missing = parseControlRequest(JSON.stringify({ method: 'unlock' }));
   ok('ok' in missing && missing.ok === false);
   if ('ok' in missing && missing.ok === false) equal(missing.code, 'INVALID_REQUEST');
@@ -39,11 +39,13 @@ test('parseControlRequest: not JSON / not object / no method', () => {
 
 test('isControlError narrows the type correctly', () => {
   ok(isControlError({ ok: false, code: 'INTERNAL', error: 'x' }));
-  ok(!isControlError({
-    ok: true,
-    version: 1,
-    pid: 1,
-    unlocked: false,
-    portals: [],
-  }));
+  ok(
+    !isControlError({
+      ok: true,
+      version: 1,
+      pid: 1,
+      unlocked: false,
+      portals: [],
+    }),
+  );
 });

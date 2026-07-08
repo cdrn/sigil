@@ -52,7 +52,9 @@ export interface QrEncodeOpts {
 export function encode(input: string, opts: QrEncodeOpts = {}): boolean[][] {
   const mode: QrMode = opts.mode ?? 'Byte';
   if (mode === 'Alphanumeric' && !ALPHANUMERIC_RE.test(input)) {
-    throw new Error(`qr: input contains chars outside the alphanumeric set: ${JSON.stringify(input)}`);
+    throw new Error(
+      `qr: input contains chars outside the alphanumeric set: ${JSON.stringify(input)}`,
+    );
   }
   const typeNumber = (opts.version ?? 0) as Parameters<typeof qrcode>[0];
   const qr = qrcode(typeNumber, opts.ecLevel ?? 'M');

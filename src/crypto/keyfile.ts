@@ -58,6 +58,7 @@ function buildHeader(salt: Buffer, nonce: Buffer, params: KdfParams): Buffer {
   salt.copy(h, off);
   off += SALT_LEN;
   nonce.copy(h, off);
+  // eslint-disable-next-line no-useless-assignment -- keep the running-offset idiom symmetric; the next header field slots in without surprises
   off += AEAD_NONCE_LEN;
   return h;
 }
@@ -111,10 +112,7 @@ export function sealKey(
   }
 }
 
-export function unsealKey(
-  keyfileBytes: Buffer,
-  passphrase: Buffer | Uint8Array,
-): SecretBuffer {
+export function unsealKey(keyfileBytes: Buffer, passphrase: Buffer | Uint8Array): SecretBuffer {
   const { kdf, salt, nonce } = parseHeader(keyfileBytes);
   const header = keyfileBytes.subarray(0, HEADER_LEN);
   const ciphertext = keyfileBytes.subarray(HEADER_LEN);

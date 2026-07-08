@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { HandleLoadError, HandleTable } from '../daemon/handles.js';
 import {
   CONTROL_SOCKET_VERSION,
-  type ControlError,
   type ControlRequest,
   type ControlResponse,
   type ControlSuccess,
@@ -80,12 +79,17 @@ export async function startControlServer(opts: ControlServerOpts): Promise<Contr
 
   return {
     socketPath: opts.socketPath,
-    close: () => new Promise<void>((resolve) => {
-      server.close(() => {
-        try { unlinkSync(opts.socketPath); } catch { /* may already be gone */ }
-        resolve();
-      });
-    }),
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => {
+          try {
+            unlinkSync(opts.socketPath);
+          } catch {
+            /* may already be gone */
+          }
+          resolve();
+        });
+      }),
   };
 }
 
@@ -107,12 +111,14 @@ async function bindWithStaleSocketRecovery(
   // Something is at the socket path. Probe it.
   const alive = await isSocketAlive(socketPath);
   if (alive) {
-    throw new Error(
-      `control socket ${socketPath} is already in use by another sigil-mcp process`,
-    );
+    throw new Error(`control socket ${socketPath} is already in use by another sigil-mcp process`);
   }
   // Stale — unlink and retry.
-  try { unlinkSync(socketPath); } catch { /* race: someone else cleaned it */ }
+  try {
+    unlinkSync(socketPath);
+  } catch {
+    /* race: someone else cleaned it */
+  }
   log({ kind: 'stale_socket_cleared', path: socketPath });
   await listen(server, socketPath);
 }
@@ -203,11 +209,7 @@ function write(sock: Socket, resp: ControlResponse): void {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-function dispatch(
-  req: ControlRequest,
-  opts: ControlServerOpts,
-  pid: number,
-): ControlResponse {
+function dispatch(req: ControlRequest, opts: ControlServerOpts, pid: number): ControlResponse {
   switch (req.method) {
     case 'status':
       return statusResponse(opts.handles, pid);
@@ -244,7 +246,11 @@ function doUnlock(passphraseB64: string, opts: ControlServerOpts, pid: number): 
       opts.onLog?.({ kind: 'legacy_handle_migrated', from, to }),
     );
   } catch (err) {
-    return { ok: false, code: 'INTERNAL', error: `legacy-handle migration failed: ${(err as Error).message}` };
+    return {
+      ok: false,
+      code: 'INTERNAL',
+      error: `legacy-handle migration failed: ${(err as Error).message}`,
+    };
   }
   try {
     opts.handles.loadFromDir(opts.keysDir, passphrase);
@@ -314,7 +320,12 @@ function migrateLegacyEthPrefix(
 
 function statusResponse(handles: HandleTable, pid: number): ControlSuccess {
   const portals: PortalSummary[] = handles.isUnlocked()
-    ? handles.list().map((p) => ({ handle: p.handle, kind: p.kind, address: p.address, svmAddress: p.svmAddress }))
+    ? handles.list().map((p) => ({
+        handle: p.handle,
+        kind: p.kind,
+        address: p.address,
+        svmAddress: p.svmAddress,
+      }))
     : [];
   return {
     ok: true,

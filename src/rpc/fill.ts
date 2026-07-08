@@ -86,12 +86,13 @@ export async function fillTransaction(
   const value = raw['value'] === undefined ? 0n : qty(raw['value'], 'value');
 
   // --- nonce ---------------------------------------------------------------
-  const nonce = raw['nonce'] !== undefined
-    ? qty(raw['nonce'], 'nonce')
-    : qtyResult(
-        await fill.upstream.call('eth_getTransactionCount', [from, 'pending']),
-        'eth_getTransactionCount',
-      );
+  const nonce =
+    raw['nonce'] !== undefined
+      ? qty(raw['nonce'], 'nonce')
+      : qtyResult(
+          await fill.upstream.call('eth_getTransactionCount', [from, 'pending']),
+          'eth_getTransactionCount',
+        );
 
   // --- gas limit ------------------------------------------------------------
   let gasLimit: bigint;

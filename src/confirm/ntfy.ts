@@ -34,12 +34,10 @@ export class NtfyTransport implements ConfirmTransport {
 
   constructor(config: NtfyConfig, fetchImpl: FetchLike = globalThis.fetch as unknown as FetchLike) {
     const server = (config.server ?? 'https://ntfy.sh').replace(/\/+$/, '');
-    if (!/^[A-Za-z0-9_\-]+$/.test(config.topic)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(config.topic)) {
       // ntfy permits more, but a stricter pattern catches "user pasted the full
       // URL into the topic field" right at construction time.
-      throw new Error(
-        `ntfy topic must match [A-Za-z0-9_-]+ (got ${JSON.stringify(config.topic)})`,
-      );
+      throw new Error(`ntfy topic must match [A-Za-z0-9_-]+ (got ${JSON.stringify(config.topic)})`);
     }
     this.#url = `${server}/${config.topic}`;
     this.#fetch = fetchImpl;
@@ -53,10 +51,10 @@ export class NtfyTransport implements ConfirmTransport {
     const resp = await this.#fetch(this.#url, {
       method: 'POST',
       headers: {
-        'Title': `sigil — ${req.portal}`,
-        'Priority': 'high',
-        'Click': req.approveUrl,
-        'Actions': actions,
+        Title: `sigil — ${req.portal}`,
+        Priority: 'high',
+        Click: req.approveUrl,
+        Actions: actions,
         'Content-Type': 'text/plain; charset=utf-8',
       },
       body: req.summary,

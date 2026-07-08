@@ -6,8 +6,14 @@ import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { runCli } from '../../src/cli/main.js';
 
-function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
-function mkTmpHome(): string { return mkdtempSync(join(tmpdir(), 'sigil-cli-main-')); }
+function priv(b: number): Buffer {
+  const p = Buffer.alloc(32);
+  p[31] = b;
+  return p;
+}
+function mkTmpHome(): string {
+  return mkdtempSync(join(tmpdir(), 'sigil-cli-main-'));
+}
 
 // Test-only fast KDF — see PortalAddOpts.kdfParams.
 const TEST_KDF = { m: 256, t: 1, p: 1 };
@@ -16,8 +22,18 @@ function capture(): { stdout: Writable; stderr: Writable; out: () => string; err
   const outBuf: string[] = [];
   const errBuf: string[] = [];
   return {
-    stdout: new Writable({ write(c, _e, cb) { outBuf.push(c.toString()); cb(); } }),
-    stderr: new Writable({ write(c, _e, cb) { errBuf.push(c.toString()); cb(); } }),
+    stdout: new Writable({
+      write(c, _e, cb) {
+        outBuf.push(c.toString());
+        cb();
+      },
+    }),
+    stderr: new Writable({
+      write(c, _e, cb) {
+        errBuf.push(c.toString());
+        cb();
+      },
+    }),
     out: () => outBuf.join(''),
     err: () => errBuf.join(''),
   };
@@ -52,7 +68,8 @@ test('runCli: portal add — successful flow', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -73,7 +90,8 @@ test('runCli: portal add — missing --key-file exits 2', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'add', 'evm:bot'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -91,7 +109,8 @@ test('runCli: portal list — empty', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'list'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -111,8 +130,16 @@ test('runCli: portal list — shows handles and addresses', async () => {
     // Add first.
     await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: new Writable({ write(_c, _e, cb) { cb(); } }),
-      stderr: new Writable({ write(_c, _e, cb) { cb(); } }),
+      stdout: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
+      stderr: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -121,7 +148,8 @@ test('runCli: portal list — shows handles and addresses', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'list'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -143,8 +171,16 @@ test('runCli: portal qr — prints address, a QR block, and the address again', 
     writeFileSync(srcKey, priv(1));
     await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: new Writable({ write(_c, _e, cb) { cb(); } }),
-      stderr: new Writable({ write(_c, _e, cb) { cb(); } }),
+      stdout: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
+      stderr: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -152,7 +188,8 @@ test('runCli: portal qr — prints address, a QR block, and the address again', 
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'qr', 'evm:bot'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -176,7 +213,8 @@ test('runCli: portal qr — missing handle exits 2 with usage', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'qr'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -194,7 +232,8 @@ test('runCli: portal qr — unknown handle exits 1 with helpful error', async ()
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'qr', 'evm:nope'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -213,8 +252,16 @@ test('runCli: portal remove — success and not-found cases', async () => {
     writeFileSync(srcKey, priv(1));
     await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: new Writable({ write(_c, _e, cb) { cb(); } }),
-      stderr: new Writable({ write(_c, _e, cb) { cb(); } }),
+      stdout: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
+      stderr: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -223,7 +270,8 @@ test('runCli: portal remove — success and not-found cases', async () => {
     const cap1 = capture();
     const r1 = await runCli({
       argv: ['portal', 'remove', 'evm:bot'],
-      stdout: cap1.stdout, stderr: cap1.stderr,
+      stdout: cap1.stdout,
+      stderr: cap1.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r1.code, 0);
@@ -232,7 +280,8 @@ test('runCli: portal remove — success and not-found cases', async () => {
     const cap2 = capture();
     const r2 = await runCli({
       argv: ['portal', 'remove', 'evm:bot'],
-      stdout: cap2.stdout, stderr: cap2.stderr,
+      stdout: cap2.stdout,
+      stderr: cap2.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r2.code, 1);
@@ -248,7 +297,8 @@ test('runCli: status — empty home reports zero keyfiles, mcp not running', asy
     const cap = capture();
     const r = await runCli({
       argv: ['status'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r.code, 0);
@@ -269,8 +319,16 @@ test('runCli: passphrase buffer is zeroed after portal add', async () => {
     const passCopy = Array.from(pass);
     await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: new Writable({ write(_c, _e, cb) { cb(); } }),
-      stderr: new Writable({ write(_c, _e, cb) { cb(); } }),
+      stdout: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
+      stderr: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
       env: { SIGIL_HOME: home },
       passphrase: () => pass,
       kdfParams: TEST_KDF,
@@ -295,7 +353,8 @@ test('runCli: portal add — writes permissive policy by default', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -316,7 +375,8 @@ test('runCli: portal new generates a fresh key with permissive policy', async ()
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'new', 'evm:fresh'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -337,7 +397,8 @@ test('runCli: portal new --strict writes the strict template', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'new', 'evm:cold', '--strict'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -358,7 +419,8 @@ test('runCli: portal new without handle errors with usage', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'new'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -378,7 +440,8 @@ test('runCli: portal add --strict writes the strict template', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey, '--strict'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -401,8 +464,16 @@ test('runCli: policy show — prints the file contents', async () => {
     // Provision first.
     await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey, '--strict'],
-      stdout: new Writable({ write(_c, _e, cb) { cb(); } }),
-      stderr: new Writable({ write(_c, _e, cb) { cb(); } }),
+      stdout: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
+      stderr: new Writable({
+        write(_c, _e, cb) {
+          cb();
+        },
+      }),
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: TEST_KDF,
@@ -411,7 +482,8 @@ test('runCli: policy show — prints the file contents', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['policy', 'show', 'evm:bot'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r.code, 0);
@@ -427,7 +499,8 @@ test('runCli: policy show — exits 1 if file missing', async () => {
     const cap = capture();
     const r = await runCli({
       argv: ['policy', 'show', 'evm:nope'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r.code, 1);
@@ -446,7 +519,8 @@ test('runCli: policy init — provisions a policy file for an existing portal', 
     let cap = capture();
     await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: { m: 256, t: 1, p: 1 },
@@ -457,7 +531,8 @@ test('runCli: policy init — provisions a policy file for an existing portal', 
     cap = capture();
     const r = await runCli({
       argv: ['policy', 'init', 'evm:bot'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r.code, 0);
@@ -476,7 +551,8 @@ test('runCli: policy init <handle> --strict — writes strict template', async (
     let cap = capture();
     await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: { m: 256, t: 1, p: 1 },
@@ -486,7 +562,8 @@ test('runCli: policy init <handle> --strict — writes strict template', async (
     cap = capture();
     const r = await runCli({
       argv: ['policy', 'init', 'evm:bot', '--strict'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r.code, 0);
@@ -507,7 +584,8 @@ test('runCli: policy init — refuses if policy already exists', async () => {
     let cap = capture();
     await runCli({
       argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
       passphrase: () => Buffer.from('p'),
       kdfParams: { m: 256, t: 1, p: 1 },
@@ -516,7 +594,8 @@ test('runCli: policy init — refuses if policy already exists', async () => {
     cap = capture();
     const r = await runCli({
       argv: ['policy', 'init', 'evm:bot'],
-      stdout: cap.stdout, stderr: cap.stderr,
+      stdout: cap.stdout,
+      stderr: cap.stderr,
       env: { SIGIL_HOME: home },
     });
     equal(r.code, 1);

@@ -99,9 +99,7 @@ export type PolicyRequest =
  *     notification — keep it tight ("0.5 ETH → 0xabc…").
  */
 export type PolicyDecision =
-  | { kind: 'allow' }
-  | { kind: 'deny'; reason: string }
-  | { kind: 'confirm'; summary: string };
+  { kind: 'allow' } | { kind: 'deny'; reason: string } | { kind: 'confirm'; summary: string };
 
 /**
  * Resolves a portal handle to its current policy. Wrapped in an interface so

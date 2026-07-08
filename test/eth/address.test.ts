@@ -8,19 +8,22 @@ import {
 import { getPublicKeyUncompressed } from '../../src/eth/secp.js';
 
 test('addressFromPrivateKey for priv=0x01 matches the canonical test address', () => {
-  const priv = Buffer.alloc(32); priv[31] = 1;
+  const priv = Buffer.alloc(32);
+  priv[31] = 1;
   // Well-known: secp256k1 generator point → address 0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf
   equal(addressFromPrivateKey(priv), '0x7e5f4552091a69125d5dfcb7b8c2659029395bdf');
 });
 
 test('addressFromPrivateKey for priv=0x02 matches the canonical test address', () => {
-  const priv = Buffer.alloc(32); priv[31] = 2;
+  const priv = Buffer.alloc(32);
+  priv[31] = 2;
   // 2 * G → address 0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF
   equal(addressFromPrivateKey(priv), '0x2b5ad5c4795c026514f8317c7a215e218dccd6cf');
 });
 
 test('addressFromPublicKey agrees with addressFromPrivateKey', () => {
-  const priv = Buffer.alloc(32); priv[31] = 7;
+  const priv = Buffer.alloc(32);
+  priv[31] = 7;
   const pub = getPublicKeyUncompressed(priv);
   equal(addressFromPublicKey(pub), addressFromPrivateKey(priv));
 });
@@ -30,7 +33,8 @@ test('addressFromPublicKey rejects wrong-length input', () => {
 });
 
 test('addressFromPublicKey rejects missing 0x04 prefix', () => {
-  const bad = Buffer.alloc(65); bad[0] = 0x03;
+  const bad = Buffer.alloc(65);
+  bad[0] = 0x03;
   throws(() => addressFromPublicKey(bad), /0x04 prefix/);
 });
 

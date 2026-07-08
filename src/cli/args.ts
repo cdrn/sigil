@@ -15,8 +15,7 @@ export interface ParsedSubcommand {
 // We don't want to leak parseArgs' deep generic shape; users of SubcommandSpec
 // just pass a plain options record.
 export type OptionDef =
-  | { type: 'string'; short?: string; multiple?: boolean }
-  | { type: 'boolean'; short?: string };
+  { type: 'string'; short?: string; multiple?: boolean } | { type: 'boolean'; short?: string };
 
 export interface SubcommandSpec {
   options?: Record<string, OptionDef>;

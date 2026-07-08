@@ -36,5 +36,9 @@ jobs:
         # preinstall / install / postinstall. See script header for the
         # threat-model reasoning behind which hooks are checked.
         run: node scripts/check-install-scripts.mjs
+      - name: Lint
+        run: npm run lint
+      - name: Check formatting
+        run: npm run format:check
       - name: Run tests
         run: npm test

@@ -8,13 +8,18 @@ import { signDigest, type EthSignature } from './secp.js';
  */
 export function personalSignDigest(message: Buffer | Uint8Array): Buffer {
   const prefix = Buffer.from(`\x19Ethereum Signed Message:\n${message.length}`, 'utf8');
-  return keccak256(Buffer.concat([prefix, Buffer.isBuffer(message) ? message : Buffer.from(message)]));
+  return keccak256(
+    Buffer.concat([prefix, Buffer.isBuffer(message) ? message : Buffer.from(message)]),
+  );
 }
 
 /**
  * EIP-191 personal_sign returning a 65-byte serialized sig (r || s || v) where v = recovery + 27.
  */
-export function personalSign(message: Buffer | Uint8Array, privateKey: Buffer | Uint8Array): Buffer {
+export function personalSign(
+  message: Buffer | Uint8Array,
+  privateKey: Buffer | Uint8Array,
+): Buffer {
   const digest = personalSignDigest(message);
   return serializeEthSignature(signDigest(digest, privateKey));
 }

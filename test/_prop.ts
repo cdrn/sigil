@@ -8,10 +8,10 @@
 
 export type Rng = () => number;
 
-const MASK64 = 0xFFFFFFFFFFFFFFFFn;
-const STEP = 0x9E3779B97F4A7C15n;
-const MIX1 = 0xBF58476D1CE4E5B9n;
-const MIX2 = 0x94D049BB133111EBn;
+const MASK64 = 0xffffffffffffffffn;
+const STEP = 0x9e3779b97f4a7c15n;
+const MIX1 = 0xbf58476d1ce4e5b9n;
+const MIX2 = 0x94d049bb133111ebn;
 
 export function makeRng(seed: number | bigint): Rng {
   let state = (typeof seed === 'bigint' ? seed : BigInt(seed)) & MASK64;

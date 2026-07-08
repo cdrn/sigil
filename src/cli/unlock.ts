@@ -1,8 +1,4 @@
-import {
-  broadcast,
-  isControlError,
-  type SessionResult,
-} from '../control/index.js';
+import { broadcast, isControlError, type SessionResult } from '../control/index.js';
 import type { SigilPaths } from './paths.js';
 
 export interface UnlockOpts {
@@ -43,7 +39,10 @@ export async function lock(opts: LockOpts): Promise<SessionResult[]> {
  * report how many sessions ended up in the desired state, treating
  * ALREADY_UNLOCKED as a successful unlock.
  */
-export function formatResult(action: 'unlock' | 'lock', sessions: SessionResult[]): {
+export function formatResult(
+  action: 'unlock' | 'lock',
+  sessions: SessionResult[],
+): {
   message: string;
   code: number;
 } {
@@ -56,8 +55,7 @@ export function formatResult(action: 'unlock' | 'lock', sessions: SessionResult[
     // in it was stale (reaped this run), the actionable advice is the same:
     // there's no running sigil-mcp to talk to.
     return {
-      message:
-        `sigil-mcp is not running. Start a Claude Code session (which spawns it via your MCP config) and try again.`,
+      message: `sigil-mcp is not running. Start a Claude Code session (which spawns it via your MCP config) and try again.`,
       code: 1,
     };
   }
@@ -86,7 +84,8 @@ export function formatResult(action: 'unlock' | 'lock', sessions: SessionResult[
 
     if (unlockedCount === 0) {
       const first = failed[0]?.response;
-      const detail = first && isControlError(first) ? `${first.error} (${first.code})` : 'unknown error';
+      const detail =
+        first && isControlError(first) ? `${first.error} (${first.code})` : 'unknown error';
       return { message: `sigil unlock: ${detail}`, code: 1 };
     }
 

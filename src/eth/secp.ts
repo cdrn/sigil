@@ -6,7 +6,7 @@ import { hmac } from '@noble/hashes/hmac.js';
 // caller to plug in sha256/hmac-sha256 implementations. The cast through
 // `unknown` papers over noble's stricter `Uint8Array<ArrayBuffer>` vs
 // `Uint8Array<ArrayBufferLike>` typing — semantically the functions match.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 type Hashes = typeof secp.hashes;
 (secp.hashes as Hashes).sha256 = sha256 as unknown as Hashes['sha256'];
 (secp.hashes as Hashes).hmacSha256 = ((key: Uint8Array, msg: Uint8Array) =>
@@ -35,7 +35,10 @@ export function randomSecretKey(): Buffer {
  * Signs a 32-byte digest and returns the Ethereum-shaped components.
  * The noble v3 recovered format is `recovery || r || s` (recovery is byte 0).
  */
-export function signDigest(digest: Buffer | Uint8Array, privateKey: Buffer | Uint8Array): EthSignature {
+export function signDigest(
+  digest: Buffer | Uint8Array,
+  privateKey: Buffer | Uint8Array,
+): EthSignature {
   if (digest.length !== 32) throw new Error(`digest must be 32 bytes, got ${digest.length}`);
   // prehash: false — the caller already passed a 32-byte keccak digest; noble's default is
   // sha256(message) which would double-hash. Without this, sigs verify only against sigil's own
@@ -56,10 +59,7 @@ export function signDigest(digest: Buffer | Uint8Array, privateKey: Buffer | Uin
  * Recover the 65-byte uncompressed public key (with 0x04 prefix) from a digest and signature.
  * Used in tests and address derivation from signature.
  */
-export function recoverPublicKey(
-  digest: Buffer | Uint8Array,
-  sig: EthSignature,
-): Buffer {
+export function recoverPublicKey(digest: Buffer | Uint8Array, sig: EthSignature): Buffer {
   if (digest.length !== 32) throw new Error(`digest must be 32 bytes, got ${digest.length}`);
   const sigR = new Uint8Array(65);
   sigR[0] = sig.recovery;

@@ -20,13 +20,9 @@
 export const CONTROL_SOCKET_VERSION = 1;
 
 export type ControlRequest =
-  | { method: 'unlock'; passphraseB64: string }
-  | { method: 'lock' }
-  | { method: 'status' };
+  { method: 'unlock'; passphraseB64: string } | { method: 'lock' } | { method: 'status' };
 
-export type ControlResponse =
-  | ControlSuccess
-  | ControlError;
+export type ControlResponse = ControlSuccess | ControlError;
 
 export interface ControlSuccess {
   ok: true;

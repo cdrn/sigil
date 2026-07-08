@@ -53,10 +53,7 @@ test('does not block ordinary file paths', () => {
 
 test('extra patterns are respected', () => {
   ok(isBlockedPath('/foo/secrets/db.yaml', { extraPatterns: ['**/secrets/**'] }).blocked);
-  equal(
-    isBlockedPath('/foo/public/db.yaml', { extraPatterns: ['**/secrets/**'] }).blocked,
-    false,
-  );
+  equal(isBlockedPath('/foo/public/db.yaml', { extraPatterns: ['**/secrets/**'] }).blocked, false);
 });
 
 test('matchedPattern is reported on block', () => {

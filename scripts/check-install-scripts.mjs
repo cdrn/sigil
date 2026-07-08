@@ -57,12 +57,20 @@ process.exit(1);
 
 function walk(dir) {
   let entries;
-  try { entries = readdirSync(dir); } catch { return; }
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
   for (const name of entries) {
     if (name === '.bin' || name === '.cache' || name.startsWith('.')) continue;
     const path = join(dir, name);
     let stat;
-    try { stat = statSync(path); } catch { continue; }
+    try {
+      stat = statSync(path);
+    } catch {
+      continue;
+    }
     if (!stat.isDirectory()) continue;
 
     // Scoped packages: recurse one level for child packages.
@@ -74,8 +82,11 @@ function walk(dir) {
     const pkgPath = join(path, 'package.json');
     if (existsSync(pkgPath)) {
       let pkg;
-      try { pkg = JSON.parse(readFileSync(pkgPath, 'utf8')); }
-      catch { /* malformed; ignore */ continue; }
+      try {
+        pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+      } catch {
+        /* malformed; ignore */ continue;
+      }
       const scripts = pkg.scripts ?? {};
       const hooks = HOOKS.filter((h) => typeof scripts[h] === 'string' && scripts[h].length > 0);
       if (hooks.length > 0) {

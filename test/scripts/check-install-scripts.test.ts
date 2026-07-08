@@ -20,11 +20,14 @@ function mkFixture(): string {
 function plantPkg(root: string, name: string, scripts: Record<string, string>): void {
   const pkgDir = join(root, name);
   mkdirSync(pkgDir, { recursive: true });
-  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
-    name,
-    version: '1.0.0',
-    scripts,
-  }));
+  writeFileSync(
+    join(pkgDir, 'package.json'),
+    JSON.stringify({
+      name,
+      version: '1.0.0',
+      scripts,
+    }),
+  );
 }
 
 test('checker: empty tree exits 0', () => {

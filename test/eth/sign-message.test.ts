@@ -15,10 +15,7 @@ const ADDR = '0x7e5f4552091a69125d5dfcb7b8c2659029395bdf';
 test('personalSignDigest matches the EIP-191 prefix construction for known msg', () => {
   // For empty message, digest = keccak256("\x19Ethereum Signed Message:\n0").
   const digest = personalSignDigest(Buffer.alloc(0));
-  equal(
-    digest.toString('hex'),
-    '5f35dce98ba4fba25530a026ed80b2cecdaa31091ba4958b99b52ea1d068adad',
-  );
+  equal(digest.toString('hex'), '5f35dce98ba4fba25530a026ed80b2cecdaa31091ba4958b99b52ea1d068adad');
 });
 
 test('personalSign produces a 65-byte signature (r||s||v)', () => {

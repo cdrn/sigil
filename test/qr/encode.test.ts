@@ -80,7 +80,10 @@ test('byte mode preserves case (different from alphanumeric which uppercases)', 
   let differ = false;
   for (let r = 0; r < lower.length && !differ; r++) {
     for (let c = 0; c < lower[0]!.length; c++) {
-      if (lower[r]![c] !== upper[r]![c]) { differ = true; break; }
+      if (lower[r]![c] !== upper[r]![c]) {
+        differ = true;
+        break;
+      }
     }
   }
   ok(differ, 'byte-mode encoding should be case-sensitive');
@@ -110,7 +113,10 @@ test('different inputs produce different matrices (sanity vs all-identical bug)'
   let differ = false;
   for (let r = 0; r < a.length && !differ; r++) {
     for (let c = 0; c < a.length; c++) {
-      if (a[r]![c] !== b[r]![c]) { differ = true; break; }
+      if (a[r]![c] !== b[r]![c]) {
+        differ = true;
+        break;
+      }
     }
   }
   ok(differ);

@@ -15,7 +15,9 @@ function mkTmp(): string {
 }
 
 function priv(byte: number): Buffer {
-  const p = Buffer.alloc(32); p[31] = byte; return p;
+  const p = Buffer.alloc(32);
+  p[31] = byte;
+  return p;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,10 +163,7 @@ test('loadFromDir is deterministic in order (sorted by filename)', () => {
 test('loadFromDir throws HandleLoadError on wrong passphrase', () => {
   const dir = mkTmp();
   try {
-    writeFileSync(
-      join(dir, 'evm:bot.sigil'),
-      sealKey(priv(1), Buffer.from('right'), TEST_KDF),
-    );
+    writeFileSync(join(dir, 'evm:bot.sigil'), sealKey(priv(1), Buffer.from('right'), TEST_KDF));
     const t = new HandleTable();
     throws(() => t.loadFromDir(dir, Buffer.from('wrong')), /wrong passphrase|tampered/);
     t.dispose();
@@ -193,14 +192,14 @@ test('loadFromDir on subdir of files (nested) ignores nested entries', () => {
   try {
     const passphrase = Buffer.from('p');
     mkdirSync(join(dir, 'subdir'));
-    writeFileSync(
-      join(dir, 'subdir', 'evm:nested.sigil'),
-      sealKey(priv(7), passphrase, TEST_KDF),
-    );
+    writeFileSync(join(dir, 'subdir', 'evm:nested.sigil'), sealKey(priv(7), passphrase, TEST_KDF));
     writeFileSync(join(dir, 'evm:bot.sigil'), sealKey(priv(1), passphrase, TEST_KDF));
     const t = new HandleTable();
     t.loadFromDir(dir, passphrase);
-    deepEqual(t.list().map((p) => p.handle), ['evm:bot']);
+    deepEqual(
+      t.list().map((p) => p.handle),
+      ['evm:bot'],
+    );
     t.dispose();
   } finally {
     rmSync(dir, { recursive: true });
@@ -251,10 +250,7 @@ test('loadFromDir on populated dir marks the table unlocked', () => {
 test('loadFromDir failure leaves table locked + entries zeroized', () => {
   const dir = mkTmp();
   try {
-    writeFileSync(
-      join(dir, 'evm:bot.sigil'),
-      sealKey(priv(1), Buffer.from('right'), TEST_KDF),
-    );
+    writeFileSync(join(dir, 'evm:bot.sigil'), sealKey(priv(1), Buffer.from('right'), TEST_KDF));
     const t = new HandleTable();
     throws(() => t.loadFromDir(dir, Buffer.from('wrong')), /wrong passphrase|tampered/);
     equal(t.isUnlocked(), false);

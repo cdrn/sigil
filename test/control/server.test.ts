@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sealKey } from '../../src/crypto/index.js';
@@ -12,8 +20,14 @@ import {
 } from '../../src/control/index.js';
 import { HandleTable } from '../../src/daemon/handles.js';
 
-function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
-function mkTmp(): string { return mkdtempSync(join(tmpdir(), 'sigil-control-')); }
+function priv(b: number): Buffer {
+  const p = Buffer.alloc(32);
+  p[31] = b;
+  return p;
+}
+function mkTmp(): string {
+  return mkdtempSync(join(tmpdir(), 'sigil-control-'));
+}
 const TEST_KDF = { m: 256, t: 1, p: 1 };
 
 interface H {
@@ -93,7 +107,10 @@ test('control server: unlock with wrong passphrase returns WRONG_PASSPHRASE + le
   try {
     const { mkdirSync } = await import('node:fs');
     mkdirSync(h.keysDir, { recursive: true });
-    writeFileSync(join(h.keysDir, 'evm:bot.sigil'), sealKey(priv(1), Buffer.from('right'), TEST_KDF));
+    writeFileSync(
+      join(h.keysDir, 'evm:bot.sigil'),
+      sealKey(priv(1), Buffer.from('right'), TEST_KDF),
+    );
     const resp = await controlRequest({
       socketPath: h.socketPath,
       request: { method: 'unlock', passphraseB64: Buffer.from('wrong').toString('base64') },
@@ -198,7 +215,9 @@ test('client: SERVER_DOWN when socket file does not exist', async () => {
       request: { method: 'status' },
       timeoutMs: 500,
     });
-  } catch (e) { err = e as ControlClientError; }
+  } catch (e) {
+    err = e as ControlClientError;
+  }
   ok(err instanceof ControlClientError);
   equal(err!.code, 'SERVER_DOWN');
 });
@@ -334,7 +353,9 @@ test('startControlServer: refuses to bind when another server owns the socket', 
         policyDir: join(h.dir, 'policy'),
         handles: handles2,
       });
-    } catch (e) { err = e as Error; }
+    } catch (e) {
+      err = e as Error;
+    }
     ok(err instanceof Error);
     ok(/already in use/.test(err!.message));
     handles2.dispose();

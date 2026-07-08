@@ -9,11 +9,5 @@ export {
   portalRemove,
 } from './portal.js';
 export { type StatusReport, type SessionStatus, status } from './status.js';
-export {
-  type UnlockOpts,
-  type LockOpts,
-  formatResult,
-  lock,
-  unlock,
-} from './unlock.js';
+export { type UnlockOpts, type LockOpts, formatResult, lock, unlock } from './unlock.js';
 export { type RunCliOpts, type CliExit, runCli } from './main.js';

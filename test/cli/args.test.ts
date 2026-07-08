@@ -35,16 +35,22 @@ test('parseSubcommand: no args throws ArgsError', () => {
 
 test('parseSubcommand: unknown subcommand throws ArgsError listing valid ones', () => {
   let caught: Error | null = null;
-  try { parseSubcommand(['nope'], SPECS); }
-  catch (e) { caught = e as Error; }
+  try {
+    parseSubcommand(['nope'], SPECS);
+  } catch (e) {
+    caught = e as Error;
+  }
   ok(caught instanceof ArgsError);
   ok(/add, list/.test(caught!.message));
 });
 
 test('parseSubcommand: surfaces parseArgs errors as ArgsError', () => {
   let caught: Error | null = null;
-  try { parseSubcommand(['add', '--bogus-flag'], SPECS); }
-  catch (e) { caught = e as Error; }
+  try {
+    parseSubcommand(['add', '--bogus-flag'], SPECS);
+  } catch (e) {
+    caught = e as Error;
+  }
   ok(caught instanceof ArgsError);
 });
 

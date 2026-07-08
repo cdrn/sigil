@@ -32,7 +32,9 @@ test('canonicalJSON sorts object keys lexicographically', () => {
 test('canonicalJSON is stable across insertion orders', () => {
   const a = { x: 1, y: 2, z: 3 };
   const b: Record<string, number> = {};
-  b.z = 3; b.x = 1; b.y = 2;
+  b.z = 3;
+  b.x = 1;
+  b.y = 2;
   equal(canonicalJSON(a), canonicalJSON(b));
 });
 
@@ -309,7 +311,10 @@ function fuzzEntry(rng: () => number, seq: number, prevHash: string): AuditEntry
     prev_hash: prevHash,
     kind: rngPick(rng, ['eth_sign_message', 'eth_sign_transaction', 'eth_sign_typed_data']),
     portal: 'evm:' + rngString(rng, 8).replace(/[^\w]/g, '_') || 'evm:bot',
-    payload: { nonce: rngInt(rng, 0, 1_000_000), data: rngBytes(rng, rngInt(rng, 0, 32)).toString('hex') },
+    payload: {
+      nonce: rngInt(rng, 0, 1_000_000),
+      data: rngBytes(rng, rngInt(rng, 0, 32)).toString('hex'),
+    },
     decision: rngPick(rng, ['allow', 'deny', 'confirm_required'] as const),
     ...(rngBool(rng) ? { sig: '0x' + rngBytes(rng, 65).toString('hex') } : {}),
     ...(rngBool(rng) ? { reason: rngString(rng, 40) } : {}),
@@ -352,7 +357,8 @@ test('fuzz: any tampering of a parsed field breaks verification (200 iters, seed
     const field = rngPick(rng, ['kind', 'portal', 'decision', 'ts'] as const);
     const mutated: StoredAuditEntry = { ...victim };
     if (field === 'ts') mutated.ts = victim.ts + 1;
-    else if (field === 'decision') mutated.decision = victim.decision === 'allow' ? 'deny' : 'allow';
+    else if (field === 'decision')
+      mutated.decision = victim.decision === 'allow' ? 'deny' : 'allow';
     else (mutated[field] as string) = (mutated[field] as string) + '!';
     // Re-stringify the tampered entry but keep the original hash → hash mismatch.
     const lines = sealed.map((s, j) =>
@@ -360,8 +366,15 @@ test('fuzz: any tampering of a parsed field breaks verification (200 iters, seed
     );
     const buf = Buffer.from(lines.join(''), 'utf8');
     let threw = false;
-    try { verifyChain(buf); } catch { threw = true; }
-    ok(threw, `tamper of ${field} on entry ${victimIdx} (n=${n}, iter=${i}) did not break verification`);
+    try {
+      verifyChain(buf);
+    } catch {
+      threw = true;
+    }
+    ok(
+      threw,
+      `tamper of ${field} on entry ${victimIdx} (n=${n}, iter=${i}) did not break verification`,
+    );
     succeededInBreaking++;
   }
   equal(succeededInBreaking, 200);
@@ -394,7 +407,11 @@ test('fuzz: random single-byte content flips break verification (300 iters, seed
       detected++;
     }
   }
-  equal(detected, attempted, `expected all ${attempted} flips to be detected, only ${detected} were`);
+  equal(
+    detected,
+    attempted,
+    `expected all ${attempted} flips to be detected, only ${detected} were`,
+  );
 });
 
 test('fuzz: rebuild and verify is round-trip stable (200 iters, seed=4)', () => {
@@ -405,7 +422,10 @@ test('fuzz: rebuild and verify is round-trip stable (200 iters, seed=4)', () => 
     const verified = verifyChain(buf);
     // Re-serialize from verified and compare bytes.
     const reBuf = Buffer.from(verified.map(serializeEntry).join(''), 'utf8');
-    ok(reBuf.equals(buf), `round trip drift at iter ${i}, n=${n}, sealed[0].hash=${sealed[0]!.hash.slice(0, 8)}`);
+    ok(
+      reBuf.equals(buf),
+      `round trip drift at iter ${i}, n=${n}, sealed[0].hash=${sealed[0]!.hash.slice(0, 8)}`,
+    );
   }
 });
 
@@ -448,10 +468,24 @@ test('AuditWriter appends multiple entries with linked hashes', () => {
     let now = 1_700_000_000_000;
     const w = new AuditWriter(path, { now: () => ++now });
     const e0 = w.append({ kind: 'a', portal: 'p', payload: { i: 0 }, decision: 'allow' });
-    const e1 = w.append({ kind: 'b', portal: 'p', payload: { i: 1 }, decision: 'deny', reason: 'policy' });
-    const e2 = w.append({ kind: 'c', portal: 'p', payload: { i: 2 }, decision: 'allow', sig: '0xfeed' });
+    const e1 = w.append({
+      kind: 'b',
+      portal: 'p',
+      payload: { i: 1 },
+      decision: 'deny',
+      reason: 'policy',
+    });
+    const e2 = w.append({
+      kind: 'c',
+      portal: 'p',
+      payload: { i: 2 },
+      decision: 'allow',
+      sig: '0xfeed',
+    });
     w.close();
-    equal(e0.seq, 0); equal(e1.seq, 1); equal(e2.seq, 2);
+    equal(e0.seq, 0);
+    equal(e1.seq, 1);
+    equal(e2.seq, 2);
     equal(e1.prev_hash, e0.hash);
     equal(e2.prev_hash, e1.hash);
     const verified = verifyChain(readFileSync(path));

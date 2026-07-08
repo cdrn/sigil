@@ -21,7 +21,11 @@ import {
   txDigest,
   type Eip1559Tx,
 } from '../../src/eth/index.js';
-import { parsePolicy, permissivePolicyResolver, type PolicyResolver } from '../../src/policy/index.js';
+import {
+  parsePolicy,
+  permissivePolicyResolver,
+  type PolicyResolver,
+} from '../../src/policy/index.js';
 import {
   startRpcServer,
   UpstreamRpcError,
@@ -30,7 +34,11 @@ import {
 } from '../../src/rpc/index.js';
 
 const TOKEN = 'test-token-0123456789abcdef';
-const PRIV = (() => { const b = Buffer.alloc(32); b[31] = 1; return b; })();
+const PRIV = (() => {
+  const b = Buffer.alloc(32);
+  b[31] = 1;
+  return b;
+})();
 const ADDR = addressFromPrivateKey(PRIV); // 0x7e5f...bdf
 const DEST = '0x000000000000000000000000000000000000dead';
 const GWEI = '0x3b9aca00';
@@ -78,11 +86,13 @@ interface Harness {
   cleanup: () => Promise<void>;
 }
 
-async function makeHarness(opts: {
-  policy?: PolicyResolver;
-  locked?: boolean;
-  confirm?: boolean;
-} = {}): Promise<Harness> {
+async function makeHarness(
+  opts: {
+    policy?: PolicyResolver;
+    locked?: boolean;
+    confirm?: boolean;
+  } = {},
+): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'sigil-rpc-'));
   const auditPath = join(dir, 'audit.log');
   const handles = new HandleTable();
@@ -106,7 +116,11 @@ async function makeHarness(opts: {
     port: 0,
   });
   return {
-    server, upstream, ctx, auditPath, transport,
+    server,
+    upstream,
+    ctx,
+    auditPath,
+    transport,
     cleanup: async () => {
       await server.close();
       if (ack) await ack.close();
@@ -117,7 +131,12 @@ async function makeHarness(opts: {
   };
 }
 
-type RpcResponse = { jsonrpc: string; id: unknown; result?: unknown; error?: { code: number; message: string; data?: unknown } };
+type RpcResponse = {
+  jsonrpc: string;
+  id: unknown;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+};
 
 async function rpc(
   server: RpcProxyServer,
@@ -125,19 +144,30 @@ async function rpc(
   params: unknown[] = [],
   opts: { auth?: 'bearer' | 'basic' | 'none' | 'wrong'; id?: number } = {},
 ): Promise<RpcResponse> {
-  const res = await rawPost(server, JSON.stringify({
-    jsonrpc: '2.0', id: opts.id ?? 1, method, params,
-  }), opts);
+  const res = await rawPost(
+    server,
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: opts.id ?? 1,
+      method,
+      params,
+    }),
+    opts,
+  );
   equal(res.status, 200, `expected 200, got ${res.status}: ${res.body}`);
   return JSON.parse(res.body) as RpcResponse;
 }
 
 function authHeader(auth: 'bearer' | 'basic' | 'none' | 'wrong'): Record<string, string> {
   switch (auth) {
-    case 'bearer': return { authorization: `Bearer ${TOKEN}` };
-    case 'basic': return { authorization: `Basic ${Buffer.from(`sigil:${TOKEN}`).toString('base64')}` };
-    case 'wrong': return { authorization: 'Bearer nope-nope-nope-nope' };
-    case 'none': return {};
+    case 'bearer':
+      return { authorization: `Bearer ${TOKEN}` };
+    case 'basic':
+      return { authorization: `Basic ${Buffer.from(`sigil:${TOKEN}`).toString('base64')}` };
+    case 'wrong':
+      return { authorization: 'Bearer nope-nope-nope-nope' };
+    case 'none':
+      return {};
   }
 }
 
@@ -148,24 +178,29 @@ function rawPost(
   opts: { auth?: 'bearer' | 'basic' | 'none' | 'wrong'; host?: string; method?: string } = {},
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest({
-      host: '127.0.0.1',
-      port: server.port,
-      path: '/',
-      method: opts.method ?? 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(opts.host !== undefined ? { host: opts.host } : {}),
-        ...authHeader(opts.auth ?? 'bearer'),
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: server.port,
+        path: '/',
+        method: opts.method ?? 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(opts.host !== undefined ? { host: opts.host } : {}),
+          ...authHeader(opts.auth ?? 'bearer'),
+        },
       },
-    }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (c: Buffer) => chunks.push(c));
-      res.on('end', () => resolve({
-        status: res.statusCode ?? 0,
-        body: Buffer.concat(chunks).toString('utf8'),
-      }));
-    });
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }),
+        );
+      },
+    );
     req.on('error', reject);
     req.end(body);
   });
@@ -187,11 +222,15 @@ test('rpc: requests without the token are 401 and never reach routing', async ()
   const h = await makeHarness();
   try {
     for (const auth of ['none', 'wrong'] as const) {
-      const res = await rawPost(h.server, '{"jsonrpc":"2.0","id":1,"method":"eth_accounts"}', { auth });
+      const res = await rawPost(h.server, '{"jsonrpc":"2.0","id":1,"method":"eth_accounts"}', {
+        auth,
+      });
       equal(res.status, 401);
     }
     deepEqual(h.upstream.calls, []);
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: token is accepted via Bearer and via the Basic password half', async () => {
@@ -201,36 +240,60 @@ test('rpc: token is accepted via Bearer and via the Basic password half', async 
       const res = await rpc(h.server, 'eth_accounts', [], { auth });
       deepEqual(res.result, [ADDR]);
     }
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: an unauthenticated eth_sendTransaction never reaches fill, sign, or audit', async () => {
   const h = await makeHarness();
   try {
-    const res = await rawPost(h.server, JSON.stringify({
-      jsonrpc: '2.0', id: 1, method: 'eth_sendTransaction',
-      params: [{ from: ADDR, to: DEST }],
-    }), { auth: 'none' });
+    const res = await rawPost(
+      h.server,
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_sendTransaction',
+        params: [{ from: ADDR, to: DEST }],
+      }),
+      { auth: 'none' },
+    );
     equal(res.status, 401);
     deepEqual(h.upstream.calls, [], 'no upstream call may happen pre-auth');
     equal(h.ctx.audit.head.nextSeq, 0, 'no audit entry may be written pre-auth');
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: non-loopback Host header is rejected (DNS rebinding)', async () => {
   const h = await makeHarness();
   try {
     // Straight rebinding host, and the loopback-lookalike subdomain trick.
-    for (const host of ['evil.example.com', '127.0.0.1.evil.example.com', 'localhost.evil.example.com']) {
-      const res = await rawPost(h.server, '{"jsonrpc":"2.0","id":1,"method":"eth_accounts"}', { host });
+    for (const host of [
+      'evil.example.com',
+      '127.0.0.1.evil.example.com',
+      'localhost.evil.example.com',
+    ]) {
+      const res = await rawPost(h.server, '{"jsonrpc":"2.0","id":1,"method":"eth_accounts"}', {
+        host,
+      });
       equal(res.status, 403, host);
     }
     // Loopback spellings all pass.
-    for (const host of [`127.0.0.1:${h.server.port}`, `localhost:${h.server.port}`, `[::1]:${h.server.port}`]) {
-      const okRes = await rawPost(h.server, '{"jsonrpc":"2.0","id":1,"method":"eth_accounts"}', { host });
+    for (const host of [
+      `127.0.0.1:${h.server.port}`,
+      `localhost:${h.server.port}`,
+      `[::1]:${h.server.port}`,
+    ]) {
+      const okRes = await rawPost(h.server, '{"jsonrpc":"2.0","id":1,"method":"eth_accounts"}', {
+        host,
+      });
       equal(okRes.status, 200, host);
     }
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: non-POST is 405; invalid JSON is -32700', async () => {
@@ -241,7 +304,9 @@ test('rpc: non-POST is 405; invalid JSON is -32700', async () => {
     const bad = await rawPost(h.server, 'not json');
     equal(bad.status, 200);
     equal((JSON.parse(bad.body) as RpcResponse).error!.code, -32700);
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -253,11 +318,15 @@ test('rpc: eth_accounts returns the portal address; empty while locked', async (
   try {
     deepEqual((await rpc(h.server, 'eth_accounts')).result, [ADDR]);
     deepEqual((await rpc(h.server, 'eth_requestAccounts')).result, [ADDR]);
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
   const locked = await makeHarness({ locked: true });
   try {
     deepEqual((await rpc(locked.server, 'eth_accounts')).result, []);
-  } finally { await locked.cleanup(); }
+  } finally {
+    await locked.cleanup();
+  }
 });
 
 test('rpc: unknown methods are proxied verbatim; upstream errors pass through with data', async () => {
@@ -275,7 +344,9 @@ test('rpc: unknown methods are proxied verbatim; upstream errors pass through wi
     equal(err.code, 3);
     equal(err.message, 'execution reverted');
     equal(err.data, '0x08c379a0');
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: message/typed-data signing methods are rejected, not proxied', async () => {
@@ -287,22 +358,29 @@ test('rpc: message/typed-data signing methods are rejected, not proxied', async 
       ok(/MCP tools/.test(res.error!.message), res.error!.message);
     }
     deepEqual(h.upstream.calls, []);
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: batch requests are answered per-entry with matching ids', async () => {
   const h = await makeHarness();
   try {
     h.upstream.responses.set('eth_blockNumber', '0x10');
-    const res = await rawPost(h.server, JSON.stringify([
-      { jsonrpc: '2.0', id: 7, method: 'eth_accounts', params: [] },
-      { jsonrpc: '2.0', id: 8, method: 'eth_blockNumber', params: [] },
-    ]));
+    const res = await rawPost(
+      h.server,
+      JSON.stringify([
+        { jsonrpc: '2.0', id: 7, method: 'eth_accounts', params: [] },
+        { jsonrpc: '2.0', id: 8, method: 'eth_blockNumber', params: [] },
+      ]),
+    );
     const parsed = JSON.parse(res.body) as RpcResponse[];
     equal(parsed.length, 2);
     deepEqual(parsed.find((r) => r.id === 7)!.result, [ADDR]);
     equal(parsed.find((r) => r.id === 8)!.result, '0x10');
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -324,11 +402,15 @@ test('rpc: eth_sendTransaction fills, signs, broadcasts — raw tx recovers to t
     if (!Array.isArray(decoded)) throw new Error('expected list');
     const yParityBuf = decoded[9] as Buffer;
     const txForDigest: Eip1559Tx = {
-      type: 'eip1559', chainId: 1, nonce: 0,
+      type: 'eip1559',
+      chainId: 1,
+      nonce: 0,
       maxPriorityFeePerGas: 1_000_000_000n,
-      maxFeePerGas: 3_000_000_000n,   // 2 × 1 gwei base + tip
-      gasLimit: 25_200n,              // 21000 × 1.2
-      to: DEST, value: 100n, data: '0x',
+      maxFeePerGas: 3_000_000_000n, // 2 × 1 gwei base + tip
+      gasLimit: 25_200n, // 21000 × 1.2
+      to: DEST,
+      value: 100n,
+      data: '0x',
     };
     const pub = recoverPublicKey(txDigest(txForDigest), {
       r: decoded[10] as Buffer,
@@ -345,18 +427,32 @@ test('rpc: eth_sendTransaction fills, signs, broadcasts — raw tx recovers to t
     equal(entries[0]!.portal, 'evm:bot');
     equal(entries[0]!.decision, 'allow');
     equal(entries[0]!.sig, raw);
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: eth_signTransaction returns the raw tx without broadcasting', async () => {
   const h = await makeHarness();
   try {
     const res = await rpc(h.server, 'eth_signTransaction', [
-      { from: ADDR, to: DEST, nonce: '0x0', gas: '0x5208', maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI },
+      {
+        from: ADDR,
+        to: DEST,
+        nonce: '0x0',
+        gas: '0x5208',
+        maxFeePerGas: GWEI,
+        maxPriorityFeePerGas: GWEI,
+      },
     ]);
     ok((res.result as string).startsWith('0x02'));
-    equal(h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'), false);
-  } finally { await h.cleanup(); }
+    equal(
+      h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'),
+      false,
+    );
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: from that is not the portal address is rejected before signing', async () => {
@@ -365,8 +461,13 @@ test('rpc: from that is not the portal address is rejected before signing', asyn
     const res = await rpc(h.server, 'eth_sendTransaction', [{ from: DEST, to: DEST }]);
     equal(res.error!.code, -32602);
     ok(/unknown account/.test(res.error!.message));
-    equal(h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'), false);
-  } finally { await h.cleanup(); }
+    equal(
+      h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'),
+      false,
+    );
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: signing while locked is a JSON-RPC error, not a signature', async () => {
@@ -376,7 +477,9 @@ test('rpc: signing while locked is a JSON-RPC error, not a signature', async () 
     equal(res.error!.code, -32003);
     ok(/sigil unlock/.test(res.error!.message));
     deepEqual(h.upstream.calls, []);
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -398,18 +501,30 @@ test('rpc: strict policy deny surfaces as -32001 and nothing is broadcast', asyn
   });
   try {
     const res = await rpc(h.server, 'eth_sendTransaction', [
-      { from: ADDR, to: DEST, nonce: '0x0', gas: '0x5208', maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI },
+      {
+        from: ADDR,
+        to: DEST,
+        nonce: '0x0',
+        gas: '0x5208',
+        maxFeePerGas: GWEI,
+        maxPriorityFeePerGas: GWEI,
+      },
     ]);
     equal(res.error!.code, -32001);
     ok(/not in allow_to/.test(res.error!.message));
-    equal(h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'), false);
+    equal(
+      h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'),
+      false,
+    );
 
     // Audit recorded the deny.
     h.ctx.audit.close();
     const entries = verifyChain(readFileSync(h.auditPath));
     equal(entries.length, 1);
     equal(entries[0]!.decision, 'deny');
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: policy chain check runs against the UPSTREAM chain id', async () => {
@@ -425,11 +540,20 @@ test('rpc: policy chain check runs against the UPSTREAM chain id', async () => {
   try {
     h.upstream.responses.set('eth_chainId', '0x89');
     const res = await rpc(h.server, 'eth_sendTransaction', [
-      { from: ADDR, to: DEST, nonce: '0x0', gas: '0x5208', maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI },
+      {
+        from: ADDR,
+        to: DEST,
+        nonce: '0x0',
+        gas: '0x5208',
+        maxFeePerGas: GWEI,
+        maxPriorityFeePerGas: GWEI,
+      },
     ]);
     equal(res.error!.code, -32001);
     ok(/chain 137 not in/.test(res.error!.message));
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 const DEPLOY_POLICY = `
@@ -443,7 +567,14 @@ test('rpc: confirm-gated deploy — approve tap signs and broadcasts', async () 
   const h = await makeHarness({ policy: strictResolver(DEPLOY_POLICY), confirm: true });
   try {
     const pendingRes = rpc(h.server, 'eth_sendTransaction', [
-      { from: ADDR, data: INITCODE, nonce: '0x0', gas: '0x2dc6c0', maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI },
+      {
+        from: ADDR,
+        data: INITCODE,
+        nonce: '0x0',
+        gas: '0x2dc6c0',
+        maxFeePerGas: GWEI,
+        maxPriorityFeePerGas: GWEI,
+      },
     ]);
     await waitFor(() => h.transport.captured !== undefined);
     ok(/contract creation/.test(h.transport.captured!.summary), h.transport.captured!.summary);
@@ -456,32 +587,58 @@ test('rpc: confirm-gated deploy — approve tap signs and broadcasts', async () 
     const decoded = rlpDecode(Buffer.from((broadcast.params[0] as string).slice(4), 'hex'));
     if (!Array.isArray(decoded)) throw new Error('expected list');
     equal((decoded[5] as Buffer).length, 0);
-  } finally { await h.cleanup(); }
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: confirm-gated deploy — deny tap is -32001 and nothing is broadcast', async () => {
   const h = await makeHarness({ policy: strictResolver(DEPLOY_POLICY), confirm: true });
   try {
     const pendingRes = rpc(h.server, 'eth_sendTransaction', [
-      { from: ADDR, data: INITCODE, nonce: '0x0', gas: '0x2dc6c0', maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI },
+      {
+        from: ADDR,
+        data: INITCODE,
+        nonce: '0x0',
+        gas: '0x2dc6c0',
+        maxFeePerGas: GWEI,
+        maxPriorityFeePerGas: GWEI,
+      },
     ]);
     await waitFor(() => h.transport.captured !== undefined);
     await fetch(h.transport.captured!.denyUrl, { method: 'POST' });
     const res = await pendingRes;
     equal(res.error!.code, -32001);
     ok(/confirm denied by human/.test(res.error!.message));
-    equal(h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'), false);
-  } finally { await h.cleanup(); }
+    equal(
+      h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'),
+      false,
+    );
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test('rpc: confirm-required deploy with no transport configured fails closed', async () => {
   const h = await makeHarness({ policy: strictResolver(DEPLOY_POLICY) }); // no confirm gate
   try {
     const res = await rpc(h.server, 'eth_sendTransaction', [
-      { from: ADDR, data: INITCODE, nonce: '0x0', gas: '0x2dc6c0', maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI },
+      {
+        from: ADDR,
+        data: INITCODE,
+        nonce: '0x0',
+        gas: '0x2dc6c0',
+        maxFeePerGas: GWEI,
+        maxPriorityFeePerGas: GWEI,
+      },
     ]);
     equal(res.error!.code, -32001);
     ok(/no confirm transport is configured/.test(res.error!.message));
-    equal(h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'), false);
-  } finally { await h.cleanup(); }
+    equal(
+      h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'),
+      false,
+    );
+  } finally {
+    await h.cleanup();
+  }
 });

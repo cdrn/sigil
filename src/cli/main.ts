@@ -7,7 +7,14 @@ import { parsePolicy } from '../policy/index.js';
 import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
 import { encode as encodeQr, renderTerminal } from '../qr/index.js';
-import { policyInit, portalAdd, portalAddress, portalListFromDisk, portalNew, portalRemove } from './portal.js';
+import {
+  policyInit,
+  portalAdd,
+  portalAddress,
+  portalListFromDisk,
+  portalNew,
+  portalRemove,
+} from './portal.js';
 import { rpcInit } from './rpc.js';
 import { status } from './status.js';
 import { formatResult, lock, unlock } from './unlock.js';
@@ -92,7 +99,9 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         out.write(`updated ${result.settingsPath} (hooks)\n`);
         out.write(`updated ${result.mcpConfigPath} (MCP server)\n`);
       } else {
-        out.write(`already up to date:\n  hooks: ${result.settingsPath}\n  mcp:   ${result.mcpConfigPath}\n`);
+        out.write(
+          `already up to date:\n  hooks: ${result.settingsPath}\n  mcp:   ${result.mcpConfigPath}\n`,
+        );
       }
       return { code: 0 };
     }
@@ -122,14 +131,14 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
       const sub = parseSubcommand(rest, {
         new: {
           options: {
-            'strict': { type: 'boolean' },
+            strict: { type: 'boolean' },
           },
         },
         add: {
           options: {
             'key-file': { type: 'string' },
             'no-remove-source': { type: 'boolean' },
-            'strict': { type: 'boolean' },
+            strict: { type: 'boolean' },
           },
         },
         list: { options: {} },
@@ -254,8 +263,9 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         if (!handle) throw new ArgsError('policy show: missing handle');
         const policyPath = join(paths.policyDir, `${handle}.toml`);
         let source: string;
-        try { source = readFileSync(policyPath, 'utf8'); }
-        catch (e) {
+        try {
+          source = readFileSync(policyPath, 'utf8');
+        } catch (e) {
           if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
             err.write(`policy: no file at ${policyPath}\n`);
             return { code: 1 };
@@ -263,10 +273,13 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
           throw e;
         }
         // Validate by parsing — surface schema errors as exit 1.
-        try { parsePolicy(source); }
-        catch (e) {
+        try {
+          parsePolicy(source);
+        } catch (e) {
           err.write(`policy: ${(e as Error).message}\n`);
-          err.write(`(file at ${policyPath} is on disk but doesn't parse — fix it before signing)\n`);
+          err.write(
+            `(file at ${policyPath} is on disk but doesn't parse — fix it before signing)\n`,
+          );
           return { code: 1 };
         }
         out.write(source);
@@ -278,8 +291,8 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
       const sub = parseSubcommand(rest, {
         init: {
           options: {
-            'upstream': { type: 'string' },
-            'port': { type: 'string' },
+            upstream: { type: 'string' },
+            port: { type: 'string' },
           },
         },
       });
@@ -296,7 +309,9 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         }
         const result = rpcInit(paths, handle, upstream, port);
         out.write(`${result.created ? 'wrote' : 'appended [rpc] block to'} ${result.configPath}\n`);
-        out.write(`proxy will listen on 127.0.0.1:${result.port} for portal "${result.portal}"\n\n`);
+        out.write(
+          `proxy will listen on 127.0.0.1:${result.port} for portal "${result.portal}"\n\n`,
+        );
         out.write(`endpoint (embeds the auth token — treat it like a password):\n`);
         out.write(`  ${result.authedUrl}\n\n`);
         out.write(`use with Foundry (get the sender address from "sigil portal list"):\n`);

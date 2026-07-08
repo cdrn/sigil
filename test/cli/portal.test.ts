@@ -1,20 +1,39 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, throws } from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { unsealKey } from '../../src/crypto/index.js';
 import { addressFromPrivateKey } from '../../src/eth/index.js';
 import { svmAddressFromSecret } from '../../src/svm/index.js';
 import { resolvePaths } from '../../src/cli/paths.js';
-import { policyInit, portalAdd, portalAddress, portalListFromDisk, portalNew, portalRemove } from '../../src/cli/portal.js';
+import {
+  policyInit,
+  portalAdd,
+  portalAddress,
+  portalListFromDisk,
+  portalNew,
+  portalRemove,
+} from '../../src/cli/portal.js';
 import { parsePolicy } from '../../src/policy/index.js';
 
 function mkTmpHome(): string {
   return mkdtempSync(join(tmpdir(), 'sigil-cli-portal-'));
 }
 
-function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
+function priv(b: number): Buffer {
+  const p = Buffer.alloc(32);
+  p[31] = b;
+  return p;
+}
 
 // Test-only fast KDF params so a portal add is milliseconds, not seconds.
 const TEST_KDF = { m: 256, t: 1, p: 1 };
@@ -36,7 +55,7 @@ test('portalAdd: writes encrypted keyfile and returns derived address', () => {
     // Source key was removed by default.
     equal(existsSync(srcKey), false);
     // Keyfile is 0o600.
-    equal((statSync(result.keyfilePath).mode & 0o777), 0o600);
+    equal(statSync(result.keyfilePath).mode & 0o777, 0o600);
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -98,9 +117,15 @@ test('portalAdd: rejects malformed key file', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const bad = join(home, 'bad.key');
     writeFileSync(bad, 'this is not a key');
-    throws(() => portalAdd(paths, {
-      handle: 'evm:bot', keyFile: bad, passphrase: Buffer.from('p'),
-    }), /32 raw bytes or 64 hex/);
+    throws(
+      () =>
+        portalAdd(paths, {
+          handle: 'evm:bot',
+          keyFile: bad,
+          passphrase: Buffer.from('p'),
+        }),
+      /32 raw bytes or 64 hex/,
+    );
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -112,9 +137,13 @@ test('portalAdd: rejects invalid handle', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    throws(() => portalAdd(paths, {
-      handle: 'bogus', keyFile: srcKey, passphrase: Buffer.from('p'),
-    }));
+    throws(() =>
+      portalAdd(paths, {
+        handle: 'bogus',
+        keyFile: srcKey,
+        passphrase: Buffer.from('p'),
+      }),
+    );
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -127,12 +156,21 @@ test('portalAdd: refuses to overwrite an existing portal', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     portalAdd(paths, {
-      handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), removeSource: false,
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      removeSource: false,
       kdfParams: TEST_KDF,
     });
-    throws(() => portalAdd(paths, {
-      handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'),
-    }), /already exists/);
+    throws(
+      () =>
+        portalAdd(paths, {
+          handle: 'evm:bot',
+          keyFile: srcKey,
+          passphrase: Buffer.from('p'),
+        }),
+      /already exists/,
+    );
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -145,13 +183,18 @@ test('portalAdd: stored keyfile decrypts to the original private key', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(42));
     const { keyfilePath } = portalAdd(paths, {
-      handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('hunter2'), kdfParams: TEST_KDF,
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('hunter2'),
+      kdfParams: TEST_KDF,
     });
     const blob = readFileSync(keyfilePath);
     const sb = unsealKey(blob, Buffer.from('hunter2'));
     try {
       deepEqual(Array.from(sb.bytes()), Array.from(priv(42)));
-    } finally { sb.dispose(); }
+    } finally {
+      sb.dispose();
+    }
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -176,14 +219,21 @@ test('portalListFromDisk: returns each portal with derived address, sorted', () 
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const pass = Buffer.from('p');
-    const keys: [string, number][] = [['evm:zzz', 1], ['evm:aaa', 2], ['evm:mmm', 3]];
+    const keys: [string, number][] = [
+      ['evm:zzz', 1],
+      ['evm:aaa', 2],
+      ['evm:mmm', 3],
+    ];
     for (const [handle, byte] of keys) {
       const srcKey = join(home, `src-${byte}.key`);
       writeFileSync(srcKey, priv(byte));
       portalAdd(paths, { handle, keyFile: srcKey, passphrase: pass, kdfParams: TEST_KDF });
     }
     const list = portalListFromDisk(paths, pass);
-    deepEqual(list.map((p) => p.handle), ['evm:aaa', 'evm:mmm', 'evm:zzz']);
+    deepEqual(
+      list.map((p) => p.handle),
+      ['evm:aaa', 'evm:mmm', 'evm:zzz'],
+    );
     equal(list.find((p) => p.handle === 'evm:zzz')!.address, addressFromPrivateKey(priv(1)));
     // Same secret also yields the Solana (ed25519) address.
     equal(list.find((p) => p.handle === 'evm:zzz')!.svmAddress, svmAddressFromSecret(priv(1)));
@@ -198,7 +248,12 @@ test('portalListFromDisk: throws if any keyfile fails to decrypt', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    portalAdd(paths, { handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('correct'), kdfParams: TEST_KDF });
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('correct'),
+      kdfParams: TEST_KDF,
+    });
     throws(() => portalListFromDisk(paths, Buffer.from('wrong')));
   } finally {
     rmSync(home, { recursive: true });
@@ -280,7 +335,10 @@ test('portalRemove: removes an existing portal', () => {
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
     const { keyfilePath } = portalAdd(paths, {
-      handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF,
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
     });
     const result = portalRemove(paths, 'evm:bot');
     equal(result.removed, true);
@@ -331,7 +389,7 @@ test('portalAdd: writes a permissive policy file by default', () => {
     const source = readFileSync(result.policyPath, 'utf8');
     ok(/mode = "permissive"/.test(source));
     // 0o600 because the policy describes what this key can do
-    equal((statSync(result.policyPath).mode & 0o777), 0o600);
+    equal(statSync(result.policyPath).mode & 0o777, 0o600);
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -368,12 +426,16 @@ test('portalAdd: refuses if a policy file already exists at the target path', ()
     // Pre-plant a policy file at the target path.
     mkdirSync(paths.policyDir, { recursive: true });
     writeFileSync(join(paths.policyDir, 'evm:bot.toml'), '# pre-existing');
-    throws(() => portalAdd(paths, {
-      handle: 'evm:bot',
-      keyFile: srcKey,
-      passphrase: Buffer.from('p'),
-      kdfParams: TEST_KDF,
-    }), /policy file.*already exists/);
+    throws(
+      () =>
+        portalAdd(paths, {
+          handle: 'evm:bot',
+          keyFile: srcKey,
+          passphrase: Buffer.from('p'),
+          kdfParams: TEST_KDF,
+        }),
+      /policy file.*already exists/,
+    );
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -407,7 +469,12 @@ test('policyInit: writes a permissive policy file for an existing portal', () =>
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    portalAdd(paths, { handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
     // Wipe the policy file as if it never existed (older sigil version).
     rmSync(join(paths.policyDir, 'evm:bot.toml'));
 
@@ -426,7 +493,12 @@ test('policyInit: --strict template parses and denies by default', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    portalAdd(paths, { handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
     rmSync(join(paths.policyDir, 'evm:bot.toml'));
 
     policyInit(paths, 'evm:bot', 'strict');
@@ -448,7 +520,12 @@ test('policyInit: refuses to clobber an existing policy file', () => {
     const paths = resolvePaths({ SIGIL_HOME: home });
     const srcKey = join(home, 'src.key');
     writeFileSync(srcKey, priv(1));
-    portalAdd(paths, { handle: 'evm:bot', keyFile: srcKey, passphrase: Buffer.from('p'), kdfParams: TEST_KDF });
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
     // policy file is already there from portalAdd.
     throws(() => policyInit(paths, 'evm:bot', 'permissive'), /policy already exists/);
   } finally {
@@ -558,11 +635,15 @@ test('portalNew: refuses if portal already exists', () => {
       passphrase: Buffer.from('p'),
       kdfParams: TEST_KDF,
     });
-    throws(() => portalNew(paths, {
-      handle: 'evm:bot',
-      passphrase: Buffer.from('p'),
-      kdfParams: TEST_KDF,
-    }), /portal "evm:bot" already exists/);
+    throws(
+      () =>
+        portalNew(paths, {
+          handle: 'evm:bot',
+          passphrase: Buffer.from('p'),
+          kdfParams: TEST_KDF,
+        }),
+      /portal "evm:bot" already exists/,
+    );
   } finally {
     rmSync(home, { recursive: true });
   }
@@ -572,11 +653,13 @@ test('portalNew: refuses invalid handle format', () => {
   const home = mkTmpHome();
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
-    throws(() => portalNew(paths, {
-      handle: 'no-colon',
-      passphrase: Buffer.from('p'),
-      kdfParams: TEST_KDF,
-    }));
+    throws(() =>
+      portalNew(paths, {
+        handle: 'no-colon',
+        passphrase: Buffer.from('p'),
+        kdfParams: TEST_KDF,
+      }),
+    );
   } finally {
     rmSync(home, { recursive: true });
   }

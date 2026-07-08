@@ -89,7 +89,7 @@ const svmSignMessage: Tool = {
   definition: {
     name: 'sigil_svm_sign_message',
     description:
-      'Sign an arbitrary off-chain message with the portal\'s Solana (ed25519) key — the same key whose address is `svmAddress`. The message is base64-encoded bytes. Returns the 64-byte signature as a base58 string.',
+      "Sign an arbitrary off-chain message with the portal's Solana (ed25519) key — the same key whose address is `svmAddress`. The message is base64-encoded bytes. Returns the 64-byte signature as a base58 string.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -107,12 +107,15 @@ const svmSignTransaction: Tool = {
   definition: {
     name: 'sigil_svm_sign_transaction',
     description:
-      'Sign a Solana transaction message with the portal\'s ed25519 key. Pass the SERIALIZED transaction message (the bytes between the signature array and that you build with your Solana SDK, e.g. message.serialize()) as base64. sigil ed25519-signs those exact bytes and returns the signature as base58 — assemble it into the transaction yourself. Policy decodes native SOL transfers to gate destination/amount; anything it can\'t decode offline is routed to out-of-band confirm. Supports legacy and v0 messages.',
+      "Sign a Solana transaction message with the portal's ed25519 key. Pass the SERIALIZED transaction message (the bytes between the signature array and that you build with your Solana SDK, e.g. message.serialize()) as base64. sigil ed25519-signs those exact bytes and returns the signature as base58 — assemble it into the transaction yourself. Policy decodes native SOL transfers to gate destination/amount; anything it can't decode offline is routed to out-of-band confirm. Supports legacy and v0 messages.",
     inputSchema: {
       type: 'object',
       properties: {
         portal: { type: 'string', description: 'Portal handle.' },
-        message: { type: 'string', description: 'base64 of the serialized Solana transaction message.' },
+        message: {
+          type: 'string',
+          description: 'base64 of the serialized Solana transaction message.',
+        },
       },
       required: ['portal', 'message'],
       additionalProperties: false,
@@ -155,7 +158,11 @@ export class ToolError extends Error {
  * not-found method) into `ToolError` with the same code, so the original
  * error semantics flow through to the MCP client unchanged.
  */
-async function callMethod(methodName: string, args: unknown, ctx: MethodContext): Promise<ToolResult> {
+async function callMethod(
+  methodName: string,
+  args: unknown,
+  ctx: MethodContext,
+): Promise<ToolResult> {
   try {
     const result = await dispatch(methodName, args, ctx);
     return textResult(result);

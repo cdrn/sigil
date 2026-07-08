@@ -8,16 +8,27 @@ import { decodeTx, parseMessage } from '../../src/svm/transaction.js';
 // Used to drive the parser; an explicit byte-vector anchor below guards against
 // the builder and parser sharing a bug.
 
-function key(n: number): Uint8Array { const k = new Uint8Array(32); k.fill(n); return k; }
+function key(n: number): Uint8Array {
+  const k = new Uint8Array(32);
+  k.fill(n);
+  return k;
+}
 const SYSTEM = new Uint8Array(32); // all zeros
 
-interface Ix { programIdIndex: number; accounts: number[]; data: Uint8Array }
+interface Ix {
+  programIdIndex: number;
+  accounts: number[];
+  data: Uint8Array;
+}
 
 function transferIx(programIdIndex: number, from: number, to: number, lamports: bigint): Ix {
   const data = new Uint8Array(12);
   data[0] = 2; // System Transfer discriminant (u32 LE)
   let v = lamports;
-  for (let i = 0; i < 8; i++) { data[4 + i] = Number(v & 0xffn); v >>= 8n; }
+  for (let i = 0; i < 8; i++) {
+    data[4 + i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
   return { programIdIndex, accounts: [from, to], data };
 }
 
@@ -99,8 +110,12 @@ test('decodeTx: a System instruction that is not Transfer is not decoded', () =>
   const accounts = [key(1), key(2), SYSTEM];
   // discriminant 0 (CreateAccount) with 12 bytes — recognized System program
   // but not a Transfer, so it must NOT be auto-decoded.
-  const data = new Uint8Array(12); data[0] = 0;
-  const msg = buildMessage({ accounts, instructions: [{ programIdIndex: 2, accounts: [0, 1], data }] });
+  const data = new Uint8Array(12);
+  data[0] = 0;
+  const msg = buildMessage({
+    accounts,
+    instructions: [{ programIdIndex: 2, accounts: [0, 1], data }],
+  });
   const d = decodeTx(msg);
   equal(d.allDecoded, false);
   equal(d.transfers.length, 0);
@@ -109,7 +124,9 @@ test('decodeTx: a System instruction that is not Transfer is not decoded', () =>
 test('decodeTx: v0 message with a transfer decodes; ALT-referenced accounts do not', () => {
   const accounts = [key(1), key(2), SYSTEM];
   // A transfer over static accounts in a v0 message → decodes.
-  const ok0 = decodeTx(buildMessage({ version: 0, accounts, instructions: [transferIx(2, 0, 1, 42n)] }));
+  const ok0 = decodeTx(
+    buildMessage({ version: 0, accounts, instructions: [transferIx(2, 0, 1, 42n)] }),
+  );
   equal(ok0.allDecoded, true);
   equal(ok0.transfers[0]!.lamports, 42n);
 
@@ -138,14 +155,32 @@ test('parseMessage: rejects truncated and trailing-byte messages', () => {
 test('decodeTx: explicit byte-vector anchor (independent of the builder)', () => {
   // Hand-assembled legacy transfer of 1 lamport from key(1) to key(2):
   const bytes = Uint8Array.from([
-    1, 0, 1,                    // header
-    3,                          // 3 account keys
-    ...key(1), ...key(2), ...SYSTEM,
-    ...key(9),                  // blockhash
-    1,                          // 1 instruction
-    2,                          // programIdIndex -> system
-    2, 0, 1,                    // 2 accounts: [0,1]
-    12, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, // data: Transfer + 1 lamport LE
+    1,
+    0,
+    1, // header
+    3, // 3 account keys
+    ...key(1),
+    ...key(2),
+    ...SYSTEM,
+    ...key(9), // blockhash
+    1, // 1 instruction
+    2, // programIdIndex -> system
+    2,
+    0,
+    1, // 2 accounts: [0,1]
+    12,
+    2,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0, // data: Transfer + 1 lamport LE
   ]);
   const d = decodeTx(bytes);
   equal(d.allDecoded, true);

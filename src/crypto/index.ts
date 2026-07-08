@@ -3,13 +3,7 @@ export {
   SecretBufferDisposedError,
   SecretBufferSerializeError,
 } from './secret-buffer.js';
-export {
-  DEFAULT_KDF_PARAMS,
-  SALT_LEN,
-  DERIVED_KEY_LEN,
-  deriveKey,
-  type KdfParams,
-} from './kdf.js';
+export { DEFAULT_KDF_PARAMS, SALT_LEN, DERIVED_KEY_LEN, deriveKey, type KdfParams } from './kdf.js';
 export {
   AEAD_KEY_LEN,
   AEAD_NONCE_LEN,

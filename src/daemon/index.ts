@@ -1,8 +1,4 @@
-export {
-  type PortalInfo,
-  HandleLoadError,
-  HandleTable,
-} from './handles.js';
+export { type PortalInfo, HandleLoadError, HandleTable } from './handles.js';
 export {
   type MethodContext,
   type MethodHandler,

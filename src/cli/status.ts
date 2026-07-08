@@ -1,9 +1,5 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import {
-  broadcast,
-  isControlError,
-  type PortalSummary,
-} from '../control/index.js';
+import { broadcast, isControlError, type PortalSummary } from '../control/index.js';
 import type { SigilPaths } from './paths.js';
 
 export interface SessionStatus {

@@ -37,7 +37,9 @@ function strict(over: Partial<Omit<Policy, 'mode'>> = {}): Policy {
     allowContractCreation: false,
     allowMessageSigning: false,
     allowTypedData: false,
-    allowSvmMessageSigning: false, svmAllowTo: [], svmMaxLamports: 0n,
+    allowSvmMessageSigning: false,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
     ...over,
   };
 }
@@ -67,10 +69,16 @@ function confirmSummary(d: PolicyDecision): string {
 test('permissive mode allows transactions, messages, typed data', () => {
   const p: Policy = {
     mode: 'permissive',
-    chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    chainIds: [],
+    allowTo: [],
+    maxValueWei: 0n,
+    allowedSelectors: [],
     allowContractCreation: true,
-    allowMessageSigning: false, allowTypedData: false,
-    allowSvmMessageSigning: false, svmAllowTo: [], svmMaxLamports: 0n,
+    allowMessageSigning: false,
+    allowTypedData: false,
+    allowSvmMessageSigning: false,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
   };
   ok(isAllow(evaluate(txReq(tx()), p)));
   ok(isAllow(evaluate({ kind: 'message', messageBytes: Buffer.from('hi') }, p)));
@@ -95,10 +103,7 @@ test('strict tx: allows on-allowlist chain', () => {
 // ---------------------------------------------------------------------------
 
 test('strict tx: rejects to outside allow_to', () => {
-  const r = evaluate(
-    txReq(tx({ to: '0x1111111111111111111111111111111111111111' })),
-    strict(),
-  );
+  const r = evaluate(txReq(tx({ to: '0x1111111111111111111111111111111111111111' })), strict());
   ok(/not in allow_to/.test(denyReason(r)));
 });
 
@@ -189,10 +194,14 @@ test('strict tx: deploy summary includes the ETH value', () => {
 });
 
 test('strict tx: destination match is case-insensitive', () => {
-  ok(isAllow(evaluate(
-    txReq(tx({ to: '0x000000000000000000000000000000000000DEAD' })),
-    strict({ allowTo: [DEAD] }),
-  )));
+  ok(
+    isAllow(
+      evaluate(
+        txReq(tx({ to: '0x000000000000000000000000000000000000DEAD' })),
+        strict({ allowTo: [DEAD] }),
+      ),
+    ),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -200,10 +209,14 @@ test('strict tx: destination match is case-insensitive', () => {
 // ---------------------------------------------------------------------------
 
 test('strict tx: allows value at the exact cap', () => {
-  ok(isAllow(evaluate(
-    txReq(tx({ value: 1_000_000_000_000_000n })),
-    strict({ maxValueWei: 1_000_000_000_000_000n }),
-  )));
+  ok(
+    isAllow(
+      evaluate(
+        txReq(tx({ value: 1_000_000_000_000_000n })),
+        strict({ maxValueWei: 1_000_000_000_000_000n }),
+      ),
+    ),
+  );
 });
 
 test('strict tx: rejects value exactly 1 wei over the cap', () => {
@@ -220,13 +233,19 @@ test('strict tx: max_value_wei = 0 forbids any nonzero value', () => {
 });
 
 test('strict tx: max_value_wei = 0 allows pure data calls with value=0 (if selector allowed)', () => {
-  ok(isAllow(evaluate(
-    txReq(tx({
-      value: 0n,
-      data: '0xa9059cbb000000000000000000000000000000000000000000000000000000000000beef0000000000000000000000000000000000000000000000000000000000000001',
-    })),
-    strict({ maxValueWei: 0n, allowedSelectors: ['0xa9059cbb'] }),
-  )));
+  ok(
+    isAllow(
+      evaluate(
+        txReq(
+          tx({
+            value: 0n,
+            data: '0xa9059cbb000000000000000000000000000000000000000000000000000000000000beef0000000000000000000000000000000000000000000000000000000000000001',
+          }),
+        ),
+        strict({ maxValueWei: 0n, allowedSelectors: ['0xa9059cbb'] }),
+      ),
+    ),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -234,32 +253,27 @@ test('strict tx: max_value_wei = 0 allows pure data calls with value=0 (if selec
 // ---------------------------------------------------------------------------
 
 test('strict tx: pure ETH send (no data) is OK regardless of selector list', () => {
-  ok(isAllow(evaluate(
-    txReq(tx({ data: '0x' })),
-    strict({ allowedSelectors: [] }),
-  )));
+  ok(isAllow(evaluate(txReq(tx({ data: '0x' })), strict({ allowedSelectors: [] }))));
 });
 
 test('strict tx: empty allowed_selectors blocks any tx with calldata', () => {
-  const r = evaluate(
-    txReq(tx({ data: '0xa9059cbb00000000' })),
-    strict({ allowedSelectors: [] }),
-  );
+  const r = evaluate(txReq(tx({ data: '0xa9059cbb00000000' })), strict({ allowedSelectors: [] }));
   ok(/not in allowed_selectors/.test(denyReason(r)));
 });
 
 test('strict tx: selector match is case-insensitive', () => {
-  ok(isAllow(evaluate(
-    txReq(tx({ data: '0xA9059CBB00000000' })),
-    strict({ allowedSelectors: ['0xa9059cbb'] }),
-  )));
+  ok(
+    isAllow(
+      evaluate(
+        txReq(tx({ data: '0xA9059CBB00000000' })),
+        strict({ allowedSelectors: ['0xa9059cbb'] }),
+      ),
+    ),
+  );
 });
 
 test('strict tx: malformed calldata (too short for selector) is denied', () => {
-  const r = evaluate(
-    txReq(tx({ data: '0xab' })),
-    strict({ allowedSelectors: ['0xa9059cbb'] }),
-  );
+  const r = evaluate(txReq(tx({ data: '0xab' })), strict({ allowedSelectors: ['0xa9059cbb'] }));
   equal(r.kind, 'deny');
 });
 
@@ -273,10 +287,14 @@ test('strict mode + allow_message_signing=false denies personal_sign', () => {
 });
 
 test('strict mode + allow_message_signing=true allows personal_sign', () => {
-  ok(isAllow(evaluate(
-    { kind: 'message', messageBytes: Buffer.from('login') },
-    strict({ allowMessageSigning: true }),
-  )));
+  ok(
+    isAllow(
+      evaluate(
+        { kind: 'message', messageBytes: Buffer.from('login') },
+        strict({ allowMessageSigning: true }),
+      ),
+    ),
+  );
 });
 
 test('strict mode + allow_typed_data=false denies EIP-712', () => {
@@ -285,10 +303,14 @@ test('strict mode + allow_typed_data=false denies EIP-712', () => {
 });
 
 test('strict mode + allow_typed_data=true allows EIP-712', () => {
-  ok(isAllow(evaluate(
-    { kind: 'typed_data', typedData: {} as TypedData },
-    strict({ allowTypedData: true }),
-  )));
+  ok(
+    isAllow(
+      evaluate(
+        { kind: 'typed_data', typedData: {} as TypedData },
+        strict({ allowTypedData: true }),
+      ),
+    ),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -318,10 +340,16 @@ test('confirm: strict-mode static deny fires BEFORE confirm gate', () => {
 test('confirm: permissive mode honours the confirm threshold', () => {
   const p: Policy = {
     mode: 'permissive',
-    chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    chainIds: [],
+    allowTo: [],
+    maxValueWei: 0n,
+    allowedSelectors: [],
     allowContractCreation: true,
-    allowMessageSigning: true, allowTypedData: true,
-    allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
+    allowMessageSigning: true,
+    allowTypedData: true,
+    allowSvmMessageSigning: true,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
     requireConfirmAboveWei: 500n,
   };
   const r = evaluate(txReq(tx({ value: 1_000n })), p);
@@ -331,10 +359,16 @@ test('confirm: permissive mode honours the confirm threshold', () => {
 test('confirm: permissive mode without threshold → allow', () => {
   const p: Policy = {
     mode: 'permissive',
-    chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    chainIds: [],
+    allowTo: [],
+    maxValueWei: 0n,
+    allowedSelectors: [],
     allowContractCreation: true,
-    allowMessageSigning: true, allowTypedData: true,
-    allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
+    allowMessageSigning: true,
+    allowTypedData: true,
+    allowSvmMessageSigning: true,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
   };
   ok(isAllow(evaluate(txReq(tx({ value: 999_999n })), p)));
 });
@@ -342,10 +376,16 @@ test('confirm: permissive mode without threshold → allow', () => {
 test('confirm: contract creation summary names "contract creation"', () => {
   const p: Policy = {
     mode: 'permissive',
-    chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    chainIds: [],
+    allowTo: [],
+    maxValueWei: 0n,
+    allowedSelectors: [],
     allowContractCreation: true,
-    allowMessageSigning: true, allowTypedData: true,
-    allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
+    allowMessageSigning: true,
+    allowTypedData: true,
+    allowSvmMessageSigning: true,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ to: null, value: 1n, data: '0x6080604052' })), p);
@@ -357,10 +397,16 @@ test('confirm: contract creation summary names "contract creation"', () => {
 test('confirm: message/typed_data do not trigger confirm gate (deferred)', () => {
   const p: Policy = {
     mode: 'permissive',
-    chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    chainIds: [],
+    allowTo: [],
+    maxValueWei: 0n,
+    allowedSelectors: [],
     allowContractCreation: true,
-    allowMessageSigning: true, allowTypedData: true,
-    allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
+    allowMessageSigning: true,
+    allowTypedData: true,
+    allowSvmMessageSigning: true,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
     requireConfirmAboveWei: 0n,
   };
   ok(isAllow(evaluate({ kind: 'message', messageBytes: Buffer.from('hi') }, p)));
@@ -370,10 +416,16 @@ test('confirm: message/typed_data do not trigger confirm gate (deferred)', () =>
 test('confirm: summary renders 0.5 ETH cleanly', () => {
   const p: Policy = {
     mode: 'permissive',
-    chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    chainIds: [],
+    allowTo: [],
+    maxValueWei: 0n,
+    allowedSelectors: [],
     allowContractCreation: true,
-    allowMessageSigning: true, allowTypedData: true,
-    allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
+    allowMessageSigning: true,
+    allowTypedData: true,
+    allowSvmMessageSigning: true,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ value: 500_000_000_000_000_000n })), p);
@@ -383,10 +435,16 @@ test('confirm: summary renders 0.5 ETH cleanly', () => {
 test('confirm: summary renders whole-ETH amounts without a decimal', () => {
   const p: Policy = {
     mode: 'permissive',
-    chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
+    chainIds: [],
+    allowTo: [],
+    maxValueWei: 0n,
+    allowedSelectors: [],
     allowContractCreation: true,
-    allowMessageSigning: true, allowTypedData: true,
-    allowSvmMessageSigning: true, svmAllowTo: [], svmMaxLamports: 0n,
+    allowMessageSigning: true,
+    allowTypedData: true,
+    allowSvmMessageSigning: true,
+    svmAllowTo: [],
+    svmMaxLamports: 0n,
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ value: 1_000_000_000_000_000_000n })), p);

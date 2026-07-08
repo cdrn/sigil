@@ -55,7 +55,9 @@ export function canonicalJSON(value: unknown): string {
   }
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).filter((k) => obj[k] !== undefined).sort();
+    const keys = Object.keys(obj)
+      .filter((k) => obj[k] !== undefined)
+      .sort();
     return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalJSON(obj[k])).join(',') + '}';
   }
   throw new Error(`canonicalJSON: unsupported value type ${typeof value}`);
@@ -149,7 +151,9 @@ export function verifyChain(buf: Buffer | string): StoredAuditEntry[] {
   // Well-formed JSONL ends with a newline, so split yields a trailing empty string.
   const last = lines[lines.length - 1];
   if (last !== '') {
-    throw new AuditChainError(`torn write: trailing fragment of ${last!.length} bytes without newline`);
+    throw new AuditChainError(
+      `torn write: trailing fragment of ${last!.length} bytes without newline`,
+    );
   }
   lines.pop();
 

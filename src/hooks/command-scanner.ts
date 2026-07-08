@@ -21,8 +21,14 @@ import { isBlockedPath, type BlockerOpts, type BlockDecision } from './path-bloc
 const COMMAND_SEPARATORS = /[;&|]|\$\(|`/;
 
 const ALWAYS_BLOCK_COMMAND_PATTERNS: readonly { regex: RegExp; reason: string }[] = Object.freeze([
-  { regex: /\bgpg\b[^|;]*--export-secret-keys?/i, reason: 'gpg --export-secret-keys reads private GPG key material' },
-  { regex: /\bssh-keygen\b[^|;]*-y\b/i, reason: 'ssh-keygen -y reads a private SSH key to derive the public key' },
+  {
+    regex: /\bgpg\b[^|;]*--export-secret-keys?/i,
+    reason: 'gpg --export-secret-keys reads private GPG key material',
+  },
+  {
+    regex: /\bssh-keygen\b[^|;]*-y\b/i,
+    reason: 'ssh-keygen -y reads a private SSH key to derive the public key',
+  },
   { regex: /\bopenssl\b[^|;]*(pkey|rsa|ec)\b[^|;]*-(in|noout)/i, reason: 'openssl key dump' },
 ]);
 
@@ -38,24 +44,57 @@ const ALWAYS_BLOCK_COMMAND_PATTERNS: readonly { regex: RegExp; reason: string }[
  */
 const READER_COMMANDS: ReadonlySet<string> = new Set([
   // bulk file readers
-  'cat', 'bat', 'tac', 'nl',
+  'cat',
+  'bat',
+  'tac',
+  'nl',
   // paged / streamed readers
-  'less', 'more', 'head', 'tail',
+  'less',
+  'more',
+  'head',
+  'tail',
   // editors (a deliberate open is a read)
-  'vi', 'vim', 'view', 'nvim', 'nano', 'emacs', 'code', 'subl', 'open',
+  'vi',
+  'vim',
+  'view',
+  'nvim',
+  'nano',
+  'emacs',
+  'code',
+  'subl',
+  'open',
   // binary inspectors
-  'xxd', 'od', 'hexdump', 'strings', 'file',
+  'xxd',
+  'od',
+  'hexdump',
+  'strings',
+  'file',
   // searchers that print matches from files
-  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'sift',
+  'grep',
+  'egrep',
+  'fgrep',
+  'rg',
+  'ag',
+  'ack',
+  'sift',
   // stream filters that can take a path arg and print contents
-  'tee', 'tr', 'sed', 'awk',
+  'tee',
+  'tr',
+  'sed',
+  'awk',
   // compressed-content dumpers
-  'zcat', 'bzcat', 'xzcat', 'gunzip',
+  'zcat',
+  'bzcat',
+  'xzcat',
+  'gunzip',
   // walks the tree; `-exec <reader>` is a trivial bypass otherwise
   'find',
 ]);
 
-export function scanBashCommand(command: string, opts: BlockerOpts = {}): BlockDecision & { reason?: string } {
+export function scanBashCommand(
+  command: string,
+  opts: BlockerOpts = {},
+): BlockDecision & { reason?: string } {
   // 1. Always-block patterns — shape-based, fire regardless of classification.
   for (const { regex, reason } of ALWAYS_BLOCK_COMMAND_PATTERNS) {
     if (regex.test(command)) {

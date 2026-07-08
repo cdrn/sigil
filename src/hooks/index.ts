@@ -5,11 +5,7 @@ export {
   isBlockedPath,
 } from './path-blocker.js';
 export { scanBashCommand } from './command-scanner.js';
-export {
-  type RedactionStat,
-  type RedactionResult,
-  redact,
-} from './redactor.js';
+export { type RedactionStat, type RedactionResult, redact } from './redactor.js';
 export {
   type HookEnvelope,
   type BlockDecision,

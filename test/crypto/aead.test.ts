@@ -9,8 +9,12 @@ import {
   aeadEncrypt,
 } from '../../src/crypto/aead.js';
 
-function freshKey() { return randomBytes(AEAD_KEY_LEN); }
-function freshNonce() { return randomBytes(AEAD_NONCE_LEN); }
+function freshKey() {
+  return randomBytes(AEAD_KEY_LEN);
+}
+function freshNonce() {
+  return randomBytes(AEAD_NONCE_LEN);
+}
 
 test('round trip', () => {
   const key = freshKey();
@@ -68,9 +72,15 @@ test('omitted AAD on decrypt fails if encrypt provided one', () => {
 });
 
 test('rejects wrong-length key', () => {
-  throws(() => aeadEncrypt(Buffer.alloc(16), freshNonce(), Buffer.alloc(0)), /key must be 32 bytes/);
+  throws(
+    () => aeadEncrypt(Buffer.alloc(16), freshNonce(), Buffer.alloc(0)),
+    /key must be 32 bytes/,
+  );
 });
 
 test('rejects wrong-length nonce', () => {
-  throws(() => aeadEncrypt(freshKey(), Buffer.alloc(12), Buffer.alloc(0)), /nonce must be 24 bytes/);
+  throws(
+    () => aeadEncrypt(freshKey(), Buffer.alloc(12), Buffer.alloc(0)),
+    /nonce must be 24 bytes/,
+  );
 });

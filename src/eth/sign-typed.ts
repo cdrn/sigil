@@ -48,7 +48,11 @@ function bigToBuf(n: number | bigint, bytes: number): Buffer {
  * Collect all dependencies of a struct type, transitively, sorted alphabetically
  * with the primary type first.
  */
-function findDependencies(primaryType: string, types: TypedDataTypes, deps: Set<string> = new Set()): Set<string> {
+function findDependencies(
+  primaryType: string,
+  types: TypedDataTypes,
+  deps: Set<string> = new Set(),
+): Set<string> {
   if (deps.has(primaryType)) return deps;
   const fields = types[primaryType];
   if (!fields) return deps;
@@ -129,7 +133,11 @@ function encodeValue(type: string, value: unknown, types: TypedDataTypes): Buffe
   throw new Error(`unsupported type ${type}`);
 }
 
-export function hashStruct(primaryType: string, data: Record<string, unknown>, types: TypedDataTypes): Buffer {
+export function hashStruct(
+  primaryType: string,
+  data: Record<string, unknown>,
+  types: TypedDataTypes,
+): Buffer {
   const fields = types[primaryType];
   if (!fields) throw new Error(`type ${primaryType} not defined`);
   const encoded = [typeHash(primaryType, types)];
@@ -148,11 +156,16 @@ export function typedDataDigest(td: TypedData): Buffer {
   if (td.domain.name !== undefined) domainFields.push({ name: 'name', type: 'string' });
   if (td.domain.version !== undefined) domainFields.push({ name: 'version', type: 'string' });
   if (td.domain.chainId !== undefined) domainFields.push({ name: 'chainId', type: 'uint256' });
-  if (td.domain.verifyingContract !== undefined) domainFields.push({ name: 'verifyingContract', type: 'address' });
+  if (td.domain.verifyingContract !== undefined)
+    domainFields.push({ name: 'verifyingContract', type: 'address' });
   if (td.domain.salt !== undefined) domainFields.push({ name: 'salt', type: 'bytes32' });
 
   const typesWithDomain: TypedDataTypes = { ...td.types, EIP712Domain: domainFields };
-  const domainHash = hashStruct('EIP712Domain', td.domain as unknown as Record<string, unknown>, typesWithDomain);
+  const domainHash = hashStruct(
+    'EIP712Domain',
+    td.domain as unknown as Record<string, unknown>,
+    typesWithDomain,
+  );
   const messageHash = hashStruct(td.primaryType, td.message, td.types);
   return keccak256(Buffer.concat([Buffer.from([0x19, 0x01]), domainHash, messageHash]));
 }

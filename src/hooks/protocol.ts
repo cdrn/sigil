@@ -42,16 +42,18 @@ export interface PostToolModification {
  * Read the entire stdin stream and parse it as JSON. Returns an empty
  * object if stdin closes without data.
  */
-export async function readHookEnvelope(stdin: NodeJS.ReadableStream = process.stdin): Promise<HookEnvelope> {
+export async function readHookEnvelope(
+  stdin: NodeJS.ReadableStream = process.stdin,
+): Promise<HookEnvelope> {
   const chunks: Buffer[] = [];
   for await (const c of stdin) {
-    chunks.push(typeof c === 'string' ? Buffer.from(c, 'utf8') : c as Buffer);
+    chunks.push(typeof c === 'string' ? Buffer.from(c, 'utf8') : (c as Buffer));
   }
   const text = Buffer.concat(chunks).toString('utf8').trim();
   if (text.length === 0) return {};
   try {
     return JSON.parse(text) as HookEnvelope;
   } catch (err) {
-    throw new Error(`hook stdin was not valid JSON: ${(err as Error).message}`);
+    throw new Error(`hook stdin was not valid JSON: ${(err as Error).message}`, { cause: err });
   }
 }

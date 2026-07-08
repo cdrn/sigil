@@ -56,10 +56,7 @@ test('parseConfig: confirm.timeout_ms parses', () => {
 });
 
 test('parseConfig: missing ntfy.topic → error', () => {
-  throws(
-    () => parseConfig(`[confirm.ntfy]\nserver = "https://x"`),
-    /topic is required/,
-  );
+  throws(() => parseConfig(`[confirm.ntfy]\nserver = "https://x"`), /topic is required/);
 });
 
 test('parseConfig: ntfy.topic must be a string', () => {
@@ -70,16 +67,22 @@ test('parseConfig: ntfy.topic must be a string', () => {
 });
 
 test('parseConfig: ntfy.server must be a string if set', () => {
-  throws(
-    () => parseConfig(`[confirm.ntfy]\ntopic = "t"\nserver = 42`),
-    /server must be a string/,
-  );
+  throws(() => parseConfig(`[confirm.ntfy]\ntopic = "t"\nserver = 42`), /server must be a string/);
 });
 
 test('parseConfig: timeout_ms must be a positive integer', () => {
-  throws(() => parseConfig(`[confirm]\ntimeout_ms = -1\n[confirm.ntfy]\ntopic="t"`), /positive integer/);
-  throws(() => parseConfig(`[confirm]\ntimeout_ms = 0\n[confirm.ntfy]\ntopic="t"`), /positive integer/);
-  throws(() => parseConfig(`[confirm]\ntimeout_ms = "60s"\n[confirm.ntfy]\ntopic="t"`), /positive integer/);
+  throws(
+    () => parseConfig(`[confirm]\ntimeout_ms = -1\n[confirm.ntfy]\ntopic="t"`),
+    /positive integer/,
+  );
+  throws(
+    () => parseConfig(`[confirm]\ntimeout_ms = 0\n[confirm.ntfy]\ntopic="t"`),
+    /positive integer/,
+  );
+  throws(
+    () => parseConfig(`[confirm]\ntimeout_ms = "60s"\n[confirm.ntfy]\ntopic="t"`),
+    /positive integer/,
+  );
 });
 
 test('parseConfig: invalid TOML → SigilConfigError', () => {
@@ -161,11 +164,15 @@ test('parseConfig: [rpc] token shorter than 16 chars is rejected', () => {
 
 test('parseConfig: [rpc] upstream must be an http(s) URL', () => {
   throws(
-    () => parseConfig(`[rpc]\nportal = "evm:bot"\nupstream = "not a url"\ntoken = "0123456789abcdef"`),
+    () =>
+      parseConfig(`[rpc]\nportal = "evm:bot"\nupstream = "not a url"\ntoken = "0123456789abcdef"`),
     /not a valid URL/,
   );
   throws(
-    () => parseConfig(`[rpc]\nportal = "evm:bot"\nupstream = "ws://x.example"\ntoken = "0123456789abcdef"`),
+    () =>
+      parseConfig(
+        `[rpc]\nportal = "evm:bot"\nupstream = "ws://x.example"\ntoken = "0123456789abcdef"`,
+      ),
     /must be http/,
   );
 });
@@ -206,10 +213,7 @@ test('anyPolicyRequiresConfirm: one policy sets confirm → true', () => {
   const dir = tmp();
   try {
     writeFileSync(join(dir, 'evm:a.toml'), `mode = "permissive"`);
-    writeFileSync(
-      join(dir, 'evm:b.toml'),
-      `mode = "permissive"\nrequire_confirm_above_wei = "1"`,
-    );
+    writeFileSync(join(dir, 'evm:b.toml'), `mode = "permissive"\nrequire_confirm_above_wei = "1"`);
     equal(anyPolicyRequiresConfirm(dir), true);
   } finally {
     rmSync(dir, { recursive: true });
@@ -283,10 +287,7 @@ test('enforce: policy needs confirm + transport configured → ok', () => {
   const dir = tmp();
   try {
     writeFileSync(join(dir, 'a.toml'), `mode = "permissive"\nrequire_confirm_above_wei = "1"`);
-    enforceConfirmTransportPresence(
-      { confirm: { ntfy: { topic: 't' } } },
-      dir,
-    );
+    enforceConfirmTransportPresence({ confirm: { ntfy: { topic: 't' } } }, dir);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -297,8 +298,11 @@ test('enforce: policy needs confirm + no transport → throws with steering mess
   try {
     writeFileSync(join(dir, 'a.toml'), `mode = "permissive"\nrequire_confirm_above_wei = "1"`);
     let err: SigilConfigError | null = null;
-    try { enforceConfirmTransportPresence({}, dir); }
-    catch (e) { err = e as SigilConfigError; }
+    try {
+      enforceConfirmTransportPresence({}, dir);
+    } catch (e) {
+      err = e as SigilConfigError;
+    }
     ok(err instanceof SigilConfigError);
     ok(/require_confirm_above_wei/.test(err!.message));
     ok(/confirm\.ntfy/.test(err!.message));

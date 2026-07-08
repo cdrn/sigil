@@ -1,14 +1,11 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, throws } from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import {
-  getPublicKeyUncompressed,
-  recoverPublicKey,
-  signDigest,
-} from '../../src/eth/secp.js';
+import { getPublicKeyUncompressed, recoverPublicKey, signDigest } from '../../src/eth/secp.js';
 
 test('signDigest produces deterministic output (RFC 6979)', () => {
-  const priv = Buffer.alloc(32); priv[31] = 1;
+  const priv = Buffer.alloc(32);
+  priv[31] = 1;
   const digest = Buffer.alloc(32, 7);
   const a = signDigest(digest, priv);
   const b = signDigest(digest, priv);
@@ -18,12 +15,14 @@ test('signDigest produces deterministic output (RFC 6979)', () => {
 });
 
 test('signDigest rejects wrong-length digest', () => {
-  const priv = Buffer.alloc(32); priv[31] = 1;
+  const priv = Buffer.alloc(32);
+  priv[31] = 1;
   throws(() => signDigest(Buffer.alloc(16), priv), /digest must be 32 bytes/);
 });
 
 test('signDigest returns recovery in {0,1}', () => {
-  const priv = Buffer.alloc(32); priv[31] = 1;
+  const priv = Buffer.alloc(32);
+  priv[31] = 1;
   for (let i = 0; i < 8; i++) {
     const digest = randomBytes(32);
     const sig = signDigest(digest, priv);
@@ -34,7 +33,8 @@ test('signDigest returns recovery in {0,1}', () => {
 });
 
 test('recoverPublicKey returns the original 65-byte uncompressed pubkey', () => {
-  const priv = Buffer.alloc(32); priv[31] = 1;
+  const priv = Buffer.alloc(32);
+  priv[31] = 1;
   const pub = getPublicKeyUncompressed(priv);
   const digest = Buffer.alloc(32, 42);
   const sig = signDigest(digest, priv);
@@ -45,7 +45,8 @@ test('recoverPublicKey returns the original 65-byte uncompressed pubkey', () => 
 });
 
 test('getPublicKeyUncompressed has the 0x04 prefix', () => {
-  const priv = Buffer.alloc(32); priv[31] = 1;
+  const priv = Buffer.alloc(32);
+  priv[31] = 1;
   const pub = getPublicKeyUncompressed(priv);
   equal(pub.length, 65);
   equal(pub[0], 0x04);
