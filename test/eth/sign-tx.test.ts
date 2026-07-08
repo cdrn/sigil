@@ -3,7 +3,7 @@ import { equal, ok } from 'node:assert/strict';
 import { type Eip1559Tx, type LegacyTx, signTransaction, txDigest } from '../../src/eth/sign-tx.js';
 import { rlpDecode } from '../../src/eth/rlp.js';
 import { addressFromPublicKey } from '../../src/eth/address.js';
-import { recoverPublicKey } from '../../src/eth/secp.js';
+import { recoverPublicKey, signDigest } from '../../src/eth/secp.js';
 
 const PRIV = Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex');
 const ADDR = '0x7e5f4552091a69125d5dfcb7b8c2659029395bdf';
@@ -158,6 +158,57 @@ test('legacy contract-creation tx (to=null) is supported', () => {
     r: bufFromDecoded(rBuf),
     s: bufFromDecoded(sBuf),
     recovery,
+  });
+  equal(addressFromPublicKey(pub), ADDR);
+});
+
+// Regression: r and s arrive as fixed 32-byte buffers, but RLP integer fields must be minimal
+// big-endian. When a component's high byte is 0x00 (~1/256 of signatures), emitting the raw 32
+// bytes is a non-canonical integer and every Ethereum node rejects the tx with
+// "rlp: non-canonical integer (leading zero bytes) ... DynamicFeeTx.R". We search nonces (RFC-6979
+// signing is deterministic) for a real leading-zero case, then assert the serialized tx strips it.
+test('serialized r/s are canonical when a signature component has a leading zero byte', () => {
+  const base = {
+    type: 'eip1559' as const,
+    chainId: 11155111,
+    maxPriorityFeePerGas: 1n,
+    maxFeePerGas: 1n,
+    gasLimit: 21000n,
+    to: '0x000000000000000000000000000000000000dead' as const,
+    value: 0n,
+    data: '0x' as const,
+  };
+  let target = -1;
+  for (let nonce = 0; nonce < 3000; nonce++) {
+    const sig = signDigest(txDigest({ ...base, nonce }), PRIV);
+    if (sig.r[0] === 0 || sig.s[0] === 0) {
+      target = nonce;
+      break;
+    }
+  }
+  ok(target >= 0, 'expected a signature with a leading zero byte within 3000 nonces');
+
+  const signed = signTransaction({ ...base, nonce: target }, PRIV);
+  const decoded = rlpDecode(hexToBuf(signed).subarray(1));
+  if (!Array.isArray(decoded)) throw new Error('expected list');
+  const rBuf = bufFromDecoded(decoded[10]);
+  const sBuf = bufFromDecoded(decoded[11]);
+  ok(
+    rBuf.length === 0 || rBuf[0] !== 0,
+    `r must be canonical (no leading zero), got ${rBuf.toString('hex')}`,
+  );
+  ok(
+    sBuf.length === 0 || sBuf[0] !== 0,
+    `s must be canonical (no leading zero), got ${sBuf.toString('hex')}`,
+  );
+  // And it must still recover to the signer once r/s are left-padded back to 32 bytes (what a node
+  // does before ecrecover) — i.e. stripping for RLP didn't lose information.
+  const pad32 = (b: Buffer): Buffer => Buffer.concat([Buffer.alloc(32 - b.length), b]);
+  const yParity = bufFromDecoded(decoded[9]).length === 0 ? 0 : bufFromDecoded(decoded[9])[0]!;
+  const pub = recoverPublicKey(txDigest({ ...base, nonce: target }), {
+    r: pad32(rBuf),
+    s: pad32(sBuf),
+    recovery: yParity as 0 | 1,
   });
   equal(addressFromPublicKey(pub), ADDR);
 });
