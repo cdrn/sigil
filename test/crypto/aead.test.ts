@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { deepEqual, throws } from 'node:assert/strict';
+import { deepEqual, equal, throws } from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import {
   AEAD_KEY_LEN,
@@ -15,6 +15,23 @@ function freshKey() {
 function freshNonce() {
   return randomBytes(AEAD_NONCE_LEN);
 }
+
+test('xchacha20poly1305 output is pinned across dependency upgrades (keyfile compatibility)', () => {
+  // Known-answer vector computed with @noble/ciphers 1.3.0. If this fails
+  // after a dependency bump, DO NOT update the expected value — a changed
+  // cipher output means every keyfile already on disk becomes undecryptable.
+  // The round-trip tests below can't catch that: they seal and open with the
+  // same library version.
+  const key = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i));
+  const nonce = Buffer.from(Uint8Array.from({ length: 24 }, (_, i) => 100 + i));
+  const plaintext = Buffer.from('sigil keyfile compatibility vector', 'utf8');
+  const V1_CT =
+    '0f1a9ed9930ee2e7fe56f453c34fdea636cb33058d4ea3dce5211d875d3b1b64c4743363cbb68ce825fc150bb5cdef1ffdb3';
+  const ct = aeadEncrypt(key, nonce, plaintext);
+  equal(Buffer.from(ct).toString('hex'), V1_CT);
+  const pt = aeadDecrypt(key, nonce, Buffer.from(V1_CT, 'hex'));
+  deepEqual(Buffer.from(pt), plaintext);
+});
 
 test('round trip', () => {
   const key = freshKey();
