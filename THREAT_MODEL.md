@@ -122,4 +122,4 @@ Given the 2026 npm threat landscape, a compromised release of `sigil` would be c
 
 ## Reporting issues
 
-Security issues: open a GitHub security advisory on the repo. Please do not file public issues for vulnerabilities.
+See [SECURITY.md](./SECURITY.md) for how to report a vulnerability privately. In short: use GitHub's [private vulnerability reporting](https://github.com/cdrn/sigil/security/advisories/new) — please don't file public issues for vulnerabilities, and use canary values (never real keys) in reproductions.

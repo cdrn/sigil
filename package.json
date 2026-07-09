@@ -41,6 +41,7 @@
     "dist/src/**/*",
     "README.md",
     "THREAT_MODEL.md",
+    "SECURITY.md",
     "CONTRIBUTING.md",
     "LICENSE"
   ],
