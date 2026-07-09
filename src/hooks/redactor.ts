@@ -4,9 +4,20 @@
  * the blocker missed, or coaxed a key out of an API), redact it before it
  * reaches the model's context.
  *
+ * This layer, not the path blocker, is what protects mixed-content files
+ * like `.env`: we deliberately let the agent READ them (blocking every
+ * `.env` would break ordinary work and give false assurance — secrets live
+ * in many places), and instead strip the dangerous *values* out of the
+ * output. So `cat .env` returns with PORT / DATABASE_URL intact and
+ * PRIVATE_KEY / MNEMONIC redacted.
+ *
  * The rules are deliberately strict — false positives are tolerable
- * (redacted noise in tool output is annoying; an exfiltrated key is fatal).
+ * (redacted noise in tool output is annoying; an exfiltrated key is fatal) —
+ * except the mnemonic pass, which is checksum-validated precisely because a
+ * loose "N words" rule would shred normal prose.
  */
+
+import { redactMnemonics } from './bip39.js';
 
 export interface RedactionStat {
   reason: string;
@@ -21,6 +32,12 @@ export interface RedactionResult {
 interface Rule {
   reason: string;
   regex: RegExp;
+  /**
+   * Replacement template when the rule redacts only part of the match (uses
+   * `$1` etc. capture groups). When omitted, the entire match is replaced
+   * with the `<REDACTED:reason>` placeholder.
+   */
+  replacement?: string;
 }
 
 const RULES: readonly Rule[] = Object.freeze([
@@ -70,15 +87,38 @@ const RULES: readonly Rule[] = Object.freeze([
     reason: 'aws-access-key-id',
     regex: /\bAKIA[0-9A-Z]{16}\b/g,
   },
+  // Signing-secret assignments (`.env`, YAML, shell export). Redacts the
+  // VALUE, keeps the name, so the agent still sees that the var exists. Scoped
+  // to key/mnemonic/seed names — the crown jewels for a signing tool — rather
+  // than every SECRET/TOKEN/PASSWORD, to stay off ordinary config the agent
+  // legitimately needs while debugging. Anchored per-line (m flag).
+  {
+    reason: 'env-secret',
+    regex:
+      /^([ \t]*(?:export[ \t]+)?[A-Za-z0-9_]*(?:PRIVATE_?KEY|MNEMONIC|SEED_?PHRASE|SECRET_?KEY)[A-Za-z0-9_]*[ \t]*[=:][ \t]*)(?:"[^"]*"|'[^']*'|.+)$/gim,
+    replacement: '$1<REDACTED:env-secret>',
+  },
 ]);
 
 export function redact(text: string): RedactionResult {
   const counts = new Map<string, number>();
   let out = text;
+
+  // Checksum-validated seed phrases first: a mnemonic is plain lowercase
+  // words, so running it before the shape rules avoids any interaction, and
+  // its placeholder contains no wordlist words for later rules to touch.
+  const mnemonic = redactMnemonics(out, '<REDACTED:mnemonic>');
+  if (mnemonic.count > 0) {
+    counts.set('mnemonic', mnemonic.count);
+    out = mnemonic.text;
+  }
+
   for (const rule of RULES) {
-    out = out.replace(rule.regex, () => {
+    out = out.replace(rule.regex, (...args) => {
       counts.set(rule.reason, (counts.get(rule.reason) ?? 0) + 1);
-      return `<REDACTED:${rule.reason}>`;
+      if (rule.replacement === undefined) return `<REDACTED:${rule.reason}>`;
+      // Expand $1..$9 in the replacement template from the capture groups.
+      return rule.replacement.replace(/\$(\d)/g, (_m, d: string) => args[Number(d)] ?? '');
     });
   }
   const redactions: RedactionStat[] = [];

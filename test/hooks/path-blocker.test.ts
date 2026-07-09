@@ -1,7 +1,31 @@
 import { test } from 'node:test';
-import { equal, ok } from 'node:assert/strict';
+import { deepEqual, equal, ok } from 'node:assert/strict';
 import { homedir } from 'node:os';
-import { isBlockedPath } from '../../src/hooks/path-blocker.js';
+import { DEFAULT_PATH_PATTERNS, isBlockedPath } from '../../src/hooks/path-blocker.js';
+
+// Pin the exact built-in set. This is the source of truth THREAT_MODEL.md
+// describes in prose; if you change the blocker, update this AND the doc in
+// the same commit — the two silently diverging is precisely the bug this
+// test exists to prevent (a documented block that isn't implemented is worse
+// than no claim, because users rely on it).
+test('DEFAULT_PATH_PATTERNS is exactly the documented whole-file key-store set', () => {
+  deepEqual(
+    [...DEFAULT_PATH_PATTERNS],
+    [
+      '**/.sigil/**',
+      '**/*.key',
+      '**/*.keystore',
+      '**/*.jks',
+      '**/*.p12',
+      '**/.ssh/id_*',
+      '**/.ssh/*_rsa',
+      '**/.ssh/*_ed25519',
+      '**/.ssh/*_ecdsa',
+      '**/.gnupg/**',
+      '**/.password-store/**',
+    ],
+  );
+});
 
 test('blocks ~/.sigil/**', () => {
   const d = isBlockedPath(`${homedir()}/.sigil/keys/evm:bot.sigil`);

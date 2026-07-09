@@ -77,3 +77,67 @@ test('leaves text untouched when nothing matches', () => {
   equal(r.text, text);
   equal(r.redactions.length, 0);
 });
+
+// --- BIP-39 seed phrases (checksum-validated) -----------------------------
+
+test('redacts a valid BIP-39 seed phrase', () => {
+  const phrase =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+  const r = redact(`recovery: ${phrase}`);
+  ok(r.text.includes('<REDACTED:mnemonic>'));
+  equal(r.text.includes('abandon'), false);
+  equal(r.redactions.find((s) => s.reason === 'mnemonic')?.count, 1);
+});
+
+test('does NOT redact ordinary prose as a mnemonic (checksum guards false positives)', () => {
+  const text = 'the quick brown fox jumps over the lazy dog while we abandon the plan about noon';
+  const r = redact(text);
+  equal(
+    r.redactions.find((s) => s.reason === 'mnemonic'),
+    undefined,
+  );
+});
+
+// --- secret-named env assignments (value redacted, name kept) --------------
+
+test('redacts the value of a PRIVATE_KEY= assignment, keeping the name', () => {
+  const r = redact('PRIVATE_KEY=super-secret-not-hex-shaped-value');
+  ok(r.text.includes('PRIVATE_KEY=<REDACTED:env-secret>'));
+  equal(r.text.includes('super-secret'), false);
+});
+
+test('redacts MNEMONIC= and SEED_PHRASE= and export SECRET_KEY=', () => {
+  const env = [
+    'MNEMONIC="some words here"',
+    "SEED_PHRASE='more words'",
+    'export SECRET_KEY=abcdef',
+  ].join('\n');
+  const r = redact(env);
+  equal(r.text.match(/<REDACTED:env-secret>/g)?.length, 3);
+  equal(r.text.includes('some words here'), false);
+  equal(r.text.includes('abcdef'), false);
+});
+
+test('reading a .env leaves non-secret values intact and strips secret ones', () => {
+  // The deliberate design: the path blocker does NOT block .env, so the agent
+  // can read it; the redactor removes only the dangerous values.
+  const env = [
+    'PORT=3000',
+    'DATABASE_URL=postgres://localhost/db',
+    'PRIVATE_KEY=0x' + 'a'.repeat(64),
+    'API_TIMEOUT=30',
+  ].join('\n');
+  const r = redact(env);
+  ok(r.text.includes('PORT=3000'));
+  ok(r.text.includes('DATABASE_URL=postgres://localhost/db'));
+  ok(r.text.includes('API_TIMEOUT=30'));
+  ok(r.text.includes('PRIVATE_KEY=<REDACTED:'));
+  equal(r.text.includes('a'.repeat(64)), false);
+});
+
+test('does NOT redact ordinary config assignments', () => {
+  const env = 'PORT=3000\nLOG_LEVEL=debug\nAPI_URL=https://example.com';
+  const r = redact(env);
+  equal(r.text, env);
+  equal(r.redactions.length, 0);
+});
