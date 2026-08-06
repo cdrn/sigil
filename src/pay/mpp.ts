@@ -159,6 +159,12 @@ export function tempoCandidate(
     return { skip: 'missing or malformed recipient' };
   }
   const md = req.methodDetails ?? {};
+  // feePayer defaults to false, meaning the client must pick a TIP-20 fee
+  // token and fund its own gas. We only build sponsored envelopes (sigil has
+  // no chain reader to price gas or check a fee-token balance), so an
+  // unsponsored challenge is skipped rather than signed into a form a
+  // compliant server would reject.
+  if (md.feePayer !== true) return { skip: 'server does not sponsor fees (feePayer is not true)' };
   if (md.splits && md.splits.length > 0) return { skip: 'split payments unsupported' };
   if (md.supportedModes && !md.supportedModes.includes('pull')) {
     return { skip: 'server does not support pull mode' };

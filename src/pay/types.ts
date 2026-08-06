@@ -33,6 +33,16 @@ export interface PaymentReceipt {
 export interface PayOutcome {
   status: number;
   paid: boolean;
+  /**
+   * What is known about the money:
+   *   'none'     — no payment was attempted (the resource wasn't 402).
+   *   'settled'  — credential sent, server answered 2xx.
+   *   'rejected' — server answered 402 again; the credential was refused.
+   *   'unknown'  — the credential is on the wire and may have settled, but
+   *                the response was an error or never arrived. Do NOT retry
+   *                blind: a fresh authorization could double-spend.
+   */
+  settlement: 'none' | 'settled' | 'rejected' | 'unknown';
   candidate?: PaymentCandidate;
   receipt?: PaymentReceipt;
   /** First 2 KiB of the response body. */

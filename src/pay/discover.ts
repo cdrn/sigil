@@ -1,3 +1,4 @@
+import { readCapped } from './client.js';
 import type { FetchLike } from './types.js';
 
 /**
@@ -35,13 +36,21 @@ function clip(v: unknown): string | undefined {
   return v.length > MAX_FIELD_CHARS ? v.slice(0, MAX_FIELD_CHARS) + '…' : v;
 }
 
+/** Registries are third-party; cap what they can make us buffer and parse. */
+const MAX_REGISTRY_BYTES = 2 * 1024 * 1024;
+
 async function fetchJson(fetchImpl: FetchLike, url: string): Promise<unknown> {
   const res = await fetchImpl(url, {
     headers: { accept: 'application/json' },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`registry ${url} answered ${res.status}`);
-  return (await res.json()) as unknown;
+  const text = await readCapped(res, MAX_REGISTRY_BYTES);
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`registry ${url} returned malformed or oversized JSON`);
+  }
 }
 
 function asArray(doc: unknown, ...keys: string[]): unknown[] {

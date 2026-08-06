@@ -13,6 +13,7 @@ import {
   type TypedData,
 } from '../eth/index.js';
 import {
+  CandidateRejected,
   discover,
   type FetchLike,
   pay,
@@ -406,6 +407,12 @@ const sigil_pay: MethodHandler = async (params, ctx) => {
   const fetchImpl = ctx.fetchImpl ?? (globalThis.fetch as FetchLike);
   const now = ctx.now ?? Date.now;
 
+  // Pre-flight: bound the tool to allowlisted hosts before any bytes leave
+  // the machine, so it can't be used as a general-purpose HTTP deputy.
+  const authorizeOrigin = async (origin: string): Promise<void> => {
+    gatePolicy(ctx, portal, 'pay', { url, origin }, { kind: 'payment_origin', origin });
+  };
+
   const authorize = async (candidate: PaymentCandidate): Promise<void> => {
     const facts = {
       origin: candidate.origin,
@@ -416,12 +423,42 @@ const sigil_pay: MethodHandler = async (params, ctx) => {
       amount: candidate.amount.toString(),
       recipient: candidate.recipient,
     };
-    const gate = gatePolicy(ctx, portal, 'pay', { url, payment: facts }, {
-      kind: 'payment', payment: candidate,
-    });
+    // A static policy deny only rules out THIS candidate — wrap it so the
+    // client may try the next one the server offered.
+    let gate;
+    try {
+      gate = gatePolicy(ctx, portal, 'pay', { url, payment: facts }, {
+        kind: 'payment', payment: candidate,
+      });
+    } catch (err) {
+      throw new CandidateRejected(err);
+    }
+    // A confirm outcome is a human decision. It is NOT wrapped: a denial or
+    // timeout aborts the whole purchase rather than falling through to a
+    // cheaper candidate the same server offered.
     if (gate.proceed === 'confirm') {
       await runConfirmGate(ctx, portal, 'pay', { url, payment: facts }, gate.summary);
     }
+  };
+
+  const onCredentialReleased = (candidate: PaymentCandidate): void => {
+    // The spend authorization is on the wire. Record it before we know the
+    // outcome, so a dropped response still leaves forensic evidence that
+    // money may have moved.
+    ctx.audit.append({
+      kind: 'pay_credential_released',
+      portal,
+      payload: {
+        url,
+        origin: candidate.origin,
+        protocol: candidate.protocol,
+        chainId: candidate.chainId,
+        currency: candidate.currency,
+        amount: candidate.amount.toString(),
+        recipient: candidate.recipient,
+      },
+      decision: 'allow',
+    });
   };
 
   let outcome;
@@ -433,9 +470,13 @@ const sigil_pay: MethodHandler = async (params, ctx) => {
         ...(body !== undefined ? { body } : {}),
         ...(contentType !== undefined ? { contentType } : {}),
       },
-      { fetchImpl, now, authorize, privateKey: priv },
+      { fetchImpl, now, authorizeOrigin, authorize, onCredentialReleased, privateKey: priv },
     );
   } catch (err) {
+    if (err instanceof CandidateRejected) {
+      // Every candidate was refused by policy; surface the underlying deny.
+      throw err.cause;
+    }
     if (err instanceof RpcMethodError) throw err;
     if (err instanceof PayError) {
       throw new RpcMethodError(RPC_INVALID_PAYLOAD, `pay: ${err.message}`);
@@ -458,6 +499,7 @@ const sigil_pay: MethodHandler = async (params, ctx) => {
           recipient: outcome.candidate.recipient,
         },
         status: outcome.status,
+        settlement: outcome.settlement,
         ...(outcome.receipt?.reference !== undefined
           ? { reference: outcome.receipt.reference }
           : {}),
@@ -469,6 +511,7 @@ const sigil_pay: MethodHandler = async (params, ctx) => {
   return {
     status: outcome.status,
     paid: outcome.paid,
+    settlement: outcome.settlement,
     ...(outcome.candidate
       ? {
           payment: {

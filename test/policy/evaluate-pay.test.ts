@@ -35,6 +35,7 @@ function strict(over: Partial<Omit<Policy, 'mode'>> = {}): Policy {
     payOrigins: ['https://api.test'],
     payMaxAmount: 100_000n,
     payCurrencies: [TOKEN],
+    payRecipients: [],
     ...over,
   };
 }
@@ -98,6 +99,34 @@ test('strict payment: default pay_max_amount of 0 denies all payments', () => {
   ok(reason.includes('pay_max_amount'));
 });
 
+test('strict payment: recipient outside pay_recipients denied', () => {
+  const reason = denyReason(
+    evaluate(payReq(candidate()), strict({ payRecipients: ['0x' + 'aa'.repeat(20)] })),
+  );
+  ok(reason.includes('pay_recipients'));
+});
+
+test('strict payment: pinned recipient allowed, case-insensitively', () => {
+  const decision = evaluate(
+    payReq(candidate()),
+    strict({ payRecipients: ['0xab782182720864538e26bc424460d96ff364f94c'] }),
+  );
+  equal(decision.kind, 'allow');
+});
+
+test('payment_origin pre-flight: denies before any request, allows listed origins', () => {
+  const p = strict();
+  equal(evaluate({ kind: 'payment_origin', origin: 'https://api.test' }, p).kind, 'allow');
+  const reason = denyReason(evaluate({ kind: 'payment_origin', origin: 'https://evil.test' }, p));
+  ok(reason.includes('pay_origins'));
+  // Empty allowlist denies everything, matching the full payment evaluation.
+  ok(
+    denyReason(
+      evaluate({ kind: 'payment_origin', origin: 'https://api.test' }, strict({ payOrigins: [] })),
+    ).includes('pay_origins'),
+  );
+});
+
 test('confirm threshold triggers in both modes', () => {
   const strictDecision = evaluate(
     payReq(candidate({ amount: 50_000n })),
@@ -108,7 +137,7 @@ test('confirm threshold triggers in both modes', () => {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: true, allowTypedData: true,
-    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [], payRecipients: [],
     payRequireConfirmAbove: 10_000n,
   };
   const permissiveDecision = evaluate(payReq(candidate({ amount: 50_000n })), permissive);
@@ -123,7 +152,7 @@ test('permissive mode allows payments without pay fields set', () => {
     mode: 'permissive',
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: true, allowTypedData: true,
-    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [], payRecipients: [],
   };
   equal(evaluate(payReq(candidate()), permissive).kind, 'allow');
 });

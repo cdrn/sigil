@@ -85,11 +85,13 @@ test('ntfy: sets Priority: high so the push bypasses quiet hours', async () => {
   equal(calls[0]!.headers['Priority'], 'high');
 });
 
-test('ntfy: Click header points at the approve URL (one-tap approve from body)', async () => {
+test('ntfy: no Click header — tapping the notification body must not approve', async () => {
   const { fetch, calls } = captureFetch();
   const r = req({ approveUrl: 'http://127.0.0.1:9/a?t=xx' });
   await new NtfyTransport({ topic: 't' }, fetch).send(r);
-  equal(calls[0]!.headers['Click'], 'http://127.0.0.1:9/a?t=xx');
+  equal(calls[0]!.headers['Click'], undefined);
+  // The approve URL is still reachable, but only via the explicit button.
+  ok(calls[0]!.headers['Actions']!.includes('http://127.0.0.1:9/a?t=xx'));
 });
 
 test('ntfy: Actions header carries both Approve and Deny POST buttons', async () => {
@@ -143,6 +145,6 @@ test('ntfy: snapshot the exact header set we emit', async () => {
   await new NtfyTransport({ topic: 't' }, fetch).send(req());
   deepEqual(
     Object.keys(calls[0]!.headers).sort(),
-    ['Actions', 'Click', 'Content-Type', 'Priority', 'Title'],
+    ['Actions', 'Content-Type', 'Priority', 'Title'],
   );
 });

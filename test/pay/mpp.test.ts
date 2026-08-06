@@ -57,8 +57,13 @@ test('tempoCandidate skips what it cannot pay, with reasons', () => {
     [{ amount: '0' }, 'tempo', 'zero-amount'],
     [{ recipient: undefined }, 'tempo', 'recipient'],
     [{ currency: 'usd' }, 'tempo', 'token address'],
-    [{ methodDetails: { splits: [{ recipient: RECIPIENT, amount: '1' }] } }, 'tempo', 'split'],
-    [{ methodDetails: { supportedModes: ['push'] } }, 'tempo', 'pull'],
+    [
+      { methodDetails: { feePayer: true, splits: [{ recipient: RECIPIENT, amount: '1' }] } },
+      'tempo',
+      'split',
+    ],
+    [{ methodDetails: { feePayer: true, supportedModes: ['push'] } }, 'tempo', 'pull'],
+    [{ methodDetails: { chainId: 42431 } }, 'tempo', 'sponsor'],
   ];
   for (const [over, method, expect] of cases) {
     const [ch] = parseMppChallenges([

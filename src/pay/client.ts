@@ -31,6 +31,23 @@ export class PayError extends Error {
   }
 }
 
+/**
+ * Wrapper the authorize gate uses to say "this candidate is not payable, but
+ * you may try the next one". ONLY static policy denials qualify. A human
+ * confirm that was denied, timed out, or whose transport failed must NOT be
+ * wrapped: those propagate raw and end the purchase, otherwise a malicious
+ * server could list an expensive option first and a cheap sub-threshold one
+ * second, and a human tapping Deny would silently buy the second.
+ */
+export class CandidateRejected extends Error {
+  override readonly cause: unknown;
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'CandidateRejected';
+    this.cause = cause;
+  }
+}
+
 export interface PayRequest {
   url: string;
   method: string;
@@ -42,12 +59,24 @@ export interface PayDeps {
   fetchImpl: FetchLike;
   now: () => number;
   /**
-   * Policy + confirm gate, supplied by the daemon layer. Throws to refuse
-   * (the throw propagates unchanged, so RPC_POLICY_DENIED semantics and the
-   * audit trail stay where they live today). Called once per attempted
-   * candidate, in server-preference order, until one is authorized.
+   * Origin gate, consulted BEFORE the first request goes out. Without it,
+   * sigil_pay would be a general-purpose HTTP deputy: a prompt-injected
+   * agent could POST to any host (or to loopback services) and read the
+   * response, entirely outside the payment allowlist. Throws to refuse.
+   */
+  authorizeOrigin: (origin: string) => Promise<void>;
+  /**
+   * Policy + confirm gate for a specific parsed candidate. Throws to refuse:
+   * wrap the throw in CandidateRejected to allow falling through to the next
+   * candidate, throw raw to abort the whole purchase.
    */
   authorize: (candidate: PaymentCandidate) => Promise<void>;
+  /**
+   * Called after a signed credential has been put on the wire but before the
+   * outcome is known. The spend authorization has escaped at this point, so
+   * it must be recorded even if the response never arrives.
+   */
+  onCredentialReleased?: (candidate: PaymentCandidate) => void;
   privateKey: Buffer | Uint8Array;
 }
 
@@ -55,9 +84,36 @@ const BODY_PREVIEW_BYTES = 2048;
 const MAX_BODY_BYTES = 256 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-async function readBody(res: Response): Promise<string> {
-  const text = await res.text();
-  return text.length > MAX_BODY_BYTES ? text.slice(0, MAX_BODY_BYTES) : text;
+/**
+ * Read at most MAX_BODY_BYTES, enforcing the cap while streaming rather than
+ * after buffering. `res.text()` would let a hostile endpoint hand a
+ * long-lived signing process an arbitrarily large body before we ever got to
+ * truncate it.
+ */
+export async function readCapped(res: Response, maxBytes = MAX_BODY_BYTES): Promise<string> {
+  const body = res.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const remaining = maxBytes - total;
+      if (value.length >= remaining) {
+        chunks.push(value.subarray(0, remaining));
+        total = maxBytes;
+        break;
+      }
+      chunks.push(value);
+      total += value.length;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c)), total).toString('utf8');
 }
 
 function preview(text: string): string {
@@ -98,13 +154,22 @@ export async function pay(req: PayRequest, deps: PayDeps): Promise<PayOutcome> {
   }
   const origin = url.origin;
 
+  // Origin gate first: no bytes leave the machine until policy says this
+  // host is payable. Otherwise the tool doubles as an SSRF primitive.
+  await deps.authorizeOrigin(origin);
+
   const first = await deps.fetchImpl(req.url, requestInit(req, {}));
-  const firstBody = await readBody(first);
+  const firstBody = await readCapped(first);
   if (first.status >= 300 && first.status < 400) {
     throw new PayError(`refusing to follow redirect (${first.status}) from ${origin}`);
   }
   if (first.status !== 402) {
-    return { status: first.status, paid: false, bodyPreview: preview(firstBody) };
+    return {
+      status: first.status,
+      paid: false,
+      settlement: 'none',
+      bodyPreview: preview(firstBody),
+    };
   }
 
   const nowMs = deps.now();
@@ -157,8 +222,9 @@ export async function pay(req: PayRequest, deps: PayDeps): Promise<PayOutcome> {
   }
 
   // Server preference order; the first candidate the policy allows wins.
-  // authorize() throws on deny — only the LAST deny propagates if every
-  // candidate is refused, which is the specific error the user can act on.
+  // Only CandidateRejected (a static policy deny) falls through to the next
+  // option — a confirm denial/timeout propagates immediately so a human's
+  // "no" can never be routed around by a cheaper second candidate.
   let chosen: Payable | undefined;
   let lastDeny: unknown;
   for (const payable of payables) {
@@ -167,14 +233,30 @@ export async function pay(req: PayRequest, deps: PayDeps): Promise<PayOutcome> {
       chosen = payable;
       break;
     } catch (err) {
-      lastDeny = err;
+      if (!(err instanceof CandidateRejected)) throw err;
+      lastDeny = err.cause;
     }
   }
   if (!chosen) throw lastDeny;
 
   const { headerName, headerValue } = chosen.build();
-  const second = await deps.fetchImpl(req.url, requestInit(req, { [headerName]: headerValue }));
-  const secondBody = await readBody(second);
+  // From here the spend authorization is on the wire and may settle even if
+  // we never see the response. Record that before awaiting.
+  deps.onCredentialReleased?.(chosen.candidate);
+
+  let second: Response;
+  let secondBody: string;
+  try {
+    second = await deps.fetchImpl(req.url, requestInit(req, { [headerName]: headerValue }));
+    secondBody = await readCapped(second);
+  } catch (err) {
+    // The credential is out there. The server may well have settled it, so
+    // this is "unknown", not "unpaid" — retrying blind would double-spend.
+    throw new PayError(
+      `payment credential was sent to ${origin} but the response never arrived ` +
+        `(${(err as Error).message}) — settlement is UNKNOWN, check the audit log before retrying`,
+    );
+  }
 
   const receipt =
     chosen.kind === 'mpp'
@@ -183,9 +265,19 @@ export async function pay(req: PayRequest, deps: PayDeps): Promise<PayOutcome> {
           second.headers.get('payment-response') ?? second.headers.get('x-payment-response'),
         );
 
+  // 2xx only. A 3xx carries no settlement evidence, and 4xx/5xx after the
+  // credential left is ambiguous rather than safe.
+  const paid = second.status >= 200 && second.status < 300;
+  const settlement: PayOutcome['settlement'] = paid
+    ? 'settled'
+    : second.status === 402
+      ? 'rejected'
+      : 'unknown';
+
   return {
     status: second.status,
-    paid: second.status < 400,
+    paid,
+    settlement,
     candidate: chosen.candidate,
     ...(receipt !== undefined ? { receipt } : {}),
     bodyPreview: preview(secondBody),

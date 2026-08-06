@@ -92,6 +92,14 @@ pay_max_amount = "0"
 #   pay_currencies = ["0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"]
 pay_currencies = []
 
+# Payees this portal may pay. Empty = whoever the (allowlisted) origin
+# names in its challenge. Pin this when the payee is stable: an
+# allowlisted server that is later compromised can otherwise swap in an
+# attacker's address, and the amount cap is all that stands in the way.
+# Example:
+#   pay_recipients = ["0xab782182720864538e26bc424460d96ff364f94c"]
+pay_recipients = []
+
 # Optional: above this base-unit amount, require a phone approve/deny tap
 # before paying. Must be strictly less than pay_max_amount.
 # pay_require_confirm_above = "100000"

@@ -55,7 +55,10 @@ export class NtfyTransport implements ConfirmTransport {
       headers: {
         'Title': `sigil — ${req.portal}`,
         'Priority': 'high',
-        'Click': req.approveUrl,
+        // No `Click` header. ntfy opens the Click URL when the notification
+        // BODY is tapped, so pointing it at approveUrl turned "I glanced at
+        // the notification" into "I approved the spend". Approval must come
+        // from the explicit Approve action button only.
         'Actions': actions,
         'Content-Type': 'text/plain; charset=utf-8',
       },

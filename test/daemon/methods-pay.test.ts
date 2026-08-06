@@ -129,7 +129,9 @@ pay_max_amount = "100000"
         err.code === RPC_POLICY_DENIED &&
         err.message.includes('pay_origins'),
     );
-    equal(calls.length, 1, 'the paid retry must never fire on deny');
+    // The origin gate fires before the first request, so a disallowed host
+    // never sees any traffic at all - not even the challenge fetch.
+    equal(calls.length, 0, 'no request may be made to a non-allowlisted origin');
   } finally {
     tearDown(h);
   }

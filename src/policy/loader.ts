@@ -47,6 +47,12 @@ export function parsePolicy(source: string): Policy {
   const payCurrencies = asStringArray(raw['pay_currencies'], 'pay_currencies').map((s) =>
     s.toLowerCase(),
   );
+  const payRecipients = asStringArray(raw['pay_recipients'], 'pay_recipients').map((s, i) => {
+    if (!ADDR_RE.test(s)) {
+      throw new PolicyLoadError(`policy.pay_recipients[${i}] must be 0x-prefixed 20-byte address`);
+    }
+    return s.toLowerCase();
+  });
 
   if (mode === 'permissive') {
     return {
@@ -60,6 +66,7 @@ export function parsePolicy(source: string): Policy {
       payOrigins,
       payMaxAmount: 0n,
       payCurrencies,
+      payRecipients,
       ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
       ...(payRequireConfirmAbove !== undefined ? { payRequireConfirmAbove } : {}),
     };
@@ -134,6 +141,7 @@ export function parsePolicy(source: string): Policy {
     payOrigins,
     payMaxAmount,
     payCurrencies,
+    payRecipients,
     ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
     ...(payRequireConfirmAbove !== undefined ? { payRequireConfirmAbove } : {}),
   };
@@ -156,6 +164,7 @@ export function permissivePolicyResolver(): PolicyResolver {
     payOrigins: [],
     payMaxAmount: 0n,
     payCurrencies: [],
+    payRecipients: [],
   };
   return { resolve: () => policy };
 }

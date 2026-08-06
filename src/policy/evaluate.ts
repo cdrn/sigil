@@ -45,6 +45,8 @@ export function evaluate(request: PolicyRequest, policy: Policy): PolicyDecision
       if (confirm) return confirm;
       return { kind: 'allow' };
     }
+    case 'payment_origin':
+      return originAllowed(request.origin, policy) ?? { kind: 'allow' };
     case 'message':
       return policy.allowMessageSigning
         ? { kind: 'allow' }
@@ -143,8 +145,13 @@ function confirmForTx(
  * server it came from, so strict mode requires the user to have named that
  * server in advance.
  */
-function evaluatePaymentStrict(
-  p: PaymentCandidate,
+/**
+ * Origin allowlist, shared by the pre-flight check and the full payment
+ * evaluation so both can never drift apart. Returns a Deny or null.
+ * Permissive mode never reaches here.
+ */
+function originAllowed(
+  origin: string,
   policy: Policy,
 ): ({ kind: 'deny'; reason: string }) | null {
   if (policy.payOrigins.length === 0) {
@@ -153,8 +160,26 @@ function evaluatePaymentStrict(
       reason: 'payment denied — strict mode + empty pay_origins (add the origins you trust)',
     };
   }
-  if (!policy.payOrigins.includes(p.origin.toLowerCase())) {
-    return { kind: 'deny', reason: `payment denied — origin ${p.origin} not in pay_origins` };
+  if (!policy.payOrigins.includes(origin.toLowerCase())) {
+    return { kind: 'deny', reason: `payment denied — origin ${origin} not in pay_origins` };
+  }
+  return null;
+}
+
+function evaluatePaymentStrict(
+  p: PaymentCandidate,
+  policy: Policy,
+): ({ kind: 'deny'; reason: string }) | null {
+  const originDeny = originAllowed(p.origin, policy);
+  if (originDeny) return originDeny;
+  if (
+    policy.payRecipients.length > 0 &&
+    !policy.payRecipients.includes(p.recipient.toLowerCase())
+  ) {
+    return {
+      kind: 'deny',
+      reason: `payment denied — recipient ${p.recipient.toLowerCase()} not in pay_recipients`,
+    };
   }
   if (policy.chainIds.length > 0 && !policy.chainIds.includes(p.chainId)) {
     return {

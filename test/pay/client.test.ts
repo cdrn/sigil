@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects } from 'node:assert/strict';
-import { pay, PayError, type FetchLike, type PaymentCandidate } from '../../src/pay/index.js';
+import {
+  CandidateRejected,
+  pay,
+  PayError,
+  type FetchLike,
+  type PaymentCandidate,
+} from '../../src/pay/index.js';
 
 function priv(b: number): Buffer { const p = Buffer.alloc(32); p[31] = b; return p; }
 
@@ -41,6 +47,7 @@ function deps(fetchImpl: FetchLike, authorized: PaymentCandidate[]) {
   return {
     fetchImpl,
     now: () => Date.parse('2029-12-31T23:59:00Z'),
+    authorizeOrigin: async () => undefined,
     authorize: async (c: PaymentCandidate) => {
       authorized.push(c);
     },
@@ -155,8 +162,9 @@ test('authorize rejection propagates and nothing is signed or retried', async ()
         {
           fetchImpl,
           now: () => Date.parse('2029-12-31T23:59:00Z'),
+          authorizeOrigin: async () => undefined,
           authorize: async () => {
-            throw denied;
+            throw new CandidateRejected(denied);
           },
           privateKey: priv(1),
         },
@@ -168,7 +176,12 @@ test('authorize rejection propagates and nothing is signed or retried', async ()
 
 test('server preference order: first authorized candidate wins', async () => {
   const request = Buffer.from(
-    JSON.stringify({ amount: '10000', currency: TOKEN, recipient: RECIPIENT, methodDetails: { chainId: 42431 } }),
+    JSON.stringify({
+      amount: '10000',
+      currency: TOKEN,
+      recipient: RECIPIENT,
+      methodDetails: { chainId: 42431, feePayer: true },
+    }),
   ).toString('base64url');
   const twoChallenges =
     `Payment id="a", realm="r", method="stripe", intent="charge", request="e30", ` +
@@ -202,6 +215,202 @@ test('refuses redirects and non-https URLs', async () => {
     () => pay({ url: 'http://api.test/x', method: 'GET' }, deps(fakeFetch([], []), [])),
     PayError,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Security regressions (found in review)
+// ---------------------------------------------------------------------------
+
+test('origin gate runs BEFORE any request leaves the machine', async () => {
+  const recorded: Recorded[] = [];
+  const fetchImpl = fakeFetch([() => new Response('secret', { status: 200 })], recorded);
+  const denied = new Error('origin denied');
+  await rejects(
+    () =>
+      pay(
+        { url: 'https://internal.test/admin', method: 'POST', body: 'do-a-thing' },
+        {
+          fetchImpl,
+          now: () => Date.parse('2029-12-31T23:59:00Z'),
+          authorizeOrigin: async () => {
+            throw denied;
+          },
+          authorize: async () => undefined,
+          privateKey: priv(1),
+        },
+      ),
+    (err: unknown) => err === denied,
+  );
+  equal(recorded.length, 0, 'no HTTP request may be made for a disallowed origin');
+});
+
+test('a non-CandidateRejected throw (human deny) aborts instead of trying the next candidate', async () => {
+  // Two payable tempo candidates; the human denies the first.
+  const mk = (id: string, amount: string) => {
+    const request = Buffer.from(
+      JSON.stringify({
+        amount,
+        currency: TOKEN,
+        recipient: RECIPIENT,
+        methodDetails: { chainId: 42431, feePayer: true },
+      }),
+    ).toString('base64url');
+    return `Payment id="${id}", realm="r", method="tempo", intent="charge", expires="2030-01-01T00:00:00Z", request="${request}"`;
+  };
+  const recorded: Recorded[] = [];
+  const fetchImpl = fakeFetch(
+    [
+      () =>
+        new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `${mk('big', '900000')}, ${mk('small', '10')}` },
+        }),
+      () => new Response('should never happen', { status: 200 }),
+    ],
+    recorded,
+  );
+  const humanDenied = new Error('confirm denied by human');
+  const seen: bigint[] = [];
+  await rejects(
+    () =>
+      pay(
+        { url: 'https://api.test/x', method: 'GET' },
+        {
+          fetchImpl,
+          now: () => Date.parse('2029-12-31T23:59:00Z'),
+          authorizeOrigin: async () => undefined,
+          authorize: async (c) => {
+            seen.push(c.amount);
+            throw humanDenied; // raw, not CandidateRejected
+          },
+          privateKey: priv(1),
+        },
+      ),
+    (err: unknown) => err === humanDenied,
+  );
+  deepEqual(seen, [900000n], 'must not fall through to the cheaper candidate');
+  equal(recorded.length, 1, 'nothing may be paid after a human deny');
+});
+
+test('a CandidateRejected still falls through to the next candidate', async () => {
+  const mk = (id: string, amount: string) => {
+    const request = Buffer.from(
+      JSON.stringify({
+        amount,
+        currency: TOKEN,
+        recipient: RECIPIENT,
+        methodDetails: { chainId: 42431, feePayer: true },
+      }),
+    ).toString('base64url');
+    return `Payment id="${id}", realm="r", method="tempo", intent="charge", expires="2030-01-01T00:00:00Z", request="${request}"`;
+  };
+  const recorded: Recorded[] = [];
+  const fetchImpl = fakeFetch(
+    [
+      () =>
+        new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': `${mk('big', '900000')}, ${mk('small', '10')}` },
+        }),
+      () => new Response('ok', { status: 200 }),
+    ],
+    recorded,
+  );
+  const seen: bigint[] = [];
+  const outcome = await pay(
+    { url: 'https://api.test/x', method: 'GET' },
+    {
+      fetchImpl,
+      now: () => Date.parse('2029-12-31T23:59:00Z'),
+      authorizeOrigin: async () => undefined,
+      authorize: async (c) => {
+        seen.push(c.amount);
+        if (c.amount > 1000n) throw new CandidateRejected(new Error('over cap'));
+      },
+      privateKey: priv(1),
+    },
+  );
+  deepEqual(seen, [900000n, 10n]);
+  equal(outcome.paid, true);
+  equal(outcome.candidate!.amount, 10n);
+});
+
+test('credential release is reported before the outcome is known, and a dropped response is UNKNOWN', async () => {
+  const recorded: Recorded[] = [];
+  const fetchImpl: FetchLike = async (url, init) => {
+    recorded.push({ url, init: init ?? {} });
+    if (recorded.length === 1) {
+      return new Response('', {
+        status: 402,
+        headers: { 'www-authenticate': mppChallengeHeader() },
+      });
+    }
+    throw new Error('socket hang up');
+  };
+  const released: PaymentCandidate[] = [];
+  await rejects(
+    () =>
+      pay(
+        { url: 'https://api.test/buy', method: 'GET' },
+        {
+          fetchImpl,
+          now: () => Date.parse('2029-12-31T23:59:00Z'),
+          authorizeOrigin: async () => undefined,
+          authorize: async () => undefined,
+          onCredentialReleased: (c) => released.push(c),
+          privateKey: priv(1),
+        },
+      ),
+    (err: unknown) =>
+      err instanceof PayError &&
+      err.message.includes('UNKNOWN') &&
+      err.message.includes('audit log'),
+  );
+  equal(released.length, 1, 'the released spend authorization must be recorded');
+  equal(released[0]!.amount, 10000n);
+});
+
+test('a 3xx after payment is not reported as paid', async () => {
+  const recorded: Recorded[] = [];
+  const fetchImpl = fakeFetch(
+    [
+      () =>
+        new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': mppChallengeHeader() },
+        }),
+      () => new Response('', { status: 302, headers: { location: 'https://elsewhere.test' } }),
+    ],
+    recorded,
+  );
+  const outcome = await pay({ url: 'https://api.test/x', method: 'GET' }, deps(fetchImpl, []));
+  equal(outcome.paid, false, '3xx carries no settlement evidence');
+  equal(outcome.settlement, 'unknown');
+});
+
+test('a 402 answer to the paid retry is a rejection, not an unknown settlement', async () => {
+  const fetchImpl = fakeFetch(
+    [
+      () =>
+        new Response('', {
+          status: 402,
+          headers: { 'www-authenticate': mppChallengeHeader() },
+        }),
+      () => new Response('{"detail":"verification failed"}', { status: 402 }),
+    ],
+    [],
+  );
+  const outcome = await pay({ url: 'https://api.test/x', method: 'GET' }, deps(fetchImpl, []));
+  equal(outcome.paid, false);
+  equal(outcome.settlement, 'rejected');
+});
+
+test('response bodies are capped while streaming', async () => {
+  const huge = 'x'.repeat(600_000);
+  const fetchImpl = fakeFetch([() => new Response(huge, { status: 200 })], []);
+  const outcome = await pay({ url: 'https://api.test/x', method: 'GET' }, deps(fetchImpl, []));
+  // Preview is bounded, and the underlying read stopped at MAX_BODY_BYTES.
+  ok(outcome.bodyPreview.length <= 2049, `preview was ${outcome.bodyPreview.length}`);
 });
 
 test('402 with no payable challenge surfaces the skip reasons', async () => {

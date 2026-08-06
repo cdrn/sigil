@@ -50,6 +50,13 @@ export interface Policy {
   payMaxAmount: bigint;
   /** Token addresses / currency codes, lowercased. Empty = any currency. */
   payCurrencies: readonly string[];
+  /**
+   * Payment recipients this portal may pay, lowercased. Empty = any
+   * recipient the (allowlisted) origin names. Pin this when the payee is
+   * stable: an allowlisted-but-compromised server can otherwise swap in an
+   * attacker's address and the amount cap is the only thing left standing.
+   */
+  payRecipients: readonly string[];
   /** Same contract as requireConfirmAboveWei, in challenge base units. */
   payRequireConfirmAbove?: bigint;
 }
@@ -59,7 +66,12 @@ export type PolicyRequest =
   | { kind: 'transaction'; tx: SignableTx }
   | { kind: 'message'; messageBytes: Buffer }
   | { kind: 'typed_data'; typedData: TypedData }
-  | { kind: 'payment'; payment: PaymentCandidate };
+  | { kind: 'payment'; payment: PaymentCandidate }
+  /**
+   * Pre-flight check run before sigil_pay makes ANY request. Bounds the tool
+   * to hosts the user named, so it can't be used as a general HTTP deputy.
+   */
+  | { kind: 'payment_origin'; origin: string };
 
 /**
  * Evaluator output. Three arms, discriminated by `kind`:
