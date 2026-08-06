@@ -16,7 +16,7 @@ One MCP server process, four bins, five runtime deps (all pinned, zero transitiv
 
 `sigil-mcp` boots **locked**: empty in-memory handle table, no keys loaded. Sign methods return `DAEMON_LOCKED` (-32003) with a "run sigil unlock" message until you push the passphrase in from a separate terminal via `sigil unlock`. That CLI connects to a per-session Unix socket at `~/.sigil/control/<pid>.sock` (0600) that `sigil-mcp` opens at startup — and fans out to every such socket so one `sigil unlock` reaches all open windows. After unlock, signs work for the rest of the session; `sigil lock` zeroizes the table without killing the process.
 
-Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transactions, EIP-712 typed data.
+Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transactions, EIP-712 typed data, and HTTP 402 payments (MPP + x402) via `sigil_pay`.
 
 ## What it isn't
 
@@ -173,6 +173,23 @@ require_confirm_above_wei = "10000000000000000"   # 0.01 ETH
 A failed rule throws `POLICY_DENIED` (-32001) back to the agent with the human-readable reason ("tx denied — value X exceeds max_value_wei Y"), and the deny is appended to the hash-chained audit log alongside allows. Denies are forensically the more interesting half — they're the prompt-injection canary.
 
 What's deferred to follow-up PRs (still in [#3](https://github.com/cdrn/sigil/issues/3)): rolling-window value caps (e.g. 1 ETH/day per portal), EIP-712 domain + primary-type allowlists, decoded-calldata arg checks.
+
+## HTTP 402 payments (MPP + x402)
+
+`sigil_pay` fetches a URL and, when the server answers `402 Payment Required`, pays the challenge and retries — speaking both [MPP](https://mpp.dev) (the `Payment` HTTP auth scheme; tempo method, charge intent, fee-sponsored pull mode) and [x402](https://x402.org) (v1 and v2, `exact` scheme via EIP-3009 `transferWithAuthorization`). `sigil_pay_discover` lists services from the public MPP directory and the x402 Bazaar; it touches no keys.
+
+The design point that matters: **sigil makes the HTTP request itself.** The payment terms — recipient, amount, currency, chain — are parsed off the origin server's challenge over TLS and judged by the policy engine before anything is signed. There is no tool argument that carries a challenge, so a prompt-injected agent can choose *what* to buy but can never dictate *who gets paid* or *how much*. Redirects are refused for the same reason.
+
+Strict-mode policy fields (all enforced before signing; the confirm gate composes the same way as `require_confirm_above_wei`):
+
+```toml
+pay_origins = ["https://api.example.com"]   # bare origins this portal may pay; empty = deny
+pay_max_amount = "0"                        # per-payment cap in the challenge's base units
+pay_currencies = []                         # token addresses / ISO codes; empty = any
+# pay_require_confirm_above = "100000"      # optional phone-approve threshold
+```
+
+Amounts are in the challenge's token base units (USDC and pathUSD both have 6 decimals), so pin `pay_currencies` to make the cap meaningful. No RPC connection is needed: MPP tempo charges use TIP-1009 expiring nonces and fee sponsorship (the server broadcasts), and x402 settlement is the facilitator's job. Rolling-window payment caps land with [#3](https://github.com/cdrn/sigil/issues/3).
 
 ## Out-of-band confirm
 

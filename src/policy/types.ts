@@ -1,4 +1,5 @@
 import type { SignableTx, TypedData } from '../eth/index.js';
+import type { PaymentCandidate } from '../pay/types.js';
 
 /**
  * A loaded + validated per-portal policy.
@@ -35,13 +36,30 @@ export interface Policy {
    * fires first); validation catches that misconfiguration at load time.
    */
   requireConfirmAboveWei?: bigint;
+  /**
+   * sigil_pay (MPP/x402) constraints. Amounts are in the CHALLENGE's base
+   * units, not wei — a payment challenge names a token and an atomic amount,
+   * and the cap is only meaningful alongside `payCurrencies` restricting
+   * which tokens those units can denominate. Strict mode: sigil_pay is
+   * denied outright unless `pay_origins` is non-empty, and `pay_max_amount`
+   * defaults to 0 (no payments) mirroring max_value_wei.
+   */
+  /** Allowed origins ("https://host[:port]"), lowercased at load time. */
+  payOrigins: readonly string[];
+  /** Per-payment cap in challenge base units. 0n = no payments allowed. */
+  payMaxAmount: bigint;
+  /** Token addresses / currency codes, lowercased. Empty = any currency. */
+  payCurrencies: readonly string[];
+  /** Same contract as requireConfirmAboveWei, in challenge base units. */
+  payRequireConfirmAbove?: bigint;
 }
 
 /** What the evaluator gets asked about. */
 export type PolicyRequest =
   | { kind: 'transaction'; tx: SignableTx }
   | { kind: 'message'; messageBytes: Buffer }
-  | { kind: 'typed_data'; typedData: TypedData };
+  | { kind: 'typed_data'; typedData: TypedData }
+  | { kind: 'payment'; payment: PaymentCandidate };
 
 /**
  * Evaluator output. Three arms, discriminated by `kind`:

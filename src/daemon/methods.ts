@@ -13,6 +13,13 @@ import {
   type TypedData,
 } from '../eth/index.js';
 import {
+  discover,
+  type FetchLike,
+  pay,
+  PayError,
+  type PaymentCandidate,
+} from '../pay/index.js';
+import {
   evaluate,
   PolicyLoadError,
   type PolicyRequest,
@@ -58,6 +65,14 @@ export interface MethodContext {
    * deny — fail closed.
    */
   confirm?: ConfirmGate;
+  /**
+   * HTTP egress for sigil_pay / sigil_pay_discover. Defaults to
+   * globalThis.fetch; injectable so tests never touch the network — the
+   * same seam the ntfy confirm transport uses.
+   */
+  fetchImpl?: FetchLike;
+  /** Clock for sigil_pay validity windows. Defaults to Date.now. */
+  now?: () => number;
 }
 
 export type MethodHandler = (params: unknown, ctx: MethodContext) => unknown | Promise<unknown>;
@@ -367,11 +382,145 @@ const sigil_eth_sign_typed_data: MethodHandler = (params, ctx) => {
   return { signature: sigHex };
 };
 
+/**
+ * Pay an MPP or x402 HTTP 402 challenge. The flow deliberately keeps the
+ * challenge OUT of the tool arguments: sigil fetches the URL itself, parses
+ * the payment requirements off the wire, and only then consults policy —
+ * so the model chooses what to buy but can never dictate who gets paid or
+ * how much. Facts judged by the policy engine (origin, chain, currency,
+ * amount, recipient) all come from the origin server's response.
+ */
+const sigil_pay: MethodHandler = async (params, ctx) => {
+  const obj = asObject(params, 'pay');
+  const portal = asString(obj, 'portal', 'pay');
+  const url = asString(obj, 'url', 'pay');
+  const httpMethod = obj['method'] === undefined ? 'GET' : asString(obj, 'method', 'pay');
+  if (!/^(GET|POST|PUT|PATCH|DELETE)$/i.test(httpMethod)) {
+    throw new RpcMethodError(RPC_INVALID_PARAMS, 'pay: method must be an HTTP method');
+  }
+  const body = obj['body'] === undefined ? undefined : asString(obj, 'body', 'pay');
+  const contentType =
+    obj['contentType'] === undefined ? undefined : asString(obj, 'contentType', 'pay');
+
+  const priv = requirePortal(ctx.handles, portal);
+  const fetchImpl = ctx.fetchImpl ?? (globalThis.fetch as FetchLike);
+  const now = ctx.now ?? Date.now;
+
+  const authorize = async (candidate: PaymentCandidate): Promise<void> => {
+    const facts = {
+      origin: candidate.origin,
+      protocol: candidate.protocol,
+      method: candidate.method,
+      chainId: candidate.chainId,
+      currency: candidate.currency,
+      amount: candidate.amount.toString(),
+      recipient: candidate.recipient,
+    };
+    const gate = gatePolicy(ctx, portal, 'pay', { url, payment: facts }, {
+      kind: 'payment', payment: candidate,
+    });
+    if (gate.proceed === 'confirm') {
+      await runConfirmGate(ctx, portal, 'pay', { url, payment: facts }, gate.summary);
+    }
+  };
+
+  let outcome;
+  try {
+    outcome = await pay(
+      {
+        url,
+        method: httpMethod.toUpperCase(),
+        ...(body !== undefined ? { body } : {}),
+        ...(contentType !== undefined ? { contentType } : {}),
+      },
+      { fetchImpl, now, authorize, privateKey: priv },
+    );
+  } catch (err) {
+    if (err instanceof RpcMethodError) throw err;
+    if (err instanceof PayError) {
+      throw new RpcMethodError(RPC_INVALID_PAYLOAD, `pay: ${err.message}`);
+    }
+    throw new RpcMethodError(RPC_INVALID_PAYLOAD, `pay: request failed — ${(err as Error).message}`);
+  }
+
+  if (outcome.candidate) {
+    ctx.audit.append({
+      kind: 'pay',
+      portal,
+      payload: {
+        url,
+        payment: {
+          origin: outcome.candidate.origin,
+          protocol: outcome.candidate.protocol,
+          chainId: outcome.candidate.chainId,
+          currency: outcome.candidate.currency,
+          amount: outcome.candidate.amount.toString(),
+          recipient: outcome.candidate.recipient,
+        },
+        status: outcome.status,
+        ...(outcome.receipt?.reference !== undefined
+          ? { reference: outcome.receipt.reference }
+          : {}),
+      },
+      decision: 'allow',
+    });
+  }
+
+  return {
+    status: outcome.status,
+    paid: outcome.paid,
+    ...(outcome.candidate
+      ? {
+          payment: {
+            protocol: outcome.candidate.protocol,
+            origin: outcome.candidate.origin,
+            chainId: outcome.candidate.chainId,
+            currency: outcome.candidate.currency,
+            amount: outcome.candidate.amount.toString(),
+            recipient: outcome.candidate.recipient,
+          },
+        }
+      : {}),
+    ...(outcome.receipt !== undefined
+      ? {
+          receipt: {
+            ...(outcome.receipt.reference !== undefined
+              ? { reference: outcome.receipt.reference }
+              : {}),
+          },
+        }
+      : {}),
+    bodyPreview: outcome.bodyPreview,
+  };
+};
+
+/** Query the public MPP / x402 service registries. Read-only, no keys. */
+const sigil_pay_discover: MethodHandler = async (params, ctx) => {
+  const obj = asObject(params, 'pay_discover');
+  const registry = obj['registry'];
+  if (registry !== undefined && registry !== 'mpp' && registry !== 'x402' && registry !== 'all') {
+    throw new RpcMethodError(RPC_INVALID_PARAMS, 'pay_discover: registry must be "mpp", "x402", or "all"');
+  }
+  const query = obj['query'] === undefined ? undefined : asString(obj, 'query', 'pay_discover');
+  const fetchImpl = ctx.fetchImpl ?? (globalThis.fetch as FetchLike);
+  try {
+    const services = await discover(fetchImpl, {
+      ...(registry !== undefined ? { registry } : {}),
+      ...(query !== undefined ? { query } : {}),
+    });
+    return { services };
+  } catch (err) {
+    throw new RpcMethodError(RPC_INVALID_PAYLOAD, `pay_discover: ${(err as Error).message}`);
+  }
+};
+
 export const METHODS: Readonly<Record<string, MethodHandler>> = Object.freeze({
   sigil_list_portals,
   sigil_eth_sign_message,
   sigil_eth_sign_transaction,
   sigil_eth_sign_typed_data,
+  sigil_pay,
+  sigil_pay_discover,
 });
 
 /**

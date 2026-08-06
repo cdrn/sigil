@@ -71,7 +71,7 @@ test('handleLine: notifications/initialized has no response', async () => {
   } finally { tearDown(h); }
 });
 
-test('handleLine: tools/list returns all four tools with input schemas', async () => {
+test('handleLine: tools/list returns all six tools with input schemas', async () => {
   const h = setUp();
   try {
     const resp = await handleLine(
@@ -85,6 +85,8 @@ test('handleLine: tools/list returns all four tools with input schemas', async (
       'sigil_eth_sign_transaction',
       'sigil_eth_sign_typed_data',
       'sigil_list_portals',
+      'sigil_pay',
+      'sigil_pay_discover',
     ]);
     for (const t of r.result.tools) {
       ok(t.inputSchema, `tool ${t.name} has no inputSchema`);
@@ -249,7 +251,7 @@ test('runMcpStdio: full handshake + tools/list + tools/call via in-memory stream
     equal(init.result.protocolVersion, PROTOCOL_VERSION);
     const list = JSON.parse(lines[1]!) as { id: number; result: { tools: unknown[] } };
     equal(list.id, 2);
-    equal(list.result.tools.length, 4);
+    equal(list.result.tools.length, 6);
     const call = JSON.parse(lines[2]!) as { id: number; result: { structuredContent: { signature: string } } };
     equal(call.id, 3);
     ok(call.result.structuredContent.signature.startsWith('0x'));

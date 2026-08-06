@@ -36,6 +36,9 @@ function strict(over: Partial<Omit<Policy, 'mode'>> = {}): Policy {
     allowedSelectors: [],
     allowMessageSigning: false,
     allowTypedData: false,
+    payOrigins: [],
+    payMaxAmount: 0n,
+    payCurrencies: [],
     ...over,
   };
 }
@@ -65,6 +68,7 @@ function confirmSummary(d: PolicyDecision): string {
 test('permissive mode allows transactions, messages, typed data', () => {
   const p: Policy = {
     mode: 'permissive',
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: false, allowTypedData: false,
   };
@@ -233,6 +237,7 @@ test('confirm: strict-mode static deny fires BEFORE confirm gate', () => {
 test('confirm: permissive mode honours the confirm threshold', () => {
   const p: Policy = {
     mode: 'permissive',
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: true, allowTypedData: true,
     requireConfirmAboveWei: 500n,
@@ -244,6 +249,7 @@ test('confirm: permissive mode honours the confirm threshold', () => {
 test('confirm: permissive mode without threshold → allow', () => {
   const p: Policy = {
     mode: 'permissive',
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: true, allowTypedData: true,
   };
@@ -253,6 +259,7 @@ test('confirm: permissive mode without threshold → allow', () => {
 test('confirm: contract creation summary names "contract creation"', () => {
   const p: Policy = {
     mode: 'permissive',
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: true, allowTypedData: true,
     requireConfirmAboveWei: 0n,
@@ -264,6 +271,7 @@ test('confirm: contract creation summary names "contract creation"', () => {
 test('confirm: message/typed_data do not trigger confirm gate (deferred)', () => {
   const p: Policy = {
     mode: 'permissive',
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: true, allowTypedData: true,
     requireConfirmAboveWei: 0n,
@@ -275,6 +283,7 @@ test('confirm: message/typed_data do not trigger confirm gate (deferred)', () =>
 test('confirm: summary renders 0.5 ETH cleanly', () => {
   const p: Policy = {
     mode: 'permissive',
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: true, allowTypedData: true,
     requireConfirmAboveWei: 0n,
@@ -286,6 +295,7 @@ test('confirm: summary renders 0.5 ETH cleanly', () => {
 test('confirm: summary renders whole-ETH amounts without a decimal', () => {
   const p: Policy = {
     mode: 'permissive',
+    payOrigins: [], payMaxAmount: 0n, payCurrencies: [],
     chainIds: [], allowTo: [], maxValueWei: 0n, allowedSelectors: [],
     allowMessageSigning: true, allowTypedData: true,
     requireConfirmAboveWei: 0n,

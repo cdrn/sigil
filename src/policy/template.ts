@@ -71,6 +71,30 @@ allow_typed_data = false
 # ~/.sigil/config.toml; without one, sigil-mcp refuses to start.
 # Example: confirm anything above 0.01 ETH.
 # require_confirm_above_wei = "10000000000000000"
+
+# ── sigil_pay (MPP / x402 HTTP payments) ────────────────────────────────────
+# Origins this portal may pay. Bare origins only (scheme + host, no path).
+# Empty = sigil_pay denied for this portal.
+# Example:
+#   pay_origins = ["https://api.example.com"]
+pay_origins = []
+
+# Per-payment cap in the CHALLENGE'S base units (token atomic units — e.g.
+# USDC has 6 decimals, so "1000000" = 1 USDC). Default 0 = no payments.
+# Pair this with pay_currencies: the cap is only meaningful when you pin
+# which tokens those units denominate.
+pay_max_amount = "0"
+
+# Currencies this portal may pay in: token addresses (lowercase) or ISO
+# codes. Empty = any currency the origin asks for (the amount cap still
+# applies, but 1000000 base units of an unknown token is an unknown price).
+# Example (USDC on Base):
+#   pay_currencies = ["0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"]
+pay_currencies = []
+
+# Optional: above this base-unit amount, require a phone approve/deny tap
+# before paying. Must be strictly less than pay_max_amount.
+# pay_require_confirm_above = "100000"
 `;
 
 export type PolicyMode = 'permissive' | 'strict';

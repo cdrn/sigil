@@ -39,6 +39,14 @@ export function parsePolicy(source: string): Policy {
     raw['require_confirm_above_wei'],
     'require_confirm_above_wei',
   );
+  const payRequireConfirmAbove = parseOptionalWei(
+    raw['pay_require_confirm_above'],
+    'pay_require_confirm_above',
+  );
+  const payOrigins = parsePayOrigins(raw['pay_origins']);
+  const payCurrencies = asStringArray(raw['pay_currencies'], 'pay_currencies').map((s) =>
+    s.toLowerCase(),
+  );
 
   if (mode === 'permissive') {
     return {
@@ -49,7 +57,11 @@ export function parsePolicy(source: string): Policy {
       allowedSelectors: [],
       allowMessageSigning: true,
       allowTypedData: true,
+      payOrigins,
+      payMaxAmount: 0n,
+      payCurrencies,
       ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
+      ...(payRequireConfirmAbove !== undefined ? { payRequireConfirmAbove } : {}),
     };
   }
 
@@ -98,6 +110,19 @@ export function parsePolicy(source: string): Policy {
     );
   }
 
+  const payMaxAmount = parseOptionalWei(raw['pay_max_amount'], 'pay_max_amount') ?? 0n;
+  if (
+    payRequireConfirmAbove !== undefined &&
+    payRequireConfirmAbove >= payMaxAmount &&
+    payMaxAmount !== 0n
+  ) {
+    throw new PolicyLoadError(
+      `policy.pay_require_confirm_above (${payRequireConfirmAbove}) must be less than ` +
+      `pay_max_amount (${payMaxAmount}) — otherwise the amount cap fires first and the ` +
+      `confirm gate never triggers`,
+    );
+  }
+
   return {
     mode: 'strict',
     chainIds,
@@ -106,7 +131,11 @@ export function parsePolicy(source: string): Policy {
     allowedSelectors,
     allowMessageSigning,
     allowTypedData,
+    payOrigins,
+    payMaxAmount,
+    payCurrencies,
     ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
+    ...(payRequireConfirmAbove !== undefined ? { payRequireConfirmAbove } : {}),
   };
 }
 
@@ -124,6 +153,9 @@ export function permissivePolicyResolver(): PolicyResolver {
     allowedSelectors: [],
     allowMessageSigning: true,
     allowTypedData: true,
+    payOrigins: [],
+    payMaxAmount: 0n,
+    payCurrencies: [],
   };
   return { resolve: () => policy };
 }
@@ -206,6 +238,29 @@ function parseMaxValue(v: unknown): bigint {
     );
   }
   return BigInt(v);
+}
+
+/**
+ * pay_origins entries must be exact origins — scheme + host (+ port), no
+ * path. Normalized through the URL parser so "HTTPS://Host" and
+ * "https://host" compare equal at evaluation time.
+ */
+function parsePayOrigins(v: unknown): string[] {
+  const raw = asStringArray(v, 'pay_origins');
+  return raw.map((s, i) => {
+    let url: URL;
+    try {
+      url = new URL(s);
+    } catch {
+      throw new PolicyLoadError(`policy.pay_origins[${i}] must be a URL origin like "https://api.example.com" (got ${JSON.stringify(s)})`);
+    }
+    if (url.origin.toLowerCase() !== s.toLowerCase().replace(/\/$/, '')) {
+      throw new PolicyLoadError(
+        `policy.pay_origins[${i}] must be a bare origin (no path/query) — did you mean ${JSON.stringify(url.origin)}?`,
+      );
+    }
+    return url.origin.toLowerCase();
+  });
 }
 
 function parseOptionalWei(v: unknown, name: string): bigint | undefined {

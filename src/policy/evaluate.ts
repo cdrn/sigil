@@ -1,4 +1,5 @@
 import type { SignableTx } from '../eth/index.js';
+import type { PaymentCandidate } from '../pay/types.js';
 import type { Policy, PolicyDecision, PolicyRequest } from './types.js';
 
 /**
@@ -23,6 +24,10 @@ export function evaluate(request: PolicyRequest, policy: Policy): PolicyDecision
       const confirm = confirmForTx(request.tx, policy);
       if (confirm) return confirm;
     }
+    if (request.kind === 'payment') {
+      const confirm = confirmForPayment(request.payment, policy);
+      if (confirm) return confirm;
+    }
     return { kind: 'allow' };
   }
   switch (request.kind) {
@@ -30,6 +35,13 @@ export function evaluate(request: PolicyRequest, policy: Policy): PolicyDecision
       const deny = evaluateTransactionStrict(request.tx, policy);
       if (deny) return deny;
       const confirm = confirmForTx(request.tx, policy);
+      if (confirm) return confirm;
+      return { kind: 'allow' };
+    }
+    case 'payment': {
+      const deny = evaluatePaymentStrict(request.payment, policy);
+      if (deny) return deny;
+      const confirm = confirmForPayment(request.payment, policy);
       if (confirm) return confirm;
       return { kind: 'allow' };
     }
@@ -121,6 +133,56 @@ function confirmForTx(
   return {
     kind: 'confirm',
     summary: `${formatWei(value)} ETH → ${dest} on chain ${BigInt(tx.chainId)}`,
+  };
+}
+
+/**
+ * Strict-mode checks for a sigil_pay candidate. Same shape as the tx rules:
+ * first failure denies with a reason a human can act on. The origin check is
+ * the load-bearing one — a payment challenge is only as trustworthy as the
+ * server it came from, so strict mode requires the user to have named that
+ * server in advance.
+ */
+function evaluatePaymentStrict(
+  p: PaymentCandidate,
+  policy: Policy,
+): ({ kind: 'deny'; reason: string }) | null {
+  if (policy.payOrigins.length === 0) {
+    return {
+      kind: 'deny',
+      reason: 'payment denied — strict mode + empty pay_origins (add the origins you trust)',
+    };
+  }
+  if (!policy.payOrigins.includes(p.origin.toLowerCase())) {
+    return { kind: 'deny', reason: `payment denied — origin ${p.origin} not in pay_origins` };
+  }
+  if (policy.chainIds.length > 0 && !policy.chainIds.includes(p.chainId)) {
+    return {
+      kind: 'deny',
+      reason: `payment denied — chain ${p.chainId} not in chain_ids ${JSON.stringify(policy.chainIds)}`,
+    };
+  }
+  if (policy.payCurrencies.length > 0 && !policy.payCurrencies.includes(p.currency)) {
+    return { kind: 'deny', reason: `payment denied — currency ${p.currency} not in pay_currencies` };
+  }
+  if (p.amount > policy.payMaxAmount) {
+    return {
+      kind: 'deny',
+      reason: `payment denied — amount ${p.amount} base units exceeds pay_max_amount ${policy.payMaxAmount}`,
+    };
+  }
+  return null;
+}
+
+function confirmForPayment(
+  p: PaymentCandidate,
+  policy: Policy,
+): ({ kind: 'confirm'; summary: string }) | null {
+  if (policy.payRequireConfirmAbove === undefined) return null;
+  if (p.amount <= policy.payRequireConfirmAbove) return null;
+  return {
+    kind: 'confirm',
+    summary: `pay ${p.amount} base units of ${shortAddr(p.currency)} → ${shortAddr(p.recipient)} via ${p.protocol} at ${p.origin}`,
   };
 }
 
