@@ -83,6 +83,11 @@ function isAlive(pid: number): boolean {
   }
 }
 
+// The full stamp format. Anything else (empty, truncated, garbage) is a torn
+// write and must fall back to age-based staleness — a bare Number.parseInt
+// could latch onto a truncated pid and defer to an unrelated live process.
+const STAMP_RE = /^(\d+) [0-9a-f]{16}\n$/;
+
 /**
  * Judge whether the lock file at `path` is abandoned. Returns false when the
  * file vanished (owner released it — nothing to break).
@@ -96,13 +101,13 @@ function isStale(path: string, staleMs: number): boolean {
   } catch {
     return false;
   }
-  const pid = Number.parseInt(content, 10);
-  if (Number.isInteger(pid) && pid > 0) {
+  const stamp = STAMP_RE.exec(content);
+  if (stamp) {
     // A live holder is never evicted; a dead one is stale immediately.
-    return !isAlive(pid);
+    return !isAlive(Number.parseInt(stamp[1]!, 10));
   }
-  // Unreadable content: a holder crashed between create and write, or we read
-  // in that window. Fresh files get the benefit of the doubt.
+  // Torn content: a holder crashed between create and write, or we read in
+  // that window. Fresh files get the benefit of the doubt.
   return Date.now() - mtimeMs > staleMs;
 }
 
@@ -119,15 +124,23 @@ function createStamped(path: string, token: string): boolean {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw err;
   }
+  let stamped = false;
   try {
     writeAllSync(fd, `${process.pid} ${token}\n`);
     fsyncSync(fd);
+    stamped = true;
+    closeSync(fd);
+    return true;
   } catch (err) {
-    try {
-      closeSync(fd);
-    } catch {
-      /* the unlink below is the cleanup that matters */
+    if (!stamped) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* the unlink below is the cleanup that matters */
+      }
     }
+    // Remove the lock we failed to fully establish; leaving it would strand
+    // a live-pid lock that no contender is allowed to break.
     try {
       unlinkSync(path);
     } catch {
@@ -135,8 +148,6 @@ function createStamped(path: string, token: string): boolean {
     }
     throw err;
   }
-  closeSync(fd);
-  return true;
 }
 
 /**
@@ -209,9 +220,10 @@ export function acquireLockSync(lockPath: string, opts: AcquireLockOptions = {})
       };
     }
     tryBreakStaleLock(lockPath, staleMs);
-    if (Date.now() >= deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       throw new AuditLockError(`timed out after ${timeoutMs}ms waiting for ${lockPath}`);
     }
-    sleepSync(pollMs);
+    sleepSync(Math.min(pollMs, remaining));
   }
 }

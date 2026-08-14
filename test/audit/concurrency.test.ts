@@ -107,6 +107,22 @@ test('acquireLockSync breaks an unparsable lock only after it goes stale by age'
   }
 });
 
+test('a torn stamp with a live pid prefix ages out instead of deferring to that pid', () => {
+  const dir = mkTmp();
+  try {
+    const lockPath = join(dir, 'audit.log.lock');
+    // A truncated stamp: our own (very alive) pid but no token. Must be
+    // judged by age, not by pid liveness.
+    writeFileSync(lockPath, `${process.pid}`, { mode: 0o600 });
+    const past = (Date.now() - 120_000) / 1000;
+    utimesSync(lockPath, past, past);
+    const release = acquireLockSync(lockPath, { timeoutMs: 2_000, pollMs: 10, staleMs: 60_000 });
+    release();
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test('release does not remove a lock it no longer owns', () => {
   const dir = mkTmp();
   try {
