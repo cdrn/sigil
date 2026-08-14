@@ -1,5 +1,6 @@
-import { closeSync, fsyncSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, openSync, readFileSync, statSync } from 'node:fs';
 import { keccak256 } from '../eth/keccak.js';
+import { type AcquireLockOptions, acquireLockSync, writeAllSync } from './lock.js';
 
 export type AuditDecision = 'allow' | 'deny' | 'confirm_required';
 
@@ -187,25 +188,34 @@ export interface ChainHead {
 }
 
 /**
- * Read the chain head from an existing audit file. Verifies the whole chain
- * during read. If the file does not exist or is empty, returns the genesis head.
+ * Read the chain head plus the byte length it was derived from. The size lets
+ * a writer cheaply detect (via stat) that another process appended since the
+ * head was read. Missing file → genesis head at size 0.
  */
-export function readHead(path: string): ChainHead {
+function readHeadAndSize(path: string): { head: ChainHead; size: number } {
   let buf: Buffer;
   try {
     buf = readFileSync(path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { nextSeq: 0, prevHash: ZERO_HASH };
+      return { head: { nextSeq: 0, prevHash: ZERO_HASH }, size: 0 };
     }
     throw err;
   }
   const entries = verifyChain(buf);
   if (entries.length === 0) {
-    return { nextSeq: 0, prevHash: ZERO_HASH };
+    return { head: { nextSeq: 0, prevHash: ZERO_HASH }, size: buf.length };
   }
   const last = entries[entries.length - 1]!;
-  return { nextSeq: last.seq + 1, prevHash: last.hash };
+  return { head: { nextSeq: last.seq + 1, prevHash: last.hash }, size: buf.length };
+}
+
+/**
+ * Read the chain head from an existing audit file. Verifies the whole chain
+ * during read. If the file does not exist or is empty, returns the genesis head.
+ */
+export function readHead(path: string): ChainHead {
+  return readHeadAndSize(path).head;
 }
 
 /**
@@ -218,18 +228,40 @@ export function readHead(path: string): ChainHead {
  *
  * The seq and prev_hash fields are managed by the writer; callers supply
  * everything else.
+ *
+ * Multiple processes (one sigil-mcp per Claude session) share one audit file,
+ * so every append serializes through a sidecar `<path>.lock`. The in-memory
+ * head is only a cache: under the lock, the writer stats the file and, if the
+ * on-disk tail moved since the head was last read, re-reads (and re-verifies)
+ * the chain before computing the next entry. Without this, concurrent writers
+ * each extend their own stale tail and the interleaved lines fail startup
+ * verification with seq gaps and broken prev_hash links.
  */
 export class AuditWriter {
   readonly path: string;
+  readonly lockPath: string;
   #head: ChainHead;
+  #size: number;
   #closed = false;
   // Allow tests to inject a fixed clock. Defaults to Date.now.
   #now: () => number;
+  #lockOpts: AcquireLockOptions;
 
-  constructor(path: string, opts: { now?: () => number } = {}) {
+  constructor(path: string, opts: { now?: () => number; lock?: AcquireLockOptions } = {}) {
     this.path = path;
-    this.#head = readHead(path);
+    this.lockPath = `${path}.lock`;
     this.#now = opts.now ?? (() => Date.now());
+    this.#lockOpts = opts.lock ?? {};
+    // Take the lock even for the initial read so startup verification never
+    // observes a mid-append view of the file.
+    const release = acquireLockSync(this.lockPath, this.#lockOpts);
+    try {
+      const { head, size } = readHeadAndSize(path);
+      this.#head = head;
+      this.#size = size;
+    } finally {
+      release();
+    }
   }
 
   get head(): ChainHead {
@@ -245,30 +277,51 @@ export class AuditWriter {
     sig?: string;
   }): StoredAuditEntry {
     if (this.#closed) throw new Error('AuditWriter is closed');
-    const entry: AuditEntry = {
-      seq: this.#head.nextSeq,
-      ts: this.#now(),
-      prev_hash: this.#head.prevHash,
-      kind: input.kind,
-      portal: input.portal,
-      payload: input.payload,
-      decision: input.decision,
-      ...(input.reason !== undefined ? { reason: input.reason } : {}),
-      ...(input.sig !== undefined ? { sig: input.sig } : {}),
-    };
-    const stored = sealEntry(entry);
-    const line = serializeEntry(stored);
-
-    const fd = openSync(this.path, 'a', 0o600);
+    const release = acquireLockSync(this.lockPath, this.#lockOpts);
     try {
-      writeSync(fd, line);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
+      // Another process may have appended since we last read the tail. The
+      // cached head is only trusted when the on-disk size still matches;
+      // otherwise re-read (and re-verify) the chain from disk.
+      let diskSize = 0;
+      try {
+        diskSize = statSync(this.path).size;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      if (diskSize !== this.#size) {
+        const { head, size } = readHeadAndSize(this.path);
+        this.#head = head;
+        this.#size = size;
+      }
 
-    this.#head = { nextSeq: stored.seq + 1, prevHash: stored.hash };
-    return stored;
+      const entry: AuditEntry = {
+        seq: this.#head.nextSeq,
+        ts: this.#now(),
+        prev_hash: this.#head.prevHash,
+        kind: input.kind,
+        portal: input.portal,
+        payload: input.payload,
+        decision: input.decision,
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+        ...(input.sig !== undefined ? { sig: input.sig } : {}),
+      };
+      const stored = sealEntry(entry);
+      const line = serializeEntry(stored);
+
+      const fd = openSync(this.path, 'a', 0o600);
+      try {
+        writeAllSync(fd, line);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+
+      this.#head = { nextSeq: stored.seq + 1, prevHash: stored.hash };
+      this.#size += Buffer.byteLength(line, 'utf8');
+      return stored;
+    } finally {
+      release();
+    }
   }
 
   close(): void {

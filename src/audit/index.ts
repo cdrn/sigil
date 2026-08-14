@@ -15,3 +15,4 @@ export {
   verifyChain,
   readHead,
 } from './log.js';
+export { type AcquireLockOptions, AuditLockError, acquireLockSync } from './lock.js';
