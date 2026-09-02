@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@iarna/toml": "2.2.5",
-    "@noble/ciphers": "2.2.0",
+    "@noble/ciphers": "2.4.0",
     "@noble/ed25519": "3.1.0",
     "@noble/hashes": "2.2.0",
     "@noble/secp256k1": "3.1.0",
