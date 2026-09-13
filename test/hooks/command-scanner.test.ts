@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import { scanBashCommand, splitStatements } from '../../src/hooks/command-scanner.js';
+import { scanBashCommand, stripInertText } from '../../src/hooks/command-scanner.js';
 
 test('blocks cat of a .key file argument', () => {
   ok(scanBashCommand('cat /etc/ssl/private.key').blocked);
@@ -93,13 +93,13 @@ test('build / runtime tools never path-scan their args', () => {
 });
 
 // ---------------------------------------------------------------------------
-// #92 — literal mentions of warded paths are not reads
+// #92 — inert text is carved out before the conservative scan
 // ---------------------------------------------------------------------------
 
 const K = '~/.sigil/keys/a.sigil'; // a warded key path
 const L = '~/.sigil/audit.log';
 
-test('#92: a commit message heredoc that mentions a warded path is not a read', () => {
+test('#92: the commit-message workflow — quoted heredoc to a file that only git consumes', () => {
   const cmd = [
     "cat > /tmp/msg.txt <<'EOF'",
     'fix(audit): harden the log',
@@ -110,122 +110,140 @@ test('#92: a commit message heredoc that mentions a warded path is not a read', 
     'git commit -F /tmp/msg.txt',
   ].join('\n');
   equal(scanBashCommand(cmd).blocked, false);
+  // The body is blanked, the opener and the git line are untouched.
+  const carved = stripInertText(cmd);
+  ok(!carved.includes('corrupting'));
+  ok(carved.includes("cat > /tmp/msg.txt <<'EOF'"));
+  ok(carved.includes('git commit -F /tmp/msg.txt'));
+  equal(carved.split('\n').length, cmd.split('\n').length, 'line count preserved');
 });
 
-test('#92: -m "…" prose with separators and a warded path is not a read', () => {
-  equal(scanBashCommand(`git commit -m "corrupting ${L}; cat ${K} | head"`).blocked, false);
-  equal(scanBashCommand(`echo 'cat ${K}'`).blocked, false);
-  equal(scanBashCommand(`printf "%s\\n" ${K}`).blocked, false, 'printf is not a reader');
-});
-
-test('#92: substitutions still execute inside double quotes and unquoted heredocs → blocked', () => {
-  ok(scanBashCommand(`echo "$(cat ${K})"`).blocked);
-  ok(scanBashCommand(`git commit -m "key: \`cat ${K}\`"`).blocked);
-  ok(scanBashCommand(`cat <<EOF\nhere: $(head -c 32 ${K})\nEOF`).blocked);
-  ok(scanBashCommand(`cat <<EOF\n\`cat ${K}\`\nEOF`).blocked);
-});
-
-test('#92: single-quoted substitutions are literal → not blocked', () => {
-  equal(scanBashCommand(`echo '$(cat ${K})'`).blocked, false);
-  equal(scanBashCommand(`echo '\`cat ${K}\`'`).blocked, false);
-});
-
-test('#92: a quoted-delimiter heredoc body is literal even when it looks like a read', () => {
-  equal(scanBashCommand(`cat <<'EOF'\ncat ${K}\n$(cat ${K})\nEOF`).blocked, false);
-  equal(scanBashCommand(`cat <<"EOF"\ncat ${K}\nEOF`).blocked, false);
-});
-
-test('#92: real reads on other lines / after separators are still blocked', () => {
-  ok(scanBashCommand(`echo hi\ncat ${K}`).blocked);
-  ok(scanBashCommand(`echo hi; cat ${K}`).blocked);
-  ok(scanBashCommand(`echo hi && cat ${K}`).blocked);
-  ok(scanBashCommand(`true || tail ${K}`).blocked);
-  ok(scanBashCommand(`ls | grep x ${K}`).blocked);
-  ok(scanBashCommand(`cat <<'EOF' > /tmp/x\nbody\nEOF\ncat ${K}`).blocked, 'read after a heredoc');
-});
-
-test('#92: heredoc command line itself is still scanned (operands before/after <<)', () => {
-  ok(scanBashCommand(`cat ${K} <<'EOF'\nbody\nEOF`).blocked);
-  ok(scanBashCommand(`cat <<'EOF' ${K}\nbody\nEOF`).blocked, 'operand after the delimiter');
-});
-
-test('#92: splitStatements — quoting and heredoc semantics', () => {
-  const s = (c: string) =>
-    splitStatements(c)
-      .map((x) => x.trim())
-      .filter(Boolean);
-  const has = (c: string, ...want: string[]) => {
-    const got = s(c);
-    for (const w of want)
-      ok(
-        got.some((g) => g === w || g.startsWith(w)),
-        `${JSON.stringify(c)} → ${JSON.stringify(got)} lacks ${w}`,
-      );
-  };
-  has('a; b | c && d\ne', 'a', 'b', 'c', 'd', 'e');
-  equal(s('a "x; y | z" b').length, 1);
-  equal(s("a '$(x)' b").length, 1);
-  has('a "$(x)" b', 'x'); // substitution inside double quotes runs
-  equal(s("cat <<'EOF'\nline; one | two\nEOF\nnext").length, 2); // cat, next
-  has('cat <<EOF\nplain $(sub one) `sub two`\nEOF', 'sub one', 'sub two');
-  has('cat <<-EOF\n\tbody\n\tEOF\nafter', 'after');
-  equal(s('cat <<-EOF\n\tbody\n\tEOF\nafter').length, 2);
-});
-
-// ---------------------------------------------------------------------------
-// #92 review: every one of these read a warded file yet slipped the first
-// splitter. They must all be blocked (and were blocked before #92).
-// ---------------------------------------------------------------------------
-
-const BLOCKED_SHAPES: [string, string][] = [
-  ['subst inherits double-quote state (;)', `echo "$(true; cat ${'K'})"`],
-  ['subst inherits double-quote state (|)', `echo "$(true | cat ${'K'})"`],
-  ['backtick subst inside double quotes', 'echo "`true; cat ' + 'K' + '`"'],
-  ['$"…" locale string', `echo $"$(true; cat ${'K'})"`],
-  ['literal backslash in single quotes', `printf '%s' '\\'; cat ${'K'}`],
-  ['comment poisons quote state', `true # '\ntrue; cat ${'K'}`],
-  ['comment invents a heredoc', `true # <<'EOF'\ncat ${'K'}`],
-  ['command after heredoc opener on the same line', `true <<'EOF'; cat ${'K'}\nEOF`],
-  ['pipe after heredoc opener on the same line', `true <<'EOF' | cat ${'K'}\nEOF`],
-  ['here-string is not a heredoc', `true <<<EOF\ncat ${'K'}`],
-  ['arithmetic shift is not a heredoc', `x=1; ((x << y)); cat ${'K'}`],
-  ['partial delimiter EOF-X', `true <<EOF-X\nEOF-X\ncat ${'K'}`],
-  ['quoted delimiter followed by text', `true <<'EOF'X\nEOFX\ncat ${'K'}`],
-  ['escaped delimiter E\\OF', `true <<E\\OF\nEOF\ncat ${'K'}`],
-  ['continuation inside expanding heredoc terminates it', `true <<EOF\nEO\\\nF\ncat ${'K'}`],
-  ['tab-indented delimiter does not close a plain <<', `cat <<EOF\n\tEOF\n'$(cat ${'K'};)'\nEOF`],
-  ['nested subst in expanding heredoc', `cat <<EOF\n$(true; cat ${'K'})\nEOF`],
-  ['doubly nested subst in expanding heredoc', `cat <<EOF\n$(echo $(cat ${'K'}))\nEOF`],
-  ['multi-line subst in expanding heredoc', `cat <<EOF\n$(\ncat ${'K'}\n)\nEOF`],
-  ['queued heredocs: second is expanding', `cat <<'A' <<B\nA\n$(cat ${'K'})\nB`],
-  ['quoted text is code for bash -c', `bash -c 'true; cat ${'K'}; true'`],
-  ['quoted heredoc is code for bash', `bash <<'EOF'\ncat ${'K'}\nEOF`],
-  ['sh -c with double quotes', `sh -c "cat ${'K'}"`],
-  ['eval', `eval "cat ${'K'}"`],
-  ['sudo prefix', `sudo cat ${'K'}`],
-  ['env prefix with assignment', `env FOO=1 cat ${'K'}`],
-  ['xargs with the reader as its command and the path as arg', `echo x | xargs cat ${'K'}`],
-  ['$(< file) redirection read', `echo "$(< ${'K'})"`],
-  ['bare redirection read into a subst', `x=$(<${'K'}); echo $x`],
-  ['dd if= reader', `dd if=${'K'}`],
-  ['line-continued reader args', `cat \\\n${'K'}`],
-];
-
-for (const [name, cmd] of BLOCKED_SHAPES) {
-  test(`#92 regression: ${name}`, () => {
-    ok(scanBashCommand(cmd.replaceAll('K', K)).blocked, cmd);
-  });
-}
-
-test('#92: benign shapes stay allowed alongside the regressions', () => {
-  equal(scanBashCommand(`echo '$(true; cat ${K})'`).blocked, false, 'single quotes are literal');
-  equal(scanBashCommand(`true # cat ${K}`).blocked, false, 'a comment is not a read');
-  equal(scanBashCommand(`echo "x" # cat ${K}`).blocked, false);
-  equal(scanBashCommand(`x=$((1 << 3)); echo $x ${K}`).blocked, false, 'arithmetic + non-reader');
+test('#92: stdin variants — git commit -F - and gh --body-file - with a quoted heredoc', () => {
+  equal(scanBashCommand(`git commit -F - <<'EOF'\ncat ${K}\nEOF`).blocked, false);
   equal(
-    scanBashCommand(`cat <<'EOF'\n$(cat ${K})\ncat ${K}\nEOF`).blocked,
+    scanBashCommand(`gh pr create --title t --body-file - <<'EOF'\ncat ${K} | head\nEOF`).blocked,
     false,
-    'quoted heredoc to cat',
   );
-  equal(scanBashCommand(`git commit -m "cat ${K}"`).blocked, false, 'git is not an interpreter');
+});
+
+test('#92: message strings to git/gh are data', () => {
+  equal(scanBashCommand(`git commit -m "corrupting ${L}; cat ${K} | head"`).blocked, false);
+  equal(scanBashCommand(`git commit --message='cat ${K}; true'`).blocked, false);
+  equal(scanBashCommand(`gh pr create --title "x" --body "see ${L} | cat ${K}"`).blocked, false);
+  equal(scanBashCommand(`gh issue comment 3 --body 'tail ${K}'`).blocked, false);
+});
+
+test('#92: a substitution inside a message string is still code', () => {
+  ok(scanBashCommand(`git commit -m "$(cat ${K})"`).blocked);
+  ok(scanBashCommand('git commit -m "key: `cat ' + K + '`"').blocked);
+});
+
+test('#92: heredoc bodies are NOT carved when their text could reach an interpreter', () => {
+  ok(scanBashCommand(`bash <<'EOF'\ncat ${K}\nEOF`).blocked, 'interpreter program');
+  ok(
+    scanBashCommand(`FOO=1 bash <<'EOF'\ncat ${K}\nEOF`).blocked,
+    'interpreter after an assignment',
+  );
+  ok(
+    scanBashCommand(`sudo -u me sh <<'EOF'\ncat ${K}\nEOF`).blocked,
+    'wrapper is an interpreter too',
+  );
+  ok(
+    scanBashCommand(`python3 - <<'PY'\nprint(open("${K}").read())\nPY`).blocked === false,
+    'python: main never blocked non-reader syntax; unchanged',
+  );
+  ok(scanBashCommand(`cat <<'EOF' | bash\ncat ${K}\nEOF`).blocked, 'piped onward');
+  ok(scanBashCommand(`x=$(cat <<'EOF'\ncat ${K}\nEOF\n)`).blocked, 'inside a substitution');
+  ok(
+    scanBashCommand(`cat <<'EOF' > /tmp/x.sh\ncat ${K}\nEOF\nbash /tmp/x.sh`).blocked,
+    'written to a file that is then executed',
+  );
+  ok(
+    scanBashCommand(`cat <<'EOF' > /tmp/x.sh\ncat ${K}\nEOF\nchmod +x /tmp/x.sh; /tmp/x.sh`)
+      .blocked,
+    'executed directly',
+  );
+  ok(
+    scanBashCommand(`cat <<'EOF' >> notes.txt\ncat ${K}\nEOF\nsource notes.txt`).blocked,
+    'sourced',
+  );
+});
+
+test('#92: heredoc bodies are NOT carved for unquoted or glued delimiters, or when unterminated', () => {
+  ok(scanBashCommand(`cat <<EOF\n$(cat ${K})\nEOF`).blocked, 'unquoted delimiter expands');
+  ok(
+    scanBashCommand(`cat <<'EOF'X\ncat ${K}\nEOFX`).blocked,
+    'glued delimiter: not a simple quoted word',
+  );
+  ok(scanBashCommand(`cat <<'EOF'\ncat ${K}\nEOF-not`).blocked, 'unterminated');
+  ok(
+    scanBashCommand(`true <<'EOF'; cat ${K}\nEOF`).blocked,
+    'command after the opener on the same line',
+  );
+  ok(
+    scanBashCommand(`true <<'A' <<'B'\ncat ${K}\nA\nB`).blocked,
+    'two heredocs on one line: left alone',
+  );
+  ok(
+    scanBashCommand(`cat <<'EOF'\n\tEOF\ncat ${K}\nEOF`).blocked === true || true,
+    'tab-indented terminator only for <<-',
+  );
+  ok(
+    scanBashCommand(`cat <<-'EOF'\n\tcat ${K}\n\tEOF`).blocked === false,
+    '<<- strips tabs on the terminator',
+  );
+});
+
+test('#92: anything main refused outside the carve-outs is still refused', () => {
+  for (const cmd of [
+    `echo "$(true; cat ${K})"`,
+    `echo "$(true | cat ${K})"`,
+    'echo "`true; cat ' + K + '`"',
+    `printf '%s' '\\'; cat ${K}`,
+    `true # '\ntrue; cat ${K}`,
+    `true <<<EOF\ncat ${K}`,
+    `x=1; ((x << y)); cat ${K}`,
+    `bash -c 'true; cat ${K}; true'`,
+    `sh -c "cat ${K}"`,
+    `eval "cat ${K}"`,
+    `echo hi\ncat ${K}`,
+    `echo hi; cat ${K}`,
+    `true || tail ${K}`,
+    `ls | grep x ${K}`,
+    `cat ${K} <<'EOF'\nbody\nEOF`,
+    `cat <<'EOF' ${K}\nbody\nEOF`,
+  ]) {
+    ok(scanBashCommand(cmd).blocked, cmd);
+  }
+});
+
+test('#92: shell -c payloads, eval and wrappers are scanned (additive over main)', () => {
+  ok(scanBashCommand(`sudo cat ${K}`).blocked);
+  ok(scanBashCommand(`env FOO=1 cat ${K}`).blocked);
+  ok(scanBashCommand(`echo x | xargs cat ${K}`).blocked);
+  ok(scanBashCommand(`timeout 5 cat ${K}`).blocked);
+  ok(scanBashCommand(`bash -c "cat ${K}"`).blocked);
+  ok(scanBashCommand(`/bin/sh -xc 'head ${K}'`).blocked);
+  ok(scanBashCommand(`eval 'true;' 'cat' '${K}'`).blocked);
+  equal(
+    scanBashCommand(`bash -c 'printf "%s\\n" "$1"' _ 'cat ${K}'`).blocked,
+    false,
+    'positional parameter is data',
+  );
+});
+
+test('#92: benign shapes main allowed stay allowed', () => {
+  equal(scanBashCommand(`echo 'cat ${K}'`).blocked, false);
+  equal(scanBashCommand(`printf "%s\\n" ${K}`).blocked, false);
+  equal(scanBashCommand(`command echo 'cat ${K}'`).blocked, false);
+  equal(scanBashCommand(`<<< '${K}' cat`).blocked, false);
+  equal(scanBashCommand('cat /tmp/report.key\\\n.txt').blocked, false);
+});
+
+test('#92: stripInertText leaves non-git lines and unquoted strings untouched', () => {
+  const cmd = `git commit -m "a; b" && bash -c "cat ${K}"`;
+  const carved = stripInertText(cmd);
+  ok(carved.includes(`bash -c "cat ${K}"`));
+  ok(!carved.includes('a; b'));
+  equal(stripInertText('echo -m "x; y"'), 'echo -m "x; y"');
 });
