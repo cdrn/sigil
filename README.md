@@ -179,6 +179,13 @@ allow_contract_creation = false           # deploys (to = null); when true, ever
 
 allow_message_signing = false             # EIP-191 personal_sign (e.g. SIWE)
 allow_typed_data = false                  # EIP-712 (Permit, OpenSea — can be financial)
+typed_data_verifying_contracts = []       # when allowed: domain.verifyingContract allowlist
+typed_data_primary_types = []             # when allowed: primaryType allowlist ("Permit", …)
+                                          # a domain chainId must also be in chain_ids
+
+# Optional rolling-window caps on tx.value (work in permissive mode too).
+max_value_per_hour_wei = "100000000000000000"    # 0.1 ETH / hour
+max_value_per_day_wei = "1000000000000000000"    # 1 ETH / day
 
 # Optional: above this value, sigil pushes a notification to your phone and
 # waits for an approve/deny tap before signing. See "Out-of-band confirm"
@@ -188,7 +195,11 @@ require_confirm_above_wei = "10000000000000000"   # 0.01 ETH
 
 A failed rule throws `POLICY_DENIED` (-32001) back to the agent with the human-readable reason ("tx denied — value X exceeds max_value_wei Y"), and the deny is appended to the hash-chained audit log alongside allows. Denies are forensically the more interesting half — they're the prompt-injection canary.
 
-What's deferred to follow-up PRs (still in [#3](https://github.com/cdrn/sigil/issues/3)): rolling-window value caps (e.g. 1 ETH/day per portal), EIP-712 domain + primary-type allowlists, decoded-calldata arg checks.
+**Rolling-window caps** (`max_value_per_hour_wei`, `max_value_per_day_wei`, and `svm_max_lamports_per_hour/day`) are the one rule that applies in *both* modes — a permissive "bot with an allowance" is the common case. They count native value only: `tx.value` for EVM, decoded System-Program transfers for Solana. ERC-20 / SPL transfers are calldata and are not counted; gate those with `allowed_selectors` or `require_confirm_above_wei`. Spends are recorded in a per-portal ledger at `~/.sigil/state/<handle>.ledger` (append-only JSONL, shared across windows through the same lock as the audit log, compacted automatically) and the check-and-record is atomic, so two windows can't both take the last of an allowance. The cap is checked before any confirm push (so you're not asked to approve something that would be denied anyway) and again right before signing. `sigil policy spend <handle>` shows the trailing 1h/24h totals against the caps. `sigil portal remove` deletes the ledger with the portal.
+
+**EIP-712 allowlists** (strict mode, with `allow_typed_data = true`): `typed_data_verifying_contracts` and `typed_data_primary_types` each restrict one axis when non-empty, and a domain that carries a `chainId` must name one of `chain_ids`. A typed-data signature can move funds (Permit, Permit2, exchange orders), so it gets the same treatment as a transaction's destination.
+
+Still deferred (in [#3](https://github.com/cdrn/sigil/issues/3)): decoded-calldata argument checks.
 
 ## Out-of-band confirm
 

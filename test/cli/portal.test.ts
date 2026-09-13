@@ -23,7 +23,7 @@ import {
   portalNew,
   portalRemove,
 } from '../../src/cli/portal.js';
-import { parsePolicy } from '../../src/policy/index.js';
+import { FileSpendLedger, parsePolicy } from '../../src/policy/index.js';
 
 function mkTmpHome(): string {
   return mkdtempSync(join(tmpdir(), 'sigil-cli-portal-'));
@@ -660,6 +660,33 @@ test('portalNew: refuses invalid handle format', () => {
         kdfParams: TEST_KDF,
       }),
     );
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('portalRemove: deletes the spend ledger and its lock directory with the portal', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    const ledger = new FileSpendLedger(paths.stateDir);
+    ledger.reserve('evm:bot', 'wei', 5n, [], Date.now());
+    ok(existsSync(ledger.pathFor('evm:bot')));
+    ok(existsSync(`${ledger.pathFor('evm:bot')}.lock.d`));
+    // A ledger for another portal must survive.
+    ledger.reserve('evm:other', 'wei', 1n, [], Date.now());
+    equal(portalRemove(paths, 'evm:bot').removed, true);
+    equal(existsSync(ledger.pathFor('evm:bot')), false);
+    equal(existsSync(`${ledger.pathFor('evm:bot')}.lock.d`), false);
+    ok(existsSync(ledger.pathFor('evm:other')));
   } finally {
     rmSync(home, { recursive: true });
   }

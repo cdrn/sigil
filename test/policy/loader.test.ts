@@ -305,3 +305,111 @@ test('FileSystemPolicyResolver: re-read picks up edits without restart', () => {
     rmSync(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Rolling-window caps (mode-independent) and EIP-712 allowlists (strict)
+// ---------------------------------------------------------------------------
+
+test('parsePolicy: window caps are absent by default in both modes', () => {
+  const perm = parsePolicy('mode = "permissive"\n');
+  const strict = parsePolicy('mode = "strict"\nchain_ids = [1]\n');
+  for (const p of [perm, strict]) {
+    equal(p.maxValuePerHourWei, undefined);
+    equal(p.maxValuePerDayWei, undefined);
+    equal(p.svmMaxLamportsPerHour, undefined);
+    equal(p.svmMaxLamportsPerDay, undefined);
+  }
+});
+
+test('parsePolicy: window caps parse as bigints in permissive mode', () => {
+  const p = parsePolicy(`
+    mode = "permissive"
+    max_value_per_hour_wei = "100000000000000000"
+    max_value_per_day_wei = "1000000000000000000"
+    svm_max_lamports_per_hour = "1"
+    svm_max_lamports_per_day = "99999999999999999999"
+  `);
+  equal(p.maxValuePerHourWei, 10n ** 17n);
+  equal(p.maxValuePerDayWei, 10n ** 18n);
+  equal(p.svmMaxLamportsPerHour, 1n);
+  equal(p.svmMaxLamportsPerDay, 99999999999999999999n);
+});
+
+test('parsePolicy: window caps parse in strict mode too', () => {
+  const p = parsePolicy('mode = "strict"\nchain_ids = [1]\nmax_value_per_day_wei = "5"\n');
+  equal(p.maxValuePerDayWei, 5n);
+});
+
+test('parsePolicy: window caps must be decimal strings', () => {
+  throws(() => parsePolicy('mode = "permissive"\nmax_value_per_hour_wei = 5\n'), PolicyLoadError);
+  throws(
+    () => parsePolicy('mode = "permissive"\nmax_value_per_day_wei = "0x10"\n'),
+    PolicyLoadError,
+  );
+  throws(
+    () => parsePolicy('mode = "permissive"\nsvm_max_lamports_per_day = "-1"\n'),
+    PolicyLoadError,
+  );
+  throws(
+    () => parsePolicy('mode = "permissive"\nsvm_max_lamports_per_hour = ""\n'),
+    PolicyLoadError,
+  );
+});
+
+test('parsePolicy: an hourly cap above the daily cap is rejected (per asset)', () => {
+  throws(
+    () =>
+      parsePolicy(
+        'mode = "permissive"\nmax_value_per_hour_wei = "2"\nmax_value_per_day_wei = "1"\n',
+      ),
+    /max_value_per_hour_wei \(2\) must not exceed max_value_per_day_wei \(1\)/,
+  );
+  throws(
+    () =>
+      parsePolicy(
+        'mode = "permissive"\nsvm_max_lamports_per_hour = "2"\nsvm_max_lamports_per_day = "1"\n',
+      ),
+    /svm_max_lamports_per_hour/,
+  );
+  // Equal is fine; wei vs lamports don't constrain each other.
+  const p = parsePolicy(
+    'mode = "permissive"\nmax_value_per_hour_wei = "3"\nmax_value_per_day_wei = "3"\nsvm_max_lamports_per_hour = "9"\n',
+  );
+  equal(p.maxValuePerHourWei, 3n);
+  equal(p.svmMaxLamportsPerHour, 9n);
+});
+
+test('parsePolicy: typed-data allowlists default to empty in strict mode and are ignored in permissive', () => {
+  const s = parsePolicy('mode = "strict"\nchain_ids = [1]\n');
+  deepEqual(s.typedDataVerifyingContracts, []);
+  deepEqual(s.typedDataPrimaryTypes, []);
+  const p = parsePolicy('mode = "permissive"\ntyped_data_verifying_contracts = ["nonsense"]\n');
+  deepEqual(p.typedDataVerifyingContracts, []);
+});
+
+test('parsePolicy: typed-data verifying contracts are validated and lowercased', () => {
+  const p = parsePolicy(`
+    mode = "strict"
+    chain_ids = [1]
+    allow_typed_data = true
+    typed_data_verifying_contracts = ["0x000000000022D473030F116dDEE9F6B43aC78BA3"]
+    typed_data_primary_types = ["PermitSingle", "Order"]
+  `);
+  deepEqual(p.typedDataVerifyingContracts, ['0x000000000022d473030f116ddee9f6b43ac78ba3']);
+  deepEqual(p.typedDataPrimaryTypes, ['PermitSingle', 'Order']);
+  throws(
+    () =>
+      parsePolicy(
+        'mode = "strict"\nchain_ids = [1]\ntyped_data_verifying_contracts = ["0x1234"]\n',
+      ),
+    /typed_data_verifying_contracts\[0\] must be 0x-prefixed 20-byte address/,
+  );
+  throws(
+    () => parsePolicy('mode = "strict"\nchain_ids = [1]\ntyped_data_primary_types = [" "]\n'),
+    /typed_data_primary_types\[0\] must be a non-empty string/,
+  );
+  throws(
+    () => parsePolicy('mode = "strict"\nchain_ids = [1]\ntyped_data_primary_types = "Permit"\n'),
+    /must be an array/,
+  );
+});

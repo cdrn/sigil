@@ -11,10 +11,15 @@ import {
   type TypedData,
 } from '../eth/index.js';
 import {
+  checkWindowCaps,
   evaluate,
+  type Policy,
   PolicyLoadError,
   type PolicyRequest,
   type PolicyResolver,
+  type SpendAsset,
+  type SpendLedger,
+  windowCapsFor,
 } from '../policy/index.js';
 import {
   base58Encode,
@@ -62,6 +67,15 @@ export interface MethodContext {
    * deny — fail closed.
    */
   confirm?: ConfirmGate;
+  /**
+   * Per-portal spend ledger backing the rolling-window value caps
+   * (max_value_per_hour_wei etc.). Optional so tests can omit it; a policy
+   * that sets a window cap while no ledger is configured is a hard deny —
+   * fail closed, never silently uncapped.
+   */
+  ledger?: SpendLedger;
+  /** Clock override for tests. Defaults to Date.now. */
+  now?: () => number;
 }
 
 export type MethodHandler = (params: unknown, ctx: MethodContext) => unknown | Promise<unknown>;
@@ -137,7 +151,83 @@ function requirePortal(handles: HandleTable, handle: string): Buffer {
  *
  * Deny is not returned: gatePolicy throws RPC_POLICY_DENIED directly.
  */
-type GateResult = { proceed: 'allow' } | { proceed: 'confirm'; summary: string };
+type GateResult =
+  { proceed: 'allow'; policy: Policy } | { proceed: 'confirm'; summary: string; policy: Policy };
+
+/** The native value a request would add to the portal's rolling windows. */
+interface Spend {
+  asset: SpendAsset;
+  amount: bigint;
+}
+
+function spendOf(request: PolicyRequest): Spend | null {
+  if (request.kind === 'transaction') return { asset: 'wei', amount: BigInt(request.tx.value) };
+  if (request.kind === 'svm_transaction') {
+    let total = 0n;
+    for (const t of request.transfers) total += t.lamports;
+    return { asset: 'lamports', amount: total };
+  }
+  return null;
+}
+
+/**
+ * Rolling-window pre-check, run before any confirm push so a human isn't
+ * asked to approve something the cap would deny anyway. Read-only: the
+ * authoritative check-and-record happens in reserveSpend, right before
+ * signing. Returns a deny reason or null.
+ */
+function windowPrecheck(
+  ctx: MethodContext,
+  handle: string,
+  policy: Policy,
+  spend: Spend,
+): string | null {
+  const caps = windowCapsFor(policy, spend.asset);
+  if (caps.length === 0) return null;
+  if (!ctx.ledger) {
+    return 'policy sets rolling-window value caps but no spend ledger is configured — refusing to sign';
+  }
+  const ledger = ctx.ledger;
+  const now = (ctx.now ?? Date.now)();
+  const reason = checkWindowCaps(
+    caps,
+    spend.amount,
+    (w) => ledger.spent(handle, spend.asset, w, now),
+    spend.asset,
+  );
+  return reason === null ? null : `tx ${reason}`;
+}
+
+/**
+ * Atomically check the rolling-window caps against the ledger and record
+ * this spend. Called after the policy gate and any confirm have passed,
+ * immediately before the signature is produced, so two windows racing for
+ * the last of an allowance can't both get it. On breach: audit a deny and
+ * throw RPC_POLICY_DENIED.
+ */
+function reserveSpend(
+  ctx: MethodContext,
+  handle: string,
+  kind: string,
+  payload: unknown,
+  policy: Policy,
+  spend: Spend,
+): void {
+  const caps = windowCapsFor(policy, spend.asset);
+  if (caps.length === 0) return;
+  let reason: string | null;
+  if (!ctx.ledger) {
+    reason =
+      'policy sets rolling-window value caps but no spend ledger is configured — refusing to sign';
+  } else {
+    const now = (ctx.now ?? Date.now)();
+    const r = ctx.ledger.reserve(handle, spend.asset, spend.amount, caps, now);
+    reason = r === null ? null : `tx ${r}`;
+  }
+  if (reason === null) return;
+  ctx.audit.append({ kind, portal: handle, payload, decision: 'deny', reason });
+  throw new RpcMethodError(RPC_POLICY_DENIED, reason);
+}
 
 function gatePolicy(
   ctx: MethodContext,
@@ -150,9 +240,18 @@ function gatePolicy(
   try {
     const policy = ctx.policy.resolve(handle);
     const decision = evaluate(request, policy);
-    if (decision.kind === 'allow') return { proceed: 'allow' };
-    if (decision.kind === 'confirm') return { proceed: 'confirm', summary: decision.summary };
-    reason = decision.reason;
+    if (decision.kind !== 'deny') {
+      const spend = spendOf(request);
+      const windowReason = spend ? windowPrecheck(ctx, handle, policy, spend) : null;
+      if (windowReason === null) {
+        return decision.kind === 'allow'
+          ? { proceed: 'allow', policy }
+          : { proceed: 'confirm', summary: decision.summary, policy };
+      }
+      reason = windowReason;
+    } else {
+      reason = decision.reason;
+    }
   } catch (err) {
     if (err instanceof PolicyLoadError) {
       reason = err.message;
@@ -319,6 +418,10 @@ const sigil_eth_sign_transaction: MethodHandler = async (params, ctx) => {
   if (gate.proceed === 'confirm') {
     await runConfirmGate(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.summary);
   }
+  reserveSpend(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.policy, {
+    asset: 'wei',
+    amount: BigInt(tx.value),
+  });
   const signed = signTransaction(tx, priv);
   ctx.audit.append({
     kind: 'eth_sign_transaction',
@@ -487,6 +590,12 @@ const sigil_svm_sign_transaction: MethodHandler = async (params, ctx) => {
     );
   }
 
+  let lamports = 0n;
+  for (const t of decoded.transfers) lamports += t.lamports;
+  reserveSpend(ctx, portal, 'svm_sign_transaction', { message: messageB64 }, gate.policy, {
+    asset: 'lamports',
+    amount: lamports,
+  });
   const sig = base58Encode(svmSign(messageBytes, secret));
   ctx.audit.append({
     kind: 'svm_sign_transaction',

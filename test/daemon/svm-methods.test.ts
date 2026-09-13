@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { ok, rejects } from 'node:assert/strict';
+import { equal, ok, rejects } from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +14,12 @@ import {
   RPC_POLICY_DENIED,
   RpcMethodError,
 } from '../../src/daemon/index.js';
-import { parsePolicy, type Policy, type PolicyResolver } from '../../src/policy/index.js';
+import {
+  MemorySpendLedger,
+  parsePolicy,
+  type Policy,
+  type PolicyResolver,
+} from '../../src/policy/index.js';
 import type { ConfirmGate } from '../../src/confirm/index.js';
 import { base58Decode, base58Encode, getPublicKey, verify } from '../../src/svm/index.js';
 
@@ -308,6 +313,66 @@ test('svm_sign_transaction: undecodable tx is denied when human confirm denies',
           ctx,
         ),
       (e: RpcMethodError) => e.code === RPC_POLICY_DENIED && /denied by human/.test(e.message),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rolling-window lamport caps on svm_sign_transaction
+// ---------------------------------------------------------------------------
+
+test('svm window caps: decoded transfers accumulate; the breach is denied; undecodable txs add nothing', async () => {
+  const policy = parsePolicy('mode = "permissive"\nsvm_max_lamports_per_hour = "100"\n');
+  const { ctx, cleanup } = makeCtx(policy);
+  const ledger = new MemorySpendLedger();
+  ctx.ledger = ledger;
+  ctx.now = () => 1_700_000_000_000;
+  try {
+    const to = new Uint8Array(32).fill(9);
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 60n)) },
+      ctx,
+    );
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 40n)) },
+      ctx,
+    );
+    equal(ledger.spent(PORTAL, 'lamports', 3_600_000, 1_700_000_000_000), 100n);
+    await rejects(
+      dispatch(
+        'sigil_svm_sign_transaction',
+        { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 1n)) },
+        ctx,
+      ),
+      /svm_max_lamports_per_hour = 100/,
+    );
+    // Permissive mode allows an undecodable tx outright; it carries no
+    // decoded value, so it neither breaches nor consumes the allowance.
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(unknownMsg(SVM_PUB)) },
+      ctx,
+    );
+    equal(ledger.spent(PORTAL, 'lamports', 3_600_000, 1_700_000_000_000), 100n);
+  } finally {
+    cleanup();
+  }
+});
+
+test('svm window caps: wei caps do not constrain lamports and vice versa', async () => {
+  const policy = parsePolicy('mode = "permissive"\nmax_value_per_hour_wei = "0"\n');
+  const { ctx, cleanup } = makeCtx(policy);
+  ctx.ledger = new MemorySpendLedger();
+  try {
+    const to = new Uint8Array(32).fill(9);
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 10n ** 12n)) },
+      ctx,
     );
   } finally {
     cleanup();

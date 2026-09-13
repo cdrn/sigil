@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { runCli } from '../../src/cli/main.js';
+import { FileSpendLedger } from '../../src/policy/index.js';
 
 function priv(b: number): Buffer {
   const p = Buffer.alloc(32);
@@ -603,4 +604,74 @@ test('runCli: policy init — refuses if policy already exists', async () => {
   } finally {
     rmSync(home, { recursive: true });
   }
+});
+
+test('runCli: policy spend — shows trailing totals against the caps', async () => {
+  const home = mkTmpHome();
+  try {
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    await runCli({
+      argv: ['portal', 'add', 'evm:bot', '--key-file', srcKey],
+      stdout: capture().stdout,
+      stderr: capture().stderr,
+      env: { SIGIL_HOME: home },
+      passphrase: () => Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    writeFileSync(
+      join(home, 'policy', 'evm:bot.toml'),
+      'mode = "permissive"\nmax_value_per_hour_wei = "100"\nmax_value_per_day_wei = "500"\n',
+    );
+    const ledger = new FileSpendLedger(join(home, 'state'));
+    const now = Date.now();
+    ledger.reserve('evm:bot', 'wei', 30n, [], now - 2 * 60 * 60 * 1000); // 2h ago: in 24h, not 1h
+    ledger.reserve('evm:bot', 'wei', 12n, [], now - 1000);
+    const cap = capture();
+    const r = await runCli({
+      argv: ['policy', 'spend', 'evm:bot'],
+      stdout: cap.stdout,
+      stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+    });
+    equal(r.code, 0, cap.err());
+    ok(
+      /wei\s+1h: 12\s+24h: 42\s+\(max_value_per_hour_wei=100, max_value_per_day_wei=500\)/.test(
+        cap.out(),
+      ),
+      cap.out(),
+    );
+    ok(/lamports\s+1h: 0\s+24h: 0\s+\(no window caps set\)/.test(cap.out()), cap.out());
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: policy spend — works with no ledger and no policy file yet', async () => {
+  const home = mkTmpHome();
+  try {
+    const cap = capture();
+    const r = await runCli({
+      argv: ['policy', 'spend', 'evm:none'],
+      stdout: cap.stdout,
+      stderr: cap.stderr,
+      env: { SIGIL_HOME: home },
+    });
+    equal(r.code, 0, cap.err());
+    ok(/wei\s+1h: 0\s+24h: 0/.test(cap.out()));
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
+
+test('runCli: policy spend — missing handle is a usage error', async () => {
+  const cap = capture();
+  const r = await runCli({
+    argv: ['policy', 'spend'],
+    stdout: cap.stdout,
+    stderr: cap.stderr,
+    env: { SIGIL_HOME: mkTmpHome() },
+  });
+  equal(r.code, 2);
+  ok(/policy spend: missing handle/.test(cap.err()));
 });

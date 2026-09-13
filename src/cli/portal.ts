@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -250,6 +251,16 @@ export function portalRemove(paths: SigilPaths, handle: string): PortalRemoveRes
   if (existsSync(policyPath)) {
     try {
       unlinkSync(policyPath);
+    } catch {
+      /* ignore */
+    }
+  }
+  // The spend ledger (and its lock directory) go with the portal too — a
+  // re-added portal with the same handle starts with a clean allowance.
+  const ledgerPath = join(paths.stateDir, `${handle}.ledger`);
+  for (const p of [ledgerPath, `${ledgerPath}.lock.d`]) {
+    try {
+      rmSync(p, { recursive: true, force: true });
     } catch {
       /* ignore */
     }

@@ -37,3 +37,33 @@ test('strict template mentions SIWE / OpenSea / Permit in comments', () => {
   ok(/Sign-In With Ethereum/.test(STRICT_TEMPLATE));
   ok(/OpenSea|Permit/.test(STRICT_TEMPLATE));
 });
+
+test('STRICT_TEMPLATE: typed-data allowlists present and empty; window caps commented out', () => {
+  const p = parsePolicy(STRICT_TEMPLATE);
+  equal(p.typedDataVerifyingContracts.length, 0);
+  equal(p.typedDataPrimaryTypes.length, 0);
+  equal(p.maxValuePerHourWei, undefined);
+  equal(p.maxValuePerDayWei, undefined);
+  equal(p.svmMaxLamportsPerHour, undefined);
+  equal(p.svmMaxLamportsPerDay, undefined);
+  ok(/# max_value_per_hour_wei/.test(STRICT_TEMPLATE));
+  ok(/# svm_max_lamports_per_day/.test(STRICT_TEMPLATE));
+  ok(/typed_data_verifying_contracts = \[\]/.test(STRICT_TEMPLATE));
+});
+
+test('PERMISSIVE_TEMPLATE: mentions the window caps (the one rule that applies there) but sets none', () => {
+  const p = parsePolicy(PERMISSIVE_TEMPLATE);
+  equal(p.mode, 'permissive');
+  equal(p.maxValuePerDayWei, undefined);
+  ok(/# max_value_per_day_wei/.test(PERMISSIVE_TEMPLATE));
+  // Uncommenting the examples yields a valid policy.
+  const uncommented = PERMISSIVE_TEMPLATE.replace(
+    /^# (max_value_per_(hour|day)_wei|svm_max_lamports_per_(hour|day))/gm,
+    '$1',
+  );
+  const q = parsePolicy(uncommented);
+  equal(q.maxValuePerHourWei, 10n ** 17n);
+  equal(q.maxValuePerDayWei, 10n ** 18n);
+  equal(q.svmMaxLamportsPerHour, 100_000_000n);
+  equal(q.svmMaxLamportsPerDay, 1_000_000_000n);
+});

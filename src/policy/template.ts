@@ -20,6 +20,18 @@ export const PERMISSIVE_TEMPLATE = `# sigil policy file — permissive mode (def
 # https://github.com/cdrn/sigil#policy-engine
 
 mode = "permissive"
+
+# Optional rolling-window caps on native value signed by this portal — the
+# one restriction that still makes sense on a permissive portal ("a bot with
+# an allowance"). Decimal strings in wei; either or both may be set; an
+# hourly cap must not exceed the daily one. Only tx.value is counted (token
+# transfers are calldata) — see the README.
+# max_value_per_hour_wei = "100000000000000000"    # 0.1 ETH / hour
+# max_value_per_day_wei  = "1000000000000000000"   # 1 ETH / day
+#
+# Same for native SOL transfers, in lamports (1 SOL = 1000000000):
+# svm_max_lamports_per_hour = "100000000"
+# svm_max_lamports_per_day  = "1000000000"
 `;
 
 export const STRICT_TEMPLATE = `# sigil policy file — strict mode
@@ -72,6 +84,21 @@ allow_message_signing = false
 # transactions. Set true to permit.
 allow_typed_data = false
 
+# When allow_typed_data = true, these refine what may be signed. Each empty
+# list means "no restriction on that axis". Independently, a domain that
+# names a chainId must name one of chain_ids above.
+#   typed_data_verifying_contracts — lowercase 0x addresses the domain's
+#     verifyingContract must be one of (e.g. Permit2, an exchange).
+#   typed_data_primary_types — primaryType names, e.g. ["Permit", "Order"].
+typed_data_verifying_contracts = []
+typed_data_primary_types = []
+
+# Optional rolling-window caps on tx.value (mode-independent). Decimal
+# strings in wei; hourly must not exceed daily. Enforced against a
+# per-portal ledger in ~/.sigil/state; see "sigil policy spend <handle>".
+# max_value_per_hour_wei = "100000000000000000"    # 0.1 ETH / hour
+# max_value_per_day_wei  = "1000000000000000000"   # 1 ETH / day
+
 # Optional: above this wei amount, sigil pushes a notification to your
 # phone and waits for an explicit approve/deny tap before signing. Must be
 # strictly less than max_value_wei. Requires a [confirm.ntfy] block in
@@ -101,6 +128,10 @@ svm_max_lamports = "0"
 # — push a confirm to your phone. Must be strictly less than svm_max_lamports.
 # Example: confirm anything above 0.1 SOL.
 # require_confirm_above_lamports = "100000000"
+
+# Optional rolling-window caps on decoded native SOL transfers, in lamports.
+# svm_max_lamports_per_hour = "100000000"
+# svm_max_lamports_per_day  = "1000000000"
 `;
 
 export type PolicyMode = 'permissive' | 'strict';
