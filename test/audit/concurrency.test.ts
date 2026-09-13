@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditWriter, verifyChain } from '../../src/audit/log.js';
-import { AuditLockError, acquireLockSync } from '../../src/audit/lock.js';
+import { AuditLockError, acquireLockSync } from '../../src/fs/lock.js';
 
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), 'sigil-audit-conc-'));

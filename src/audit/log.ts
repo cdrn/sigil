@@ -1,6 +1,15 @@
-import { closeSync, fsyncSync, openSync, readFileSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  fsyncSync,
+  linkSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import { keccak256 } from '../eth/keccak.js';
-import { type AcquireLockOptions, acquireLockSync, writeAllSync } from './lock.js';
+import { type AcquireLockOptions, acquireLockSync, writeAllSync } from '../fs/lock.js';
 
 export type AuditDecision = 'allow' | 'deny' | 'confirm_required';
 
@@ -237,30 +246,89 @@ export function readHead(path: string): ChainHead {
  * each extend their own stale tail and the interleaved lines fail startup
  * verification with seq gaps and broken prev_hash links.
  */
+export interface AuditWriterOpts {
+  /** Clock override for tests. Defaults to Date.now. */
+  now?: () => number;
+  lock?: AcquireLockOptions;
+  /**
+   * What to do when the file on disk fails chain verification:
+   *   - 'throw' (default): raise AuditChainError; the caller decides.
+   *   - 'quarantine': move the file to `<path>.corrupt-<timestamp>` (never
+   *     overwriting an existing file), report via `warn`, and start a fresh
+   *     chain. Nothing is deleted. sigil-mcp uses this so one damaged log
+   *     can't lock the user out of signing until they hand-edit it.
+   */
+  onCorrupt?: 'throw' | 'quarantine';
+  warn?: (message: string) => void;
+}
+
 export class AuditWriter {
   readonly path: string;
   readonly lockPath: string;
   #head: ChainHead;
   #size: number;
   #closed = false;
-  // Allow tests to inject a fixed clock. Defaults to Date.now.
   #now: () => number;
   #lockOpts: AcquireLockOptions;
+  #onCorrupt: 'throw' | 'quarantine';
+  #warn: (message: string) => void;
 
-  constructor(path: string, opts: { now?: () => number; lock?: AcquireLockOptions } = {}) {
+  constructor(path: string, opts: AuditWriterOpts = {}) {
     this.path = path;
     this.lockPath = `${path}.lock`;
     this.#now = opts.now ?? (() => Date.now());
     this.#lockOpts = opts.lock ?? {};
+    this.#onCorrupt = opts.onCorrupt ?? 'throw';
+    this.#warn = opts.warn ?? ((m) => process.stderr.write(m + '\n'));
+    this.#head = { nextSeq: 0, prevHash: ZERO_HASH };
+    this.#size = -1;
     // Take the lock even for the initial read so startup verification never
     // observes a mid-append view of the file.
     const release = acquireLockSync(this.lockPath, this.#lockOpts);
     try {
-      const { head, size } = readHeadAndSize(path);
-      this.#head = head;
-      this.#size = size;
+      this.#syncHead();
     } finally {
       release();
+    }
+  }
+
+  /**
+   * Bring the cached head in line with the file on disk. Must be called
+   * under the lock. Two cheap checks decide whether the cache is current:
+   * the byte length, and the hash of the file's last line — a replacement
+   * chain of identical length (another process quarantined a torn log and
+   * started over, and its genesis entry happens to serialize to the same
+   * size) is caught by the second. Only when either differs is the whole
+   * chain re-read and re-verified.
+   */
+  #syncHead(): void {
+    let diskSize = 0;
+    try {
+      diskSize = statSync(this.path).size;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    if (
+      diskSize === this.#size &&
+      (diskSize === 0 || lastLineHash(this.path, diskSize) === this.#head.prevHash)
+    ) {
+      return;
+    }
+    try {
+      const { head, size } = readHeadAndSize(this.path);
+      this.#head = head;
+      this.#size = size;
+    } catch (err) {
+      if (!(err instanceof AuditChainError) || this.#onCorrupt !== 'quarantine') throw err;
+      const quarantined = quarantine(this.path, this.#now());
+      // Our own state is reset before control passes to the warn callback:
+      // if it throws, this writer already describes the fresh chain.
+      this.#head = { nextSeq: 0, prevHash: ZERO_HASH };
+      this.#size = 0;
+      this.#warn(
+        `sigil: audit log ${this.path} failed verification (${err.message}); ` +
+          `moved it to ${quarantined} and started a fresh chain`,
+      );
     }
   }
 
@@ -282,17 +350,7 @@ export class AuditWriter {
       // Another process may have appended since we last read the tail. The
       // cached head is only trusted when the on-disk size still matches;
       // otherwise re-read (and re-verify) the chain from disk.
-      let diskSize = 0;
-      try {
-        diskSize = statSync(this.path).size;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-      }
-      if (diskSize !== this.#size) {
-        const { head, size } = readHeadAndSize(this.path);
-        this.#head = head;
-        this.#size = size;
-      }
+      this.#syncHead();
 
       const entry: AuditEntry = {
         seq: this.#head.nextSeq,
@@ -316,6 +374,7 @@ export class AuditWriter {
         closeSync(fd);
       }
 
+      // Only now — after the bytes are durably on disk — is the cache advanced.
       this.#head = { nextSeq: stored.seq + 1, prevHash: stored.hash };
       this.#size += Buffer.byteLength(line, 'utf8');
       return stored;
@@ -326,5 +385,65 @@ export class AuditWriter {
 
   close(): void {
     this.#closed = true;
+  }
+}
+
+/**
+ * Move a failed log aside as `<path>.corrupt-<iso timestamp>[-n]` without
+ * ever replacing an existing file. rename(2) silently overwrites its
+ * target, so publication goes through link(2), which fails with EEXIST if
+ * the name is taken; then the original name is unlinked. Two writers
+ * quarantining at the same instant end up with two distinct evidence
+ * files, never one clobbering the other.
+ */
+function quarantine(path: string, nowMs: number): string {
+  const base = `${path}.corrupt-${new Date(nowMs).toISOString().replace(/[:.]/g, '-')}`;
+  for (let i = 0; ; i++) {
+    const candidate = i === 0 ? base : `${base}-${i}`;
+    try {
+      linkSync(path, candidate);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw err;
+    }
+    unlinkSync(path);
+    return candidate;
+  }
+}
+
+/**
+ * Hash of the last newline-terminated line, read from the tail in chunks
+ * so a large log isn't re-read on every append. Returns null for a file
+ * that doesn't end in a newline (torn) or whose last line doesn't parse —
+ * either way the caller falls through to a full re-verify.
+ */
+function lastLineHash(path: string, size: number): string | null {
+  if (size === 0) return null;
+  const fd = openSync(path, 'r');
+  try {
+    const CHUNK = 4096;
+    const tail = Buffer.alloc(1);
+    readSync(fd, tail, 0, 1, size - 1);
+    if (tail[0] !== 0x0a) return null;
+    let acc = Buffer.alloc(0);
+    let pos = size;
+    for (;;) {
+      const start = Math.max(0, pos - CHUNK);
+      const buf = Buffer.alloc(pos - start);
+      readSync(fd, buf, 0, buf.length, start);
+      acc = Buffer.concat([buf, acc]);
+      pos = start;
+      const nl = acc.lastIndexOf(0x0a, acc.length - 2);
+      if (nl !== -1 || start === 0) {
+        const line = acc.subarray(nl + 1, acc.length - 1).toString('utf8');
+        try {
+          return parseLine(line).hash;
+        } catch {
+          return null;
+        }
+      }
+    }
+  } finally {
+    closeSync(fd);
   }
 }

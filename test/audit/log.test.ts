@@ -1,8 +1,22 @@
 import { test } from 'node:test';
 import { deepEqual, equal, notEqual, ok, throws } from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { lockPathFor, writeAllSync } from '../../src/fs/index.js';
 import {
   AuditChainError,
   AuditWriter,
@@ -600,6 +614,386 @@ test('fuzz: many append + restart cycles produce a verifiable chain (50 iters, s
       const verified = verifyChain(readFileSync(path));
       equal(verified.length, totalAppended, `iter ${iter}`);
     }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Multi-writer safety (one sigil-mcp per Claude window, all sharing one log)
+// ---------------------------------------------------------------------------
+
+test('two writers on one file interleave without breaking the chain', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-mw-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const a = new AuditWriter(path, { now: () => 1 });
+    const b = new AuditWriter(path, { now: () => 2 });
+    // b was opened when the file was empty; a appends first, so b's cached
+    // head is stale by the time it writes.
+    a.append({ kind: 'k', portal: 'p', payload: 1, decision: 'allow' });
+    b.append({ kind: 'k', portal: 'p', payload: 2, decision: 'allow' });
+    a.append({ kind: 'k', portal: 'p', payload: 3, decision: 'allow' });
+    b.append({ kind: 'k', portal: 'p', payload: 4, decision: 'allow' });
+    const entries = verifyChain(readFileSync(path));
+    deepEqual(
+      entries.map((e) => [e.seq, e.payload]),
+      [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+        [3, 4],
+      ],
+    );
+    // a's cached head lags until its next append; b wrote last and is current.
+    equal(a.head.nextSeq, 3);
+    equal(b.head.nextSeq, 4);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('concurrent child processes appending to one file produce a valid chain', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-proc-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const mod = fileURLToPath(new URL('../../src/audit/index.js', import.meta.url));
+    const N = 25;
+    const script = `
+      import { AuditWriter } from ${JSON.stringify(mod)};
+      const [path, tag, n] = process.argv.slice(1);
+      const w = new AuditWriter(path);
+      for (let i = 0; i < Number(n); i++) {
+        w.append({ kind: 'k', portal: tag, payload: i, decision: 'allow' });
+      }
+      w.close();
+    `;
+    const run = (tag: string) =>
+      new Promise<void>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          ['--input-type=module', '-e', script, path, tag, String(N)],
+          (err, _stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve()),
+        );
+      });
+    await Promise.all([run('one'), run('two'), run('three')]);
+    const entries = verifyChain(readFileSync(path));
+    equal(entries.length, 3 * N);
+    for (const tag of ['one', 'two', 'three']) {
+      deepEqual(
+        entries.filter((e) => e.portal === tag).map((e) => e.payload),
+        Array.from({ length: N }, (_, i) => i),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('onCorrupt=quarantine renames a broken log and starts a fresh chain', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-q-'));
+  try {
+    const path = join(dir, 'audit.log');
+    writeFileSync(path, '{"not":"a chain"}\n');
+    const warnings: string[] = [];
+    const w = new AuditWriter(path, {
+      now: () => 1_700_000_000_000,
+      onCorrupt: 'quarantine',
+      warn: (m) => warnings.push(m),
+    });
+    equal(w.head.nextSeq, 0);
+    equal(warnings.length, 1);
+    ok(/moved it to .*audit\.log\.corrupt-/.test(warnings[0]!));
+    const quarantined = readdirSync(dir).filter((f) => f.startsWith('audit.log.corrupt-'));
+    equal(quarantined.length, 1);
+    equal(readFileSync(join(dir, quarantined[0]!), 'utf8'), '{"not":"a chain"}\n');
+    w.append({ kind: 'k', portal: 'p', payload: null, decision: 'allow' });
+    equal(verifyChain(readFileSync(path)).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('default onCorrupt=throw surfaces AuditChainError at open', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-t-'));
+  try {
+    const path = join(dir, 'audit.log');
+    writeFileSync(path, '{"not":"a chain"}\n');
+    throws(() => new AuditWriter(path), AuditChainError);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a writer keeps chaining correctly after the log is deleted out from under it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-del-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const w = new AuditWriter(path, { now: () => 1 });
+    w.append({ kind: 'k', portal: 'p', payload: 'a', decision: 'allow' });
+    w.append({ kind: 'k', portal: 'p', payload: 'b', decision: 'allow' });
+    rmSync(path);
+    const e = w.append({ kind: 'k', portal: 'p', payload: 'c', decision: 'allow' });
+    equal(e.seq, 0);
+    equal(e.prev_hash, ZERO_HASH);
+    equal(verifyChain(readFileSync(path)).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a torn write by another process is detected on the next append (throw mode)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-torn-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const w = new AuditWriter(path, { now: () => 1 });
+    w.append({ kind: 'k', portal: 'p', payload: 'a', decision: 'allow' });
+    appendFileSync(path, '{"seq":1,"ts":2,"prev_ha'); // crashed writer, no newline
+    throws(
+      () => w.append({ kind: 'k', portal: 'p', payload: 'b', decision: 'allow' }),
+      AuditChainError,
+    );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a torn write by another process is quarantined on the next append (quarantine mode)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-torn-q-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const warnings: string[] = [];
+    const w = new AuditWriter(path, {
+      now: () => 1_700_000_000_000,
+      onCorrupt: 'quarantine',
+      warn: (m) => warnings.push(m),
+    });
+    w.append({ kind: 'k', portal: 'p', payload: 'a', decision: 'allow' });
+    appendFileSync(path, '{"seq":1,"ts":2,"prev_ha');
+    const e = w.append({ kind: 'k', portal: 'p', payload: 'b', decision: 'allow' });
+    equal(e.seq, 0, 'fresh chain after quarantine');
+    equal(warnings.length, 1);
+    const quarantined = readdirSync(dir).filter((f) => f.startsWith('audit.log.corrupt-'));
+    equal(quarantined.length, 1);
+    ok(readFileSync(join(dir, quarantined[0]!), 'utf8').endsWith('"prev_ha'), 'evidence intact');
+    equal(verifyChain(readFileSync(path)).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('quarantine never overwrites an earlier quarantined file with the same timestamp', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-q2-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const now = () => 1_700_000_000_000; // frozen clock → identical names
+    const mk = () => new AuditWriter(path, { now, onCorrupt: 'quarantine', warn: () => undefined });
+    writeFileSync(path, 'first-bad\n');
+    mk();
+    writeFileSync(path, 'second-bad\n');
+    mk();
+    writeFileSync(path, 'third-bad\n');
+    mk();
+    const files = readdirSync(dir)
+      .filter((f) => f.startsWith('audit.log.corrupt-'))
+      .sort();
+    equal(files.length, 3);
+    deepEqual(files.map((f) => readFileSync(join(dir, f), 'utf8')).sort(), [
+      'first-bad\n',
+      'second-bad\n',
+      'third-bad\n',
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a lock left by a dead process does not block a new writer', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-stale-'));
+  try {
+    const path = join(dir, 'audit.log');
+    writeFileSync(lockPathFor(path), `2147483647 ${'0'.repeat(16)}\n`); // dead pid
+    const w = new AuditWriter(path, { now: () => 1 });
+    w.append({ kind: 'k', portal: 'p', payload: 'a', decision: 'allow' });
+    equal(verifyChain(readFileSync(path)).length, 1);
+    ok(!existsSync(lockPathFor(path)));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('multibyte payloads keep the size bookkeeping honest across writers', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-utf8-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const a = new AuditWriter(path, { now: () => 1 });
+    const b = new AuditWriter(path, { now: () => 2 });
+    a.append({ kind: 'k', portal: 'p', payload: 'héllo — 🚀', decision: 'allow' });
+    b.append({ kind: 'k', portal: 'p', payload: 'ünïcödé', decision: 'deny', reason: '☃' });
+    a.append({ kind: 'k', portal: 'p', payload: '日本語', decision: 'allow' });
+    const entries = verifyChain(readFileSync(path));
+    deepEqual(
+      entries.map((e) => e.payload),
+      ['héllo — 🚀', 'ünïcödé', '日本語'],
+    );
+    equal(a.head.nextSeq, 3);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('head getter reflects an existing chain on open', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-head-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const a = new AuditWriter(path, { now: () => 1 });
+    const last = a.append({ kind: 'k', portal: 'p', payload: 1, decision: 'allow' });
+    const b = new AuditWriter(path);
+    deepEqual(b.head, { nextSeq: 1, prevHash: last.hash });
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Change detection beyond byte length; warn failures; barrier concurrency
+// ---------------------------------------------------------------------------
+
+test('a replacement chain of identical byte length is detected on the next append', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-samesize-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const w = new AuditWriter(path, { now: () => 1 });
+    w.append({ kind: 'k', portal: 'p', payload: 'aaaa', decision: 'allow' });
+    const before = readFileSync(path);
+    // Another process quarantined and restarted the chain with a genesis
+    // entry that happens to serialize to the same length.
+    const other = new AuditWriter(join(dir, 'other.log'), { now: () => 1 });
+    const genesis = other.append({ kind: 'k', portal: 'p', payload: 'bbbb', decision: 'allow' });
+    const replacement = readFileSync(join(dir, 'other.log'));
+    equal(replacement.length, before.length, 'test premise: same size');
+    writeFileSync(path, replacement);
+    const e = w.append({ kind: 'k', portal: 'p', payload: 'cccc', decision: 'allow' });
+    equal(e.seq, 1);
+    equal(e.prev_hash, genesis.hash, 'chained onto the replacement, not the cached head');
+    equal(verifyChain(readFileSync(path)).length, 2);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a throwing warn callback leaves the writer describing the fresh chain', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-warnthrow-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const w = new AuditWriter(path, {
+      now: () => 1_700_000_000_000,
+      onCorrupt: 'quarantine',
+      warn: () => {
+        throw new Error('logger exploded');
+      },
+    });
+    w.append({ kind: 'k', portal: 'p', payload: 'a', decision: 'allow' });
+    appendFileSync(path, 'torn');
+    throws(
+      () => w.append({ kind: 'k', portal: 'p', payload: 'b', decision: 'allow' }),
+      /logger exploded/,
+    );
+    deepEqual(w.head, { nextSeq: 0, prevHash: ZERO_HASH });
+    ok(!existsSync(path), 'corrupt file was moved aside before warn ran');
+    const e = w.append({ kind: 'k', portal: 'p', payload: 'c', decision: 'allow' });
+    equal(e.seq, 0);
+    equal(verifyChain(readFileSync(path)).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('quarantine refuses to overwrite a pre-existing file at the evidence path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-noclobber-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const now = 1_700_000_000_000;
+    const taken = `${path}.corrupt-${new Date(now).toISOString().replace(/[:.]/g, '-')}`;
+    writeFileSync(taken, 'earlier evidence\n');
+    writeFileSync(path, 'bad\n');
+    new AuditWriter(path, { now: () => now, onCorrupt: 'quarantine', warn: () => undefined });
+    equal(readFileSync(taken, 'utf8'), 'earlier evidence\n');
+    equal(readFileSync(`${taken}-1`, 'utf8'), 'bad\n');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('writeAllSync writes a multi-megabyte string completely', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-writeall-'));
+  try {
+    const path = join(dir, 'big');
+    const text = 'a'.repeat(5 * 1024 * 1024) + '\u{1F680}';
+    const fd = openSync(path, 'w');
+    try {
+      writeAllSync(fd, text);
+    } finally {
+      closeSync(fd);
+    }
+    equal(statSync(path).size, Buffer.byteLength(text, 'utf8'));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('barrier-released child processes appending simultaneously produce one valid chain', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-barrier-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const barrier = join(dir, 'go');
+    const mod = fileURLToPath(new URL('../../src/audit/index.js', import.meta.url));
+    const N = 25;
+    const script = `
+      import { AuditWriter } from ${JSON.stringify(mod)};
+      import { existsSync } from 'node:fs';
+      const [path, barrier, tag, n] = process.argv.slice(1);
+      const w = new AuditWriter(path);
+      const s = new Int32Array(new SharedArrayBuffer(4));
+      while (!existsSync(barrier)) Atomics.wait(s, 0, 0, 1);
+      for (let i = 0; i < Number(n); i++) {
+        w.append({ kind: 'k', portal: tag, payload: i, decision: 'allow' });
+      }
+      w.close();
+    `;
+    const tags = ['one', 'two', 'three', 'four'];
+    const kids = tags.map((tag) =>
+      execFile(process.execPath, [
+        '--input-type=module',
+        '-e',
+        script,
+        path,
+        barrier,
+        tag,
+        String(N),
+      ]),
+    );
+    const exits = kids.map(
+      (k) =>
+        new Promise<{ code: number | null; err: string }>((resolve) => {
+          let err = '';
+          k.stderr!.on('data', (d) => (err += d));
+          k.once('exit', (code) => resolve({ code, err }));
+        }),
+    );
+    await new Promise((r) => setTimeout(r, 150));
+    writeFileSync(barrier, '');
+    for (const r of await Promise.all(exits)) equal(r.code, 0, r.err);
+    const entries = verifyChain(readFileSync(path));
+    equal(entries.length, tags.length * N);
+    for (const tag of tags) {
+      deepEqual(
+        entries.filter((e) => e.portal === tag).map((e) => e.payload),
+        Array.from({ length: N }, (_, i) => i),
+      );
+    }
+    // Every writer opened on an empty file, so each one chained onto lines
+    // it had never seen: the resync path ran in every process.
   } finally {
     rmSync(dir, { recursive: true });
   }

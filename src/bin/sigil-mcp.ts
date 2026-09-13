@@ -82,7 +82,10 @@ async function main(): Promise<void> {
   }
 
   const handles = new HandleTable();
-  const audit = new AuditWriter(paths.auditLog);
+  // Quarantine rather than refuse to boot: a chain broken by an older sigil
+  // (or a crash mid-write) must not lock the user out of signing. The bad
+  // file is renamed, never deleted.
+  const audit = new AuditWriter(paths.auditLog, { onCorrupt: 'quarantine' });
   const policy = new FileSystemPolicyResolver(paths.policyDir);
 
   const context: MethodContext = {

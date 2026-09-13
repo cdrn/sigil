@@ -35,12 +35,14 @@ import { randomBytes } from 'node:crypto';
  * requires OS-level locking that core Node does not expose.
  */
 
-export class AuditLockError extends Error {
+export class FileLockError extends Error {
   constructor(msg: string) {
-    super(`audit lock error: ${msg}`);
-    this.name = 'AuditLockError';
+    super(`file lock error: ${msg}`);
+    this.name = 'FileLockError';
   }
 }
+/** @deprecated alias kept for the audit module's public surface. */
+export const AuditLockError = FileLockError;
 
 export interface AcquireLockOptions {
   /** Give up and throw after this long waiting for the lock. */
@@ -222,8 +224,33 @@ export function acquireLockSync(lockPath: string, opts: AcquireLockOptions = {})
     tryBreakStaleLock(lockPath, staleMs);
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new AuditLockError(`timed out after ${timeoutMs}ms waiting for ${lockPath}`);
+      throw new FileLockError(`timed out after ${timeoutMs}ms waiting for ${lockPath}`);
     }
     sleepSync(Math.min(pollMs, remaining));
+  }
+}
+
+/** Sidecar lock path for a data file: `<target>.lock`. */
+export function lockPathFor(target: string): string {
+  return `${target}.lock`;
+}
+
+/**
+ * Run `fn` while holding the sidecar lock for `target`. Synchronous by
+ * design (callers are synchronous append paths) and therefore not
+ * re-entrant: a nested acquire of the same target times out. A release
+ * failure never replaces fn's outcome — a committed append must not be
+ * reported as a failure — the lock is instead left for the stale path.
+ */
+export function withFileLock<T>(target: string, fn: () => T, opts: AcquireLockOptions = {}): T {
+  const release = acquireLockSync(lockPathFor(target), opts);
+  try {
+    return fn();
+  } finally {
+    try {
+      release();
+    } catch {
+      /* see above */
+    }
   }
 }
