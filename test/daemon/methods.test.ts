@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects } from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditWriter, verifyChain } from '../../src/audit/index.js';
@@ -1807,6 +1807,28 @@ test('window caps: a durability failure in the ledger denies the sign and is aud
       equal(last.decision, 'deny');
       ok(/durable/.test(last.reason ?? ''));
       await dispatch('sigil_eth_sign_transaction', txParams(1n), ctx);
+    } finally {
+      cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('#91: a raw ledger I/O failure denies the sign with an audited, named reason', async () => {
+  const dir = mkTmp();
+  try {
+    const ledger = new FileSpendLedger(dir, { now: () => T0 });
+    mkdirSync(ledger.pathFor('evm:bot'), { recursive: true }); // EISDIR
+    const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP, { ledger });
+    try {
+      await rejects(
+        dispatch('sigil_eth_sign_transaction', txParams(1n), ctx),
+        /I\/O failure \(EISDIR/,
+      );
+      const last = verifyChain(readFileSync(auditPath)).at(-1)!;
+      equal(last.decision, 'deny');
+      ok(/spend ledger .*I\/O failure/.test(last.reason ?? ''), last.reason);
     } finally {
       cleanup();
     }

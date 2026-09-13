@@ -533,6 +533,8 @@ test('svm: a confirm approved after the keys were zeroized is refused (zero seed
   } as unknown as ConfirmGate;
   const { ctx, cleanup } = makeCtx(policy, gate);
   handlesRef = ctx.handles as HandleTable;
+  const ledger = new MemorySpendLedger();
+  ctx.ledger = ledger;
   try {
     let err: RpcMethodError | null = null;
     try {
@@ -546,6 +548,7 @@ test('svm: a confirm approved after the keys were zeroized is refused (zero seed
     }
     ok(err instanceof RpcMethodError, String(err));
     equal(err!.code, RPC_DAEMON_LOCKED);
+    equal(ledger.spent(PORTAL, 'lamports', 3_600_000), 0n, 'nothing reserved');
   } finally {
     try {
       cleanup();
