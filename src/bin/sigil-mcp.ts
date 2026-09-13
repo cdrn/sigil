@@ -16,6 +16,7 @@ import { HandleTable } from '../daemon/handles.js';
 import type { MethodContext } from '../daemon/index.js';
 import { runMcpStdio } from '../mcp/server.js';
 import { FileSpendLedger, FileSystemPolicyResolver } from '../policy/index.js';
+import { startParentWatchdog } from '../mcp/parent-watchdog.js';
 import { DEFAULT_RPC_PORT, startRpcServer, type RpcProxyServer } from '../rpc/index.js';
 
 /**
@@ -38,7 +39,9 @@ import { DEFAULT_RPC_PORT, startRpcServer, type RpcProxyServer } from '../rpc/in
  * out across every socket in the directory and unlocks them all at once.
  *
  * The control socket is unref'd so it doesn't keep the loop alive on its own;
- * stdin alone gates process lifetime.
+ * stdin gates process lifetime, with a parent-process watchdog as backstop
+ * (see mcp/parent-watchdog.ts) and a bounded drain of in-flight requests
+ * once stdin closes.
  */
 async function main(): Promise<void> {
   const paths = resolvePaths(process.env);
@@ -206,6 +209,19 @@ async function main(): Promise<void> {
   process.on('exit', shutdown);
   process.on('SIGINT', () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
+
+  // Belt and braces for the stdin-EOF exit path: if Claude Code goes away
+  // without our pipe closing cleanly, or a stuck request keeps us alive,
+  // notice the parent is gone and leave (#90). Poll interval is overridable
+  // for tests via SIGIL_PARENT_POLL_MS.
+  const pollMs = Number(process.env['SIGIL_PARENT_POLL_MS'] ?? '');
+  startParentWatchdog({
+    ...(Number.isFinite(pollMs) && pollMs > 0 ? { intervalMs: pollMs } : {}),
+    onGone: (reason) => {
+      process.stderr.write(`sigil-mcp: parent gone (${reason}); exiting\n`);
+      process.exit(0);
+    },
+  });
 
   await runMcpStdio({
     context,

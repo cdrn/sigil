@@ -137,6 +137,13 @@ async function invokeTool(params: unknown, opts: McpServerOpts): Promise<unknown
 export interface McpStdioOpts extends McpServerOpts {
   stdin: NodeJS.ReadableStream;
   stdout: NodeJS.WritableStream;
+  /**
+   * How long to wait for in-flight requests after stdin closes before
+   * resolving anyway. A request stuck mid-flight (a confirm nobody will
+   * answer) must not keep the process alive forever once the client is
+   * gone (#90). Default 5000 ms.
+   */
+  drainTimeoutMs?: number;
 }
 
 /**
@@ -173,8 +180,22 @@ export function runMcpStdio(opts: McpStdioOpts): Promise<void> {
     });
     stdin.on('end', () => {
       // Drain the processing chain before resolving — otherwise a confirm
-      // mid-flight when stdin closes would lose its response.
-      processing.then(() => resolve(), reject);
+      // mid-flight when stdin closes would lose its response — but only
+      // for so long: with the client gone there is nobody to deliver it to.
+      // The timer deliberately keeps the loop alive: it is the bounded path
+      // to a clean exit, so it must be allowed to fire.
+      const limit = opts.drainTimeoutMs ?? 5_000;
+      const timer = setTimeout(() => resolve(), limit);
+      processing.then(
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
     });
     stdin.on('error', reject);
   });
