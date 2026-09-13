@@ -21,6 +21,7 @@ import {
   type SpendLedger,
   SpendLedgerError,
   type WindowCap,
+  _ledgerTestHooks,
 } from '../../src/policy/index.js';
 
 const T0 = 1_700_000_000_000;
@@ -416,6 +417,79 @@ test('FileSpendLedger: a refused negative amount never creates or touches the fi
     const l = fileLedger(dir, { now: T0 });
     ok(l.reserve('evm:a', 'wei', -5n, []) !== null);
     ok(!existsSync(l.pathFor('evm:a')));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Durability failures are never swallowed
+// ---------------------------------------------------------------------------
+
+test('FileSpendLedger: a directory fsync failure after the append refuses the spend (over-counts, never under-counts)', () => {
+  const dir = mkTmp();
+  try {
+    const l = fileLedger(dir, { now: T0 });
+    equal(l.reserve('evm:a', 'wei', 5n, [HOUR]), null);
+    let calls = 0;
+    _ledgerTestHooks.fsyncDir = (d) => {
+      calls++;
+      if (d === dir) throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
+    };
+    try {
+      throws(
+        () => l.reserve('evm:a', 'wei', 7n, [HOUR]),
+        (e: unknown) =>
+          e instanceof SpendLedgerError && /could not make .* durable/.test((e as Error).message),
+      );
+    } finally {
+      delete _ledgerTestHooks.fsyncDir;
+    }
+    ok(calls >= 1, 'the seam was exercised');
+    // The entry was written before the sync failed: it counts from now on.
+    equal(l.spent('evm:a', 'wei', HOUR_MS), 12n, 'refused spend still counted (safe direction)');
+    equal(l.reserve('evm:a', 'wei', 1n, [HOUR]), null, 'healthy storage again → fine');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('FileSpendLedger: a state-directory fsync failure refuses the very first spend', () => {
+  const dir = mkTmp();
+  try {
+    const stateDir = join(dir, 'state');
+    const l = fileLedger(stateDir, { now: T0 });
+    _ledgerTestHooks.fsyncDir = (d) => {
+      if (d === dir) throw Object.assign(new Error('injected EIO'), { code: 'EIO' }); // parent of stateDir
+    };
+    try {
+      throws(() => l.reserve('evm:a', 'wei', 1n, []), SpendLedgerError);
+      ok(!existsSync(l.pathFor('evm:a')), 'nothing written before the directory was durable');
+    } finally {
+      delete _ledgerTestHooks.fsyncDir;
+    }
+    equal(l.reserve('evm:a', 'wei', 1n, []), null);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('FileSpendLedger: durability is re-established on every append, not remembered from a failed one', () => {
+  const dir = mkTmp();
+  try {
+    const l = fileLedger(dir, { now: T0 });
+    equal(l.reserve('evm:a', 'wei', 1n, []), null);
+    let seen = 0;
+    _ledgerTestHooks.fsyncDir = () => {
+      seen++;
+    };
+    try {
+      l.reserve('evm:a', 'wei', 1n, []);
+      l.reserve('evm:a', 'wei', 1n, []);
+    } finally {
+      delete _ledgerTestHooks.fsyncDir;
+    }
+    ok(seen >= 4, `directory synced on each append (state parent + ledger dir): ${seen}`);
   } finally {
     rmSync(dir, { recursive: true });
   }

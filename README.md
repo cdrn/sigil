@@ -4,7 +4,7 @@
 
 `sigil` is a local signing tool and Claude Code integration that lets agentic coding tools use private keys without ever putting key material in the model's context window.
 
-**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, policy engine (static checks), out-of-band confirmation via ntfy, Solana signing, and the JSON-RPC signing proxy (Foundry/Hardhat) all work end-to-end. Rolling-window value caps and EIP-712 domain allowlists are not yet implemented. Until they land — and until the supply-chain attestations promised for v0.1.0 ship — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
+**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, policy engine (static checks), out-of-band confirmation via ntfy, Solana signing, and the JSON-RPC signing proxy (Foundry/Hardhat) all work end-to-end. Rolling-window value caps and EIP-712 domain allowlists landed in the policy engine, but have not been through a release yet. Until v0.1.0 ships — with the supply-chain attestations promised for it — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
 
 ## What it is
 
@@ -181,7 +181,7 @@ allow_message_signing = false             # EIP-191 personal_sign (e.g. SIWE)
 allow_typed_data = false                  # EIP-712 (Permit, OpenSea — can be financial)
 typed_data_verifying_contracts = []       # when allowed: domain.verifyingContract allowlist
 typed_data_primary_types = []             # when allowed: primaryType allowlist ("Permit", …)
-                                          # a domain chainId must also be in chain_ids
+                                          # strict mode also requires domain.chainId ∈ chain_ids
 
 # Optional rolling-window caps on tx.value (work in permissive mode too).
 max_value_per_hour_wei = "100000000000000000"    # 0.1 ETH / hour
@@ -197,7 +197,7 @@ A failed rule throws `POLICY_DENIED` (-32001) back to the agent with the human-r
 
 **Rolling-window caps** (`max_value_per_hour_wei`, `max_value_per_day_wei`, and `svm_max_lamports_per_hour/day`) are the one rule that applies in *both* modes — a permissive "bot with an allowance" is the common case. They count native value only: `tx.value` for EVM, decoded System-Program transfers for Solana. ERC-20 / SPL transfers are calldata, not native value, and are not counted — and `require_confirm_above_wei` doesn't see them either (a token transfer has `value = 0`). Gate token movement with strict mode's `allow_to` + `allowed_selectors`; for Solana, anything sigil can't decode as a System-Program transfer is routed to confirm in strict mode, and denied outright when a lamport cap is set. Spends are recorded in a per-portal ledger at `~/.sigil/state/<handle>.ledger` (append-only JSONL, shared across windows through the same lock as the audit log, compacted automatically) and the check-and-record is atomic, so two windows can't both take the last of an allowance. The cap is checked before any confirm push (so you're not asked to approve something that would be denied anyway) and again right before signing. `sigil policy spend <handle>` shows the trailing 1h/24h totals against the caps. `sigil portal remove` deletes the ledger with the portal.
 
-**EIP-712 allowlists** (strict mode, with `allow_typed_data = true`): `typed_data_verifying_contracts` and `typed_data_primary_types` each restrict one axis when non-empty, and a domain that carries a `chainId` must name one of `chain_ids`. A typed-data signature can move funds (Permit, Permit2, exchange orders), so it gets the same treatment as a transaction's destination.
+**EIP-712 allowlists** (strict mode, with `allow_typed_data = true`): `typed_data_verifying_contracts` and `typed_data_primary_types` each restrict one axis when non-empty, and the domain must carry a `chainId` that names one of `chain_ids` (strict mode refuses chain-less domains, since they can't be checked). A typed-data signature can move funds (Permit, Permit2, exchange orders), so it gets the same treatment as a transaction's destination.
 
 Still deferred (in [#3](https://github.com/cdrn/sigil/issues/3)): decoded-calldata argument checks.
 

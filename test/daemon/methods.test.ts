@@ -34,6 +34,7 @@ import {
   type PolicyResolver,
   PolicyLoadError,
   type SpendLedger,
+  _ledgerTestHooks,
 } from '../../src/policy/index.js';
 
 function mkTmp(): string {
@@ -1777,6 +1778,35 @@ test('window caps: an allowance consumed by another window while a confirm is pe
       );
       const last = verifyChain(readFileSync(auditPath)).at(-1)!;
       equal(last.decision, 'deny');
+    } finally {
+      cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('window caps: a durability failure in the ledger denies the sign and is audited', async () => {
+  const dir = mkTmp();
+  try {
+    const ledger = new FileSpendLedger(dir, { now: () => T0 });
+    const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP, { ledger });
+    try {
+      _ledgerTestHooks.fsyncDir = (d) => {
+        if (d === dir) throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
+      };
+      try {
+        await rejects(
+          dispatch('sigil_eth_sign_transaction', txParams(1n), ctx),
+          /could not make .* durable/,
+        );
+      } finally {
+        delete _ledgerTestHooks.fsyncDir;
+      }
+      const last = verifyChain(readFileSync(auditPath)).at(-1)!;
+      equal(last.decision, 'deny');
+      ok(/durable/.test(last.reason ?? ''));
+      await dispatch('sigil_eth_sign_transaction', txParams(1n), ctx);
     } finally {
       cleanup();
     }

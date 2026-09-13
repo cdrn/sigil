@@ -86,7 +86,8 @@ allow_typed_data = false
 
 # When allow_typed_data = true, these refine what may be signed. Each empty
 # list means "no restriction on that axis". Independently, a domain that
-# names a chainId must name one of chain_ids above.
+# must carry a chainId naming one of chain_ids above (chain-less domains are
+# refused in strict mode — they can't be checked).
 #   typed_data_verifying_contracts — lowercase 0x addresses the domain's
 #     verifyingContract must be one of (e.g. Permit2, an exchange).
 #   typed_data_primary_types — primaryType names, e.g. ["Permit", "Order"].

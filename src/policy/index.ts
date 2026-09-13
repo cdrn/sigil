@@ -27,4 +27,5 @@ export {
   SpendLedgerError,
   MemorySpendLedger,
   FileSpendLedger,
+  _ledgerTestHooks,
 } from './ledger.js';

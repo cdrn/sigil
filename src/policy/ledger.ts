@@ -148,22 +148,20 @@ export class FileSpendLedger implements SpendLedger {
     return join(this.#dir, `${handle}.ledger`);
   }
 
-  #dirReady = false;
-  /** Create the state dir once, and make its own directory entry durable. */
+  /**
+   * Create the state dir and make its directory entry durable. Not cached:
+   * a sync that failed must not be remembered as done, and a reservation
+   * from another daemon must not mistake the directory's existence for
+   * established durability. One mkdir + one fsync per reserve is cheap.
+   */
   #ensureDir(): void {
-    if (this.#dirReady) return;
     mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
-    try {
-      fsyncDir(dirname(this.#dir));
-    } catch {
-      /* parent may be a mount root that refuses fsync; the dir itself is created */
-    }
-    this.#dirReady = true;
+    fsyncDirOrFail(dirname(this.#dir));
   }
 
   spent(handle: string, asset: SpendAsset, windowMs: number): bigint {
     const path = this.pathFor(handle);
-    this.#ensureDir();
+    mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
     return withFileLock(path, () =>
       sumWindow(readEntries(path).entries, asset, windowMs, this.#now()),
     );
@@ -179,7 +177,7 @@ export class FileSpendLedger implements SpendLedger {
     this.#ensureDir();
     const path = this.pathFor(handle);
     return withFileLock(path, () => {
-      const { entries, endsWithNewline, size, existed } = readEntries(path);
+      const { entries, endsWithNewline, size } = readEntries(path);
       const now = this.#now();
       const reason = checkWindowCaps(caps, amount, (w) => sumWindow(entries, asset, w, now), asset);
       if (reason !== null) return reason;
@@ -198,7 +196,7 @@ export class FileSpendLedger implements SpendLedger {
           closeSync(fd);
         }
         renameSync(tmp, path);
-        fsyncDir(dirname(path));
+        fsyncDirOrFail(dirname(path));
       } else {
         const fd = openSync(path, 'a', 0o600);
         try {
@@ -208,22 +206,46 @@ export class FileSpendLedger implements SpendLedger {
         } finally {
           closeSync(fd);
         }
-        // A brand-new file's directory entry needs its own fsync, or a power
-        // cut right after the first signature can lose the whole ledger and
-        // hand back a fresh allowance on reboot.
-        if (!existed) fsyncDir(dirname(path));
+        // The directory entry needs its own fsync, or a power cut right after
+        // a signature can lose a brand-new ledger and hand back a fresh
+        // allowance on reboot. Done on every append rather than only the
+        // first: if a previous attempt's sync failed, the file's mere
+        // existence proves nothing about durability.
+        fsyncDirOrFail(dirname(path));
       }
       return null;
     });
   }
 }
 
-function fsyncDir(dir: string): void {
-  const fd = openSync(dir, 'r');
+/**
+ * Test-only seam: replaces the directory fsync so a test can make it fail.
+ * Never set by production code.
+ */
+export const _ledgerTestHooks: { fsyncDir?: (dir: string) => void } = {};
+
+/**
+ * fsync a directory, converting any failure into a SpendLedgerError. The
+ * spend may already be on disk at this point; refusing to sign then errs
+ * on the side of over-counting, never under-counting. Nothing is swallowed:
+ * a filesystem that can't confirm durability can't back a rate limit.
+ */
+function fsyncDirOrFail(dir: string): void {
   try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+    if (_ledgerTestHooks.fsyncDir) {
+      _ledgerTestHooks.fsyncDir(dir);
+      return;
+    }
+    const fd = openSync(dir, 'r');
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    throw new SpendLedgerError(
+      `spend ledger: could not make ${dir} durable (${(err as Error).message}) — refusing to sign`,
+    );
   }
 }
 
@@ -241,14 +263,13 @@ function readEntries(path: string): {
   entries: LedgerEntry[];
   endsWithNewline: boolean;
   size: number;
-  existed: boolean;
 } {
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { entries: [], endsWithNewline: true, size: 0, existed: false };
+      return { entries: [], endsWithNewline: true, size: 0 };
     }
     throw err;
   }
@@ -271,7 +292,7 @@ function readEntries(path: string): {
     }
     out.push(e);
   }
-  return { entries: out, endsWithNewline, size: Buffer.byteLength(text, 'utf8'), existed: true };
+  return { entries: out, endsWithNewline, size: Buffer.byteLength(text, 'utf8') };
 }
 
 function parseEntry(line: string): LedgerEntry | null {
