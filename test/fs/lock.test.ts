@@ -101,10 +101,6 @@ test('withFileLock breaks a lock whose holder is dead, regardless of age', () =>
 test('withFileLock treats an unparsable lock by age: fresh waits, stale is broken', () => {
   const dir = mkTmp();
   try {
-    throws(
-      () => withFileLock(join(dir, 'fresh'), () => 1, { timeoutMs: 40, staleMs: 60_000 }),
-      FileLockError,
-    );
     plantLock(join(dir, 'fresh'), 'garbage');
     throws(
       () => withFileLock(join(dir, 'fresh'), () => 1, { timeoutMs: 40, staleMs: 60_000 }),
