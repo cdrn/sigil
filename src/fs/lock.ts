@@ -1,5 +1,6 @@
 import {
   closeSync,
+  fstatSync,
   fsyncSync,
   openSync,
   readFileSync,
@@ -88,6 +89,13 @@ function isAlive(pid: number): boolean {
 // The full stamp format. Anything else (empty, truncated, garbage) is a torn
 // write and must fall back to age-based staleness — a bare Number.parseInt
 // could latch onto a truncated pid and defer to an unrelated live process.
+/**
+ * Test-only seam: called after the lock file is created but before it is
+ * stamped, so a test can simulate a holder that stalls in that window.
+ * Never set by production code.
+ */
+export const _testHooks: { afterCreate?: (path: string) => void } = {};
+
 const STAMP_RE = /^(\d+) [0-9a-f]{16}\n$/;
 
 /**
@@ -128,8 +136,26 @@ function createStamped(path: string, token: string): boolean {
   }
   let stamped = false;
   try {
+    _testHooks.afterCreate?.(path);
     writeAllSync(fd, `${process.pid} ${token}\n`);
     fsyncSync(fd);
+    // The file we created may no longer be the one at `path`: if we stalled
+    // between create and stamp for longer than staleMs, a contender was
+    // entitled to treat the empty file as torn, unlink it, and create its
+    // own. Our stamp then went into an orphaned inode. Compare identities
+    // before claiming the lock; on mismatch, back off without touching
+    // the contender's file.
+    const ours = fstatSync(fd).ino;
+    let current: number | undefined;
+    try {
+      current = statSync(path).ino;
+    } catch {
+      current = undefined;
+    }
+    if (current !== ours) {
+      closeSync(fd);
+      return false;
+    }
     stamped = true;
     closeSync(fd);
     return true;
@@ -243,14 +269,38 @@ export function lockPathFor(target: string): string {
  * reported as a failure — the lock is instead left for the stale path.
  */
 export function withFileLock<T>(target: string, fn: () => T, opts: AcquireLockOptions = {}): T {
-  const release = acquireLockSync(lockPathFor(target), opts);
+  const lockPath = lockPathFor(target);
+  const release = acquireLockSync(lockPath, opts);
   try {
     return fn();
   } finally {
+    releaseWithRetry(release, lockPath);
+  }
+}
+
+/**
+ * A lock stamped with a live pid is never broken by contenders, so a
+ * release that fails leaves every other session timing out until this
+ * process exits. Retry a transient failure a few times; if it still
+ * won't go, report loudly — but never replace fn's outcome (a committed
+ * append must not be reported as a failure, and fn's own error must not
+ * be masked).
+ */
+const RELEASE_ATTEMPTS = 5;
+function releaseWithRetry(release: () => void, lockPath: string): void {
+  let last: unknown;
+  for (let i = 0; i < RELEASE_ATTEMPTS; i++) {
     try {
       release();
-    } catch {
-      /* see above */
+      return;
+    } catch (err) {
+      last = err;
+      sleepSync(10 * (i + 1));
     }
   }
+  process.stderr.write(
+    `sigil: failed to release ${lockPath} after ${RELEASE_ATTEMPTS} attempts ` +
+      `(${(last as Error)?.message ?? String(last)}); other sessions will block on it ` +
+      `until pid ${process.pid} exits — remove the file by hand if this process is gone\n`,
+  );
 }

@@ -8,6 +8,7 @@ import {
   statSync,
   unlinkSync,
 } from 'node:fs';
+import { dirname } from 'node:path';
 import { keccak256 } from '../eth/keccak.js';
 import { type AcquireLockOptions, acquireLockSync, writeAllSync } from '../fs/lock.js';
 
@@ -390,11 +391,15 @@ export class AuditWriter {
 
 /**
  * Move a failed log aside as `<path>.corrupt-<iso timestamp>[-n]` without
- * ever replacing an existing file. rename(2) silently overwrites its
- * target, so publication goes through link(2), which fails with EEXIST if
- * the name is taken; then the original name is unlinked. Two writers
- * quarantining at the same instant end up with two distinct evidence
- * files, never one clobbering the other.
+ * ever replacing an existing file, and without a crash window in which the
+ * evidence is on neither name. rename(2) silently overwrites its target, so
+ * publication goes through link(2), which fails with EEXIST if the name is
+ * taken. The new directory entry is then fsynced (the file's data already
+ * was, by the writer that produced it) before the original name is
+ * unlinked, and the directory is synced again afterwards. A power cut at
+ * any point leaves the bytes reachable under at least one name; a plain
+ * process crash between link and unlink leaves both, and the next writer
+ * simply quarantines the original again under a fresh suffix.
  */
 function quarantine(path: string, nowMs: number): string {
   const base = `${path}.corrupt-${new Date(nowMs).toISOString().replace(/[:.]/g, '-')}`;
@@ -406,42 +411,87 @@ function quarantine(path: string, nowMs: number): string {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
       throw err;
     }
+    fsyncFile(candidate);
+    fsyncDir(dirname(path));
     unlinkSync(path);
+    fsyncDir(dirname(path));
     return candidate;
   }
 }
 
+function fsyncFile(path: string): void {
+  const fd = openSync(path, 'r');
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Directory entries need their own fsync to be durable. Best-effort on
+ *  platforms that refuse to fsync a directory descriptor. */
+function fsyncDir(dir: string): void {
+  let fd: number;
+  try {
+    fd = openSync(dir, 'r');
+  } catch {
+    return;
+  }
+  try {
+    fsyncSync(fd);
+  } catch {
+    /* EINVAL on some filesystems — nothing more we can do */
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
- * Hash of the last newline-terminated line, read from the tail in chunks
- * so a large log isn't re-read on every append. Returns null for a file
- * that doesn't end in a newline (torn) or whose last line doesn't parse —
- * either way the caller falls through to a full re-verify.
+ * Hash of the last newline-terminated line, read from the tail in fixed
+ * chunks so a large log isn't re-read on every append. Each chunk is
+ * scanned once as it arrives and the pieces are joined once, so a huge
+ * final line costs O(line), not O(line²/chunk) — this runs under the
+ * audit lock, and a caller-controlled payload must not be able to stall
+ * every other session. Lines longer than MAX_TAIL_SCAN fall back to a
+ * full re-verify. Returns null for a file that doesn't end in a newline
+ * (torn) or whose last line doesn't parse — either way the caller falls
+ * through to readHeadAndSize.
  */
+const TAIL_CHUNK = 64 * 1024;
+const MAX_TAIL_SCAN = 64 * 1024 * 1024;
 function lastLineHash(path: string, size: number): string | null {
   if (size === 0) return null;
   const fd = openSync(path, 'r');
   try {
-    const CHUNK = 4096;
     const tail = Buffer.alloc(1);
     readSync(fd, tail, 0, 1, size - 1);
     if (tail[0] !== 0x0a) return null;
-    let acc = Buffer.alloc(0);
-    let pos = size;
+    // Pieces of the last line, in reverse file order, excluding the final
+    // newline. `lineEnd` is the offset of that newline.
+    const lineEnd = size - 1;
+    const pieces: Buffer[] = [];
+    let pos = lineEnd;
+    let scanned = 0;
     for (;;) {
-      const start = Math.max(0, pos - CHUNK);
+      if (pos === 0) break;
+      const start = Math.max(0, pos - TAIL_CHUNK);
       const buf = Buffer.alloc(pos - start);
       readSync(fd, buf, 0, buf.length, start);
-      acc = Buffer.concat([buf, acc]);
-      pos = start;
-      const nl = acc.lastIndexOf(0x0a, acc.length - 2);
-      if (nl !== -1 || start === 0) {
-        const line = acc.subarray(nl + 1, acc.length - 1).toString('utf8');
-        try {
-          return parseLine(line).hash;
-        } catch {
-          return null;
-        }
+      scanned += buf.length;
+      const nl = buf.lastIndexOf(0x0a);
+      if (nl !== -1) {
+        pieces.push(buf.subarray(nl + 1));
+        break;
       }
+      pieces.push(buf);
+      pos = start;
+      if (scanned > MAX_TAIL_SCAN) return null;
+    }
+    const line = Buffer.concat(pieces.reverse()).toString('utf8');
+    try {
+      return parseLine(line).hash;
+    } catch {
+      return null;
     }
   } finally {
     closeSync(fd);

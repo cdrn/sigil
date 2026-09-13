@@ -1,10 +1,20 @@
 import { test } from 'node:test';
 import { equal, ok, throws } from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { type ChildProcess, execFile, spawn } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { _testHooks } from '../../src/fs/lock.js';
 import { FileLockError, lockPathFor, withFileLock } from '../../src/fs/index.js';
 
 // The primitive itself (acquireLockSync) is covered in test/audit/concurrency.test.ts.
@@ -12,6 +22,25 @@ import { FileLockError, lockPathFor, withFileLock } from '../../src/fs/index.js'
 
 const DEAD_PID = 2147483647; // above any real pid_max; kill(pid, 0) → ESRCH
 const TOKEN = 'deadbeefdeadbeef';
+
+/** Resolve when the child prints "ready"; reject if it exits first or stalls. */
+function awaitReady(k: ChildProcess, timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    const t = setTimeout(() => reject(new Error('child never reported ready')), timeoutMs);
+    k.stdout!.on('data', (d) => {
+      buf += d;
+      if (buf.includes('ready')) {
+        clearTimeout(t);
+        resolve();
+      }
+    });
+    k.once('exit', (code) => {
+      clearTimeout(t);
+      reject(new Error(`child exited (${code}) before reporting ready`));
+    });
+  });
+}
 
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), 'sigil-lock-'));
@@ -202,6 +231,7 @@ test('competing processes: barrier-released contenders never overlap inside the 
       import { openSync, closeSync, unlinkSync, existsSync, appendFileSync } from 'node:fs';
       const [target, barrier, marker, counter, iter] = process.argv.slice(1);
       const s = new Int32Array(new SharedArrayBuffer(4));
+      process.stdout.write('ready\\n');
       while (!existsSync(barrier)) Atomics.wait(s, 0, 0, 1);
       for (let i = 0; i < Number(iter); i++) {
         withFileLock(target, () => {
@@ -233,7 +263,9 @@ test('competing processes: barrier-released contenders never overlap inside the 
           k.once('exit', (code) => resolve({ code, err }));
         }),
     );
-    await new Promise((r) => setTimeout(r, 150)); // let every child reach the barrier
+    // Every child must acknowledge readiness before the gate opens, so all
+    // N contenders are provably parked on the barrier together.
+    await Promise.all(kids.map((k) => awaitReady(k)));
     writeFileSync(barrier, '');
     for (const r of await Promise.all(exits)) equal(r.code, 0, r.err);
     const lines = readFileSync(counter, 'utf8').split('\n').filter(Boolean);
@@ -241,6 +273,76 @@ test('competing processes: barrier-released contenders never overlap inside the 
     equal(new Set(lines).size, N, 'every child got in');
     ok(!existsSync(marker));
     ok(!existsSync(lockPathFor(target)));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Release failure recovery; the create/stamp stall race
+// ---------------------------------------------------------------------------
+
+test('a transient release failure is retried, and the lock is free afterwards', async () => {
+  if (process.getuid?.() === 0) return; // root ignores directory modes
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    // Inside the section make the directory unwritable so unlink fails;
+    // a helper process restores it while the retry loop is sleeping.
+    const fixer = spawn('sh', ['-c', `sleep 0.05; chmod 700 "${dir}"`], { stdio: 'ignore' });
+    const done = new Promise<void>((r) => fixer.once('exit', () => r()));
+    const result = withFileLock(target, () => {
+      chmodSync(dir, 0o500);
+      return 'value';
+    });
+    await done;
+    chmodSync(dir, 0o700);
+    equal(result, 'value', "fn's outcome is preserved");
+    ok(!existsSync(lockPathFor(target)), 'released after the retry');
+    equal(
+      withFileLock(target, () => 'again'),
+      'again',
+    );
+  } finally {
+    chmodSync(dir, 0o700);
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a holder that stalls between create and stamp past staleMs does not win the lock', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    const lock = lockPathFor(target);
+    // Contender B's lock, stamped with OUR live pid so it can never be
+    // broken: if A (this call) wrongly treats its stale inode as the lock,
+    // fn runs; if A correctly backs off, it must wait on B and time out.
+    const bStamp = `${process.pid} ${TOKEN}\n`;
+    let fired = 0;
+    _testHooks.afterCreate = (p) => {
+      if (p !== lock || fired++ > 0) return;
+      unlinkSync(lock); // B judged our empty file torn and stale…
+      writeFileSync(lock, bStamp); // …and took the slot.
+    };
+    let ran = false;
+    try {
+      throws(
+        () =>
+          withFileLock(
+            target,
+            () => {
+              ran = true;
+            },
+            { timeoutMs: 80 },
+          ),
+        FileLockError,
+      );
+    } finally {
+      delete _testHooks.afterCreate;
+    }
+    ok(!ran, 'A never entered the critical section');
+    equal(fired, 1);
+    equal(readFileSync(lock, 'utf8'), bStamp, "B's lock untouched by A's back-off");
   } finally {
     rmSync(dir, { recursive: true });
   }
