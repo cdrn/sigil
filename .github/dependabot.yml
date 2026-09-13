@@ -32,3 +32,9 @@ updates:
       # code reference APIs that don't exist where sigil actually runs.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # TypeScript majors are gated on typescript-eslint's peer range
+      # (currently <6.1). TS 7 (the native port) also ships per-platform
+      # binary packages, which is a supply-chain surface we don't want to
+      # take on by accident. Bump deliberately, not via the weekly group.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
