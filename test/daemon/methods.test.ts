@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects } from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditWriter, verifyChain } from '../../src/audit/index.js';
@@ -1703,5 +1703,88 @@ test('typed data via dispatch: strict mode refuses a chain-less domain', async (
     );
   } finally {
     cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2: negative values must never reach the ledger; pending-confirm race
+// ---------------------------------------------------------------------------
+
+test('a negative tx value is rejected as INVALID_PARAMS before any reservation (file-backed ledger)', async () => {
+  const dir = mkTmp();
+  try {
+    const ledger = new FileSpendLedger(dir, { now: () => T0 });
+    const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP, { ledger });
+    try {
+      for (const key of ['value', 'nonce', 'gasLimit', 'maxFeePerGas']) {
+        let err: RpcMethodError | null = null;
+        try {
+          await dispatch('sigil_eth_sign_transaction', txParams(1n, { [key]: '-1' }), ctx);
+        } catch (e) {
+          err = e as RpcMethodError;
+        }
+        ok(err instanceof RpcMethodError, key);
+        equal(err!.code, RPC_INVALID_PARAMS, key);
+        ok(/must be a non-negative integer/.test(err!.message), err!.message);
+      }
+      ok(!existsSync(ledger.pathFor('evm:bot')), 'ledger never created');
+      equal(
+        verifyChain(readFileSync(auditPath)).length,
+        0,
+        'nothing audited: rejected at parse time',
+      );
+      // The portal is still fully usable afterwards.
+      await dispatch('sigil_eth_sign_transaction', txParams(5n), ctx);
+      equal(ledger.spent('evm:bot', 'wei', 3_600_000), 5n);
+    } finally {
+      cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('window caps: an allowance consumed by another window while a confirm is pending is denied at reserve time', async () => {
+  const dir = mkTmp();
+  try {
+    const mine = new FileSpendLedger(dir, { now: () => T0 });
+    const theirs = new FileSpendLedger(dir, { now: () => T0 + 1 });
+    let pushes = 0;
+    const confirm = {
+      transportName: 'mock',
+      request: async () => {
+        pushes++;
+        // While the human is looking at the phone, another window spends it all.
+        equal(
+          theirs.reserve('evm:bot', 'wei', 100n, [
+            { label: 'max_value_per_hour_wei', windowMs: 3_600_000, cap: 100n },
+          ]),
+          null,
+        );
+        return { kind: 'approved' as const };
+      },
+    } as unknown as ConfirmGate;
+    const { ctx, auditPath, cleanup } = windowCtx(
+      'mode = "permissive"\nmax_value_per_hour_wei = "100"\nrequire_confirm_above_wei = "10"\n',
+      { ledger: mine, confirm },
+    );
+    try {
+      await rejects(
+        dispatch('sigil_eth_sign_transaction', txParams(50n), ctx),
+        /max_value_per_hour_wei = 100/,
+      );
+      equal(pushes, 1, 'pre-check passed (nothing spent yet), so the human was asked');
+      equal(
+        mine.spent('evm:bot', 'wei', 3_600_000),
+        100n,
+        "only the other window's spend is recorded",
+      );
+      const last = verifyChain(readFileSync(auditPath)).at(-1)!;
+      equal(last.decision, 'deny');
+    } finally {
+      cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
   }
 });

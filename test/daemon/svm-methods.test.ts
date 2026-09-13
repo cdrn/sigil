@@ -438,3 +438,81 @@ test('svm window caps: wei caps do not constrain lamports and vice versa', async
     cleanup();
   }
 });
+
+/** Same transfer as transferMsg, framed as a v0 message with no address-lookup tables. */
+function transferMsgV0(signer: Uint8Array, recipient: Uint8Array, lamports: bigint): Uint8Array {
+  const legacy = transferMsg(signer, recipient, lamports);
+  return Uint8Array.from([0x80, ...legacy, 0]); // version prefix … + zero ALT lookups
+}
+
+test('svm_sign_message refuses a v0 transaction message as well', async () => {
+  const { ctx, cleanup } = makeCtx(permissive);
+  try {
+    const to = new Uint8Array(32).fill(9);
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch(
+        'sigil_svm_sign_message',
+        { portal: PORTAL, message: b64(transferMsgV0(SVM_PUB, to, 1n)) },
+        ctx,
+      );
+    } catch (e) {
+      err = e as RpcMethodError;
+    }
+    ok(err instanceof RpcMethodError && err.code === RPC_INVALID_PAYLOAD, String(err));
+    // And the transaction path decodes it (so the refusal isn't a false positive).
+    ctx.ledger = new MemorySpendLedger();
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(transferMsgV0(SVM_PUB, to, 1n)) },
+      ctx,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('svm window caps: a tx mixing a decoded transfer with an unknown instruction is unbounded → denied under a cap', async () => {
+  const { ctx, cleanup } = makeCtx(
+    parsePolicy('mode = "permissive"\nsvm_max_lamports_per_hour = "1000000000"\n'),
+  );
+  ctx.ledger = new MemorySpendLedger();
+  try {
+    const to = new Uint8Array(32).fill(9);
+    const SYSTEM = new Uint8Array(32);
+    const data = new Uint8Array(12);
+    data[0] = 2;
+    data[4] = 1; // 1 lamport
+    // accounts: signer, recipient, system, unknownProgram
+    const msg = Uint8Array.from([
+      1,
+      0,
+      2,
+      4,
+      ...SVM_PUB,
+      ...to,
+      ...SYSTEM,
+      ...new Uint8Array(32).fill(7),
+      ...new Uint8Array(32),
+      2,
+      2,
+      2,
+      0,
+      1,
+      data.length,
+      ...data, // decoded transfer
+      3,
+      1,
+      0,
+      1,
+      0xff, // unknown program call
+    ]);
+    await rejects(
+      dispatch('sigil_svm_sign_transaction', { portal: PORTAL, message: b64(msg) }, ctx),
+      /cannot be bounded/,
+    );
+    equal(ctx.ledger.spent(PORTAL, 'lamports', 3_600_000), 0n);
+  } finally {
+    cleanup();
+  }
+});

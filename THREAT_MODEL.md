@@ -110,6 +110,8 @@ Given the 2026 npm threat landscape, a compromised release of `sigil` would be c
 - The user's OS keychain (or chosen unlock mechanism) is not compromised.
 - Clock skew on the host is bounded (matters for rolling-window policy and audit timestamps).
 
+- **The spend ledgers share the policy files' trust boundary.** Rolling-window caps are enforced against `~/.sigil/state/<handle>.ledger`. Unparsable content fails closed, but a *missing* ledger is an empty one: anyone who can delete it can equally edit `~/.sigil/policy/<handle>.toml` and remove the cap, so the ledger earns no protection the policy file doesn't have. The caps defend against the agent, which reaches sigil only through the signing RPC and the ward-guarded tools; they are not a defence against a principal with write access to `~/.sigil`. If your deployment gives the agent's tools a different filesystem view from the policy's, treat that as out of scope here.
+
 ## Known limitations
 
 - The hook-based path blocker is best-effort: it covers `Read` and `Bash`, but a sufficiently creative agent could still ask another tool to do the read. The defense in depth is that even if a key file is read, its contents are redacted by the output filter before reaching the model. And, given the unlock model, reading the encrypted keyfile alone yields nothing — the agent would also need the passphrase, which is never in its context.

@@ -333,11 +333,16 @@ function asTx(obj: Record<string, unknown>): SignableTx {
   const num = (key: string): bigint => {
     const v = obj[key];
     if (typeof v === 'string') {
+      let n: bigint;
       try {
-        return BigInt(v);
+        n = BigInt(v);
       } catch {
         throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} not a valid bigint string`);
       }
+      if (n < 0n) {
+        throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} must be a non-negative integer`);
+      }
+      return n;
     }
     if (typeof v === 'number') {
       if (!Number.isInteger(v) || v < 0) {

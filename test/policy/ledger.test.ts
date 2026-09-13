@@ -62,6 +62,19 @@ function contract(
     }
   });
 
+  test(`${name}: a negative amount is refused and records nothing`, () => {
+    const clock = { now: T0 };
+    const { ledger, cleanup } = make(clock);
+    try {
+      const r = ledger.reserve('evm:a', 'wei', -1n, []);
+      ok(r !== null && /negative amount/.test(r));
+      equal(ledger.spent('evm:a', 'wei', HOUR_MS), 0n);
+      equal(ledger.reserve('evm:a', 'wei', 1n, [HOUR]), null, 'ledger still healthy');
+    } finally {
+      cleanup();
+    }
+  });
+
   test(`${name}: a zero amount is a no-op success`, () => {
     const clock = { now: T0 };
     const { ledger, cleanup } = make(clock);
@@ -392,6 +405,17 @@ test('FileSpendLedger: barrier-released processes racing for one allowance never
     equal(lines.length, N * TRIES);
     equal(lines.filter((l) => l === 'ok').length, Number(CAP), 'exactly the allowance succeeded');
     equal(new FileSpendLedger(dir, { now: () => T0 }).spent('evm:race', 'wei', HOUR_MS), CAP);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('FileSpendLedger: a refused negative amount never creates or touches the file', () => {
+  const dir = mkTmp();
+  try {
+    const l = fileLedger(dir, { now: T0 });
+    ok(l.reserve('evm:a', 'wei', -5n, []) !== null);
+    ok(!existsSync(l.pathFor('evm:a')));
   } finally {
     rmSync(dir, { recursive: true });
   }

@@ -692,3 +692,27 @@ test('portalRemove: deletes the spend ledger (but not its lock directory) with t
     rmSync(home, { recursive: true });
   }
 });
+
+test('portalRemove: leaves a live ticket in the ledger lock directory untouched', () => {
+  const home = mkTmpHome();
+  try {
+    const paths = resolvePaths({ SIGIL_HOME: home });
+    const srcKey = join(home, 'src.key');
+    writeFileSync(srcKey, priv(1));
+    portalAdd(paths, {
+      handle: 'evm:bot',
+      keyFile: srcKey,
+      passphrase: Buffer.from('p'),
+      kdfParams: TEST_KDF,
+    });
+    const ledger = new FileSpendLedger(paths.stateDir);
+    ledger.reserve('evm:bot', 'wei', 1n, []);
+    const lockDir = `${ledger.pathFor('evm:bot')}.lock.d`;
+    const ticket = join(lockDir, `t-7-${process.ppid}-aaaaaaaaaaaaaaaa`); // another live process
+    writeFileSync(ticket, '');
+    equal(portalRemove(paths, 'evm:bot').removed, true);
+    ok(existsSync(ticket), "another daemon's ticket survives");
+  } finally {
+    rmSync(home, { recursive: true });
+  }
+});
