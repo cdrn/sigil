@@ -98,38 +98,76 @@ test('integration: a real sigil-mcp exits when its parent is SIGKILLed while std
     stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
   });
   // fd 3 of the parent is our 4th stdio pipe; sh's `0<&3` dups it in.
-  const daemonPid: number = await new Promise((resolve, reject) => {
-    let out = '';
-    parent.stdout.on('data', (d) => {
-      out += d;
-      const m = /DAEMON=(\d+)/.exec(out);
-      if (m) resolve(Number(m[1]));
+  let daemonPid = 0;
+  try {
+    daemonPid = await new Promise<number>((resolve, reject) => {
+      let out = '';
+      const t = setTimeout(() => reject(new Error('no daemon pid')), 10_000);
+      parent.stdout.on('data', (d) => {
+        out += d;
+        const m = /DAEMON=(\d+)/.exec(out);
+        if (m) {
+          clearTimeout(t);
+          resolve(Number(m[1]));
+        }
+      });
+      parent.once('exit', (c) => {
+        clearTimeout(t);
+        reject(new Error(`parent exited early (${c})`));
+      });
     });
-    parent.once('exit', (c) => reject(new Error(`parent exited early (${c})`)));
-    setTimeout(() => reject(new Error('no daemon pid')), 10_000);
-  });
-  const alive = (pid: number): boolean => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (e) {
-      return (e as NodeJS.ErrnoException).code === 'EPERM';
+    // Readiness = an MCP handshake over fd 3 answered on the daemon's stdout
+    // (inherited from the parent). That proves the daemon is serving — its
+    // watchdog is installed before the server loop starts — and that fd 3
+    // really carries MCP traffic.
+    const fd3 = parent.stdio[3] as import('node:stream').Writable;
+    const initialized = new Promise<void>((resolve, reject) => {
+      let out = '';
+      const t = setTimeout(() => reject(new Error('no initialize response')), 10_000);
+      parent.stdout.on('data', (d) => {
+        out += d;
+        if (out.includes('"protocolVersion"')) {
+          clearTimeout(t);
+          resolve();
+        }
+      });
+    });
+    fd3.write(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 't', version: '0' },
+        },
+      }) + '\n',
+    );
+    await initialized;
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (e) {
+        return (e as NodeJS.ErrnoException).code === 'EPERM';
+      }
+    };
+    ok(alive(daemonPid), 'daemon serving');
+    parent.kill('SIGKILL');
+    const t0 = Date.now();
+    while (alive(daemonPid) && Date.now() - t0 < 8_000) await wait(100);
+    const elapsed = Date.now() - t0;
+    ok(!alive(daemonPid), `orphaned daemon exited within ${elapsed}ms`);
+  } finally {
+    if (daemonPid) {
+      try {
+        process.kill(daemonPid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
     }
-  };
-  // Give the daemon a moment to boot, confirm it is alive, then orphan it.
-  await wait(1_000);
-  ok(alive(daemonPid), 'daemon booted');
-  parent.kill('SIGKILL');
-  const t0 = Date.now();
-  while (alive(daemonPid) && Date.now() - t0 < 8_000) await wait(100);
-  const gone = !alive(daemonPid);
-  if (!gone) {
-    try {
-      process.kill(daemonPid, 'SIGKILL');
-    } catch {
-      /* already gone */
-    }
+    parent.kill('SIGKILL');
+    rmSync(home, { recursive: true, force: true });
   }
-  rmSync(home, { recursive: true, force: true });
-  ok(gone, `orphaned daemon exited within ${Date.now() - t0}ms`);
 });
