@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { equal, notEqual, ok, throws } from 'node:assert/strict';
+import { equal, ok, throws } from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
   existsSync,

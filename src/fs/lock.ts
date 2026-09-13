@@ -149,9 +149,7 @@ function liveEntries(dir: string): Entry[] {
   for (const name of readdirSync(dir)) {
     const e = parseEntry(name);
     if (!e) continue;
-    let sweep = false;
-    if (e.pid === process.pid) sweep = !held.has(e.token);
-    else sweep = !isAlive(e.pid);
+    const sweep = e.pid === process.pid ? !held.has(e.token) : !isAlive(e.pid);
     if (sweep) {
       unlinkQuiet(join(dir, name));
       continue;
