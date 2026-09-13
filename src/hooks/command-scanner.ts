@@ -91,6 +91,74 @@ const READER_COMMANDS: ReadonlySet<string> = new Set([
   'find',
 ]);
 
+// ---------------------------------------------------------------------------
+// #92 — carve-outs for message text, by whole-command shape only
+// ---------------------------------------------------------------------------
+
+// A single git/gh invocation, no other statements: only plain words and
+// options as arguments, no separators, substitutions, redirections or
+// quotes anywhere except in the places the two shapes below allow.
+// A plain word (no `=`: that excludes `-c key=value` config overrides such
+// as gpg.program or core.pager, which can run a program) or a quoted string
+// with nothing the shell or git could act on inside it.
+const WORD = String.raw`(?!-c\b)[A-Za-z0-9_./:@%+,~-]+|'[^'$\x60\\!;&|<>=]*'|"[^"$\x60\\!;&|<>=]*"`;
+// Only spaces and tabs separate arguments: a newline would be a second
+// statement, and the whole point of the shape is that there is none.
+const SP = String.raw`[ \t]+`;
+const OPTS = String.raw`(?:${SP}(?:${WORD}))*`;
+// Only the subcommands that STORE a message qualify — never `git bisect
+// run`, `git -c …`, `gh api`, etc., which can run or evaluate arguments.
+const GIT_OR_GH = String.raw`(?:git[ \t]+commit|gh[ \t]+(?:pr|issue|release)[ \t]+(?:create|comment|edit|review))\b`;
+
+/** `git commit … -F - <<'EOF'\n…\nEOF` / `gh pr create … --body-file - <<'EOF'\n…\nEOF` */
+const STDIN_HEREDOC_SHAPE = new RegExp(
+  String.raw`^(${GIT_OR_GH}${OPTS}${SP}(?:-F|--file|--body-file)${SP}-${OPTS}${SP}<<(['"])([A-Za-z_][A-Za-z0-9_]*)\2)\n([\s\S]*?)\n\3\n?$`,
+);
+
+/** `git commit … -m '…' …` / `gh … --body "…" …` (one message string, no substitutions) */
+const INLINE_MESSAGE_SHAPE = new RegExp(
+  String.raw`^(${GIT_OR_GH}${OPTS}${SP}(?:-m|--message|--body|--title|--notes)(?:${SP}|=))('[^']*'|"[^"$\x60\\]*")(${OPTS})$`,
+);
+
+/**
+ * Blank the message text of a command that is, in its entirety, one
+ * git/gh invocation carrying its message on stdin via a quoted heredoc or
+ * in one plain quoted string (#92). Because the whole command must match
+ * the shape, there is no surrounding syntax that could feed the text to
+ * anything else: no other statement, pipe, redirection, substitution,
+ * function, subshell or second heredoc can be present. A quoted delimiter
+ * (or a message string without `$(`/backtick) means the shell expands
+ * nothing inside. git and gh store messages; they never execute them.
+ *
+ * Any command that doesn't match exactly is returned untouched, so it is
+ * scanned precisely as before. Blanked text keeps its newlines.
+ */
+export function stripInertText(command: string): string {
+  const h = STDIN_HEREDOC_SHAPE.exec(command);
+  // The shell ends the heredoc at the FIRST delimiter line; a body that
+  // contains one would mean everything after it is a command, so refuse.
+  if (h && !h[4]!.split('\n').includes(h[3]!)) {
+    const body = h[4]!;
+    const start = h[1]!.length + 1;
+    return (
+      command.slice(0, start) + body.replace(/[^\n]/g, ' ') + command.slice(start + body.length)
+    );
+  }
+  const m = INLINE_MESSAGE_SHAPE.exec(command);
+  if (m) {
+    const str = m[2]!;
+    const start = m[1]!.length;
+    return (
+      command.slice(0, start) +
+      str[0] +
+      str.slice(1, -1).replace(/[^\n]/g, ' ') +
+      str[str.length - 1] +
+      command.slice(start + str.length)
+    );
+  }
+  return command;
+}
+
 export function scanBashCommand(
   command: string,
   opts: BlockerOpts = {},
@@ -105,7 +173,7 @@ export function scanBashCommand(
   // 2. Per-statement path scan, gated on the program being a known reader.
   //    COMMAND_SEPARATORS splits on `$(` and backticks too, so a `cat` hidden
   //    inside a substitution surfaces as the first token of its own statement.
-  const statements = command.split(COMMAND_SEPARATORS);
+  const statements = stripInertText(command).split(COMMAND_SEPARATORS);
   for (const stmt of statements) {
     const tokens = tokenize(stmt);
     if (tokens.length === 0) continue;

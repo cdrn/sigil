@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import { scanBashCommand } from '../../src/hooks/command-scanner.js';
+import { scanBashCommand, stripInertText } from '../../src/hooks/command-scanner.js';
 
 test('blocks cat of a .key file argument', () => {
   ok(scanBashCommand('cat /etc/ssl/private.key').blocked);
@@ -90,4 +90,122 @@ test('build / runtime tools never path-scan their args', () => {
   equal(scanBashCommand('node ./tool.key').blocked, false);
   equal(scanBashCommand('npm install ./pkg.key').blocked, false);
   equal(scanBashCommand('tsc -p ./tsconfig.key').blocked, false);
+});
+
+// ---------------------------------------------------------------------------
+// #92 — message text is carved out only when the WHOLE command is one
+// git/gh invocation; everything else is scanned exactly as before
+// ---------------------------------------------------------------------------
+
+const K = '~/.sigil/keys/a.sigil'; // a warded key path
+const L = '~/.sigil/audit.log';
+
+test('#92: git commit -F - with a quoted heredoc message is not a read', () => {
+  const cmd = [
+    "git commit -F - <<'EOF'",
+    'fix(audit): harden the log',
+    '',
+    `so the old writer kept corrupting ${L}; see \`main:src/audit/log.ts\` | tail`,
+    `and cat ${K} is mentioned here as prose`,
+    'EOF',
+  ].join('\n');
+  equal(scanBashCommand(cmd).blocked, false);
+  const carved = stripInertText(cmd);
+  ok(carved.startsWith("git commit -F - <<'EOF'\n"));
+  ok(carved.endsWith('\nEOF'));
+  ok(!carved.includes('corrupting'));
+  equal(carved.split('\n').length, cmd.split('\n').length);
+});
+
+test('#92: gh pr create --body-file - and git commit --file - also qualify; trailing newline ok', () => {
+  equal(
+    scanBashCommand(`gh pr create --title t --body-file - <<"EOF"\ncat ${K} | head\nEOF\n`).blocked,
+    false,
+  );
+  equal(scanBashCommand(`git commit --amend --file - <<'MSG'\ntail ${K}\nMSG`).blocked, false);
+  equal(
+    scanBashCommand(`gh issue comment 3 --body-file - <<'EOF'\n$(cat ${K})\nEOF`).blocked,
+    false,
+    'quoted delimiter: no expansion',
+  );
+});
+
+test('#92: inline message strings to git/gh are data', () => {
+  equal(scanBashCommand(`git commit -m "corrupting ${L}; cat ${K} | head"`).blocked, false);
+  equal(scanBashCommand(`git commit --message='cat ${K}; true' --no-verify`).blocked, false);
+  equal(scanBashCommand(`gh pr create --title "x" --body "see ${L} | cat ${K}"`).blocked, false);
+  equal(scanBashCommand(`gh issue comment 3 --body 'tail ${K}'`).blocked, false);
+});
+
+test('#92: a substitution inside a message string is still code', () => {
+  ok(scanBashCommand(`git commit -m "$(cat ${K})"`).blocked);
+  ok(scanBashCommand('git commit -m "key: `cat ' + K + '`"').blocked);
+});
+
+test('#92: any deviation from the exact shape leaves the command untouched for the normal scan', () => {
+  const body = `\ncat ${K}\nEOF`;
+  for (const cmd of [
+    `bash <<'EOF'${body}`,
+    `FOO=1 git commit -F - <<'EOF'${body}`,
+    `git commit -F - <<'EOF' | bash${body}`,
+    `git commit -F - <<'EOF'; bash x${body}`,
+    `git commit -F - <<'EOF' > /tmp/x${body}`,
+    `x=$(git commit -F - <<'EOF'${body}\n)`,
+    `(git commit -F - <<'EOF'${body}\n)`,
+    `git commit -F - <<EOF${body}`,
+    `git commit -F - <<'EOF'X\ncat ${K}\nEOFX`,
+    `git commit -F - <<'A' <<'B'${body}\nB`,
+    `git commit -F - <<'EOF'\ncat ${K}\nEOF-not`,
+    `cat > /tmp/msg.txt <<'EOF'${body}\ngit commit -F /tmp/msg.txt`,
+    `tee /tmp/s <<'EOF'${body}\nbash /tmp/s`,
+    `git status; git commit -m "cat ${K}"`,
+    `git commit -m "cat ${K}" | cat`,
+    `git -c alias.x='!cat ${K}' x`,
+    `git -c gpg.program='cat ${K}' commit -m 'x'`,
+    `git commit -m "$(cat ${K})"`,
+    `echo "$(true; cat ${K})"`,
+    `bash -c 'true; cat ${K}; true'`,
+    // review round 4: an earlier terminator line ends the heredoc; what
+    // follows it is a command, not message text
+    `git version -F - <<'EOF'\nmessage\nEOF\ntrue; cat ${K}\nEOF`,
+    // review round 4: a newline is a statement separator, never an
+    // argument separator — the message would go to sh, not git
+    `git --version\nsh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
+    `git --version\necho -m 'true; cat ${K}'`,
+    `echo -m 'true; cat ${K}'`,
+    `gitx -m 'true; cat ${K}'`,
+    // review round 5: only message-STORING subcommands qualify; bisect run
+    // (and anything not on the allowlist) executes or evaluates arguments
+    `git bisect run sh '-c' -m 'true; cat ${K}; true'`,
+    `git bisect run sh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
+    `git -C . commit -m 'true; cat ${K}'`,
+    `gh api -m 'true; cat ${K}'`,
+    `git version -F - <<'EOF'\nmessage\nEOF`,
+  ]) {
+    equal(stripInertText(cmd), cmd, `untouched: ${cmd}`);
+  }
+});
+
+test('#92: what the unchanged scanner refused, it still refuses', () => {
+  for (const cmd of [
+    `echo "$(true; cat ${K})"`,
+    `bash -c 'true; cat ${K}; true'`,
+    `cat > /tmp/msg.txt <<'EOF'\ncat ${K}\nEOF\ngit commit -F /tmp/msg.txt`, // use -F - instead
+    `git commit -m "$(cat ${K})"`,
+    `cat ${K}`,
+    `true; cat ${K}`,
+    `git version -F - <<'EOF'\nmessage\nEOF\ntrue; cat ${K}\nEOF`,
+    `git --version\nsh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
+    `echo -m 'true; cat ${K}'`,
+    `git bisect run sh '-c' -m 'true; cat ${K}; true'`,
+    `git bisect run sh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
+  ]) {
+    ok(scanBashCommand(cmd).blocked, cmd);
+  }
+});
+
+test('#92: shapes main allowed are still allowed (unchanged scanner)', () => {
+  equal(scanBashCommand(`echo 'cat ${K}'`).blocked, false);
+  equal(scanBashCommand(`printf "%s\\n" ${K}`).blocked, false);
+  equal(scanBashCommand(`command echo 'cat ${K}'`).blocked, false);
 });
