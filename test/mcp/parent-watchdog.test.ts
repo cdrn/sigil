@@ -105,7 +105,7 @@ test('integration: a real sigil-mcp exits when its parent is SIGKILLed while std
       const t = setTimeout(() => reject(new Error('no daemon pid')), 10_000);
       parent.stdout.on('data', (d) => {
         out += d;
-        const m = /DAEMON=(\d+)/.exec(out);
+        const m = /DAEMON=(\d+)\n/.exec(out); // a complete line, never a split chunk
         if (m) {
           clearTimeout(t);
           resolve(Number(m[1]));

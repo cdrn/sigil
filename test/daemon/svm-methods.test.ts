@@ -8,11 +8,12 @@ import { SecretBuffer } from '../../src/crypto/index.js';
 import {
   dispatch,
   HandleTable,
-  type MethodContext,
+  RPC_DAEMON_LOCKED,
   RPC_INVALID_PARAMS,
   RPC_INVALID_PAYLOAD,
   RPC_POLICY_DENIED,
   RpcMethodError,
+  type MethodContext,
 } from '../../src/daemon/index.js';
 import {
   MemorySpendLedger,
@@ -514,5 +515,42 @@ test('svm window caps: a tx mixing a decoded transfer with an unknown instructio
     equal(ctx.ledger.spent(PORTAL, 'lamports', 3_600_000), 0n);
   } finally {
     cleanup();
+  }
+});
+
+test('svm: a confirm approved after the keys were zeroized is refused (zero seed must never sign)', async () => {
+  const toKey = new Uint8Array(32).fill(9);
+  const policy = parsePolicy(
+    `mode = "strict"\nchain_ids = [1]\nrequire_confirm_above_lamports = "0"\nsvm_allow_to = ["${base58Encode(toKey)}"]\nsvm_max_lamports = "1000"\n`,
+  );
+  let handlesRef: HandleTable | null = null;
+  const gate = {
+    transportName: 'mock',
+    request: async () => {
+      handlesRef!.dispose();
+      return { kind: 'approved' as const };
+    },
+  } as unknown as ConfirmGate;
+  const { ctx, cleanup } = makeCtx(policy, gate);
+  handlesRef = ctx.handles as HandleTable;
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch(
+        'sigil_svm_sign_transaction',
+        { portal: PORTAL, message: b64(transferMsg(SVM_PUB, toKey, 1n)) },
+        ctx,
+      );
+    } catch (e) {
+      err = e as RpcMethodError;
+    }
+    ok(err instanceof RpcMethodError, String(err));
+    equal(err!.code, RPC_DAEMON_LOCKED);
+  } finally {
+    try {
+      cleanup();
+    } catch {
+      /* handles already disposed */
+    }
   }
 });
