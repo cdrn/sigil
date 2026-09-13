@@ -276,7 +276,7 @@ export class AuditWriter {
 
   constructor(path: string, opts: AuditWriterOpts = {}) {
     this.path = path;
-    this.lockPath = `${path}.lock`;
+    this.lockPath = `${path}.lock.d`;
     this.#now = opts.now ?? (() => Date.now());
     this.#lockOpts = opts.lock ?? {};
     this.#onCorrupt = opts.onCorrupt ?? 'throw';

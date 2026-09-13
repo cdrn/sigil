@@ -834,11 +834,12 @@ test('a lock left by a dead process does not block a new writer', () => {
   const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-stale-'));
   try {
     const path = join(dir, 'audit.log');
-    writeFileSync(lockPathFor(path), `2147483647 ${'0'.repeat(16)}\n`); // dead pid
+    mkdirSync(lockPathFor(path), { recursive: true });
+    writeFileSync(join(lockPathFor(path), `t-1-2147483647-${'0'.repeat(16)}`), ''); // dead pid
     const w = new AuditWriter(path, { now: () => 1 });
     w.append({ kind: 'k', portal: 'p', payload: 'a', decision: 'allow' });
     equal(verifyChain(readFileSync(path)).length, 1);
-    ok(!existsSync(lockPathFor(path)));
+    equal(readdirSync(lockPathFor(path)).filter((n) => n.startsWith('t-')).length, 0);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -1154,14 +1155,17 @@ test('tail scan cap: a last line over the cap falls back to full verification an
     _auditTestHooks.tailScanMax = 128 * 1024;
     try {
       const a = new AuditWriter(path, { now: () => 1 });
-      const b = new AuditWriter(path, { now: () => 2 });
       a.append({ kind: 'k', portal: 'p', payload: 'x'.repeat(300 * 1024), decision: 'allow' });
-      // b: size mismatch → full read. a: size matches → tail scan exceeds
-      // the cap → null → full read; must still chain onto its own line.
-      b.append({ kind: 'k', portal: 'p', payload: 'small', decision: 'allow' });
+      // a's cached size matches the file, so the tail path runs against its
+      // own oversized line, exceeds the cap, returns null, and falls back to
+      // a full re-verify — which must still chain correctly.
       const e = a.append({ kind: 'k', portal: 'p', payload: 'after', decision: 'allow' });
-      equal(e.seq, 2);
-      equal(verifyChain(readFileSync(path)).length, 3);
+      equal(e.seq, 1);
+      // And with a contender in between (size mismatch path) for good measure.
+      const b = new AuditWriter(path, { now: () => 2 });
+      b.append({ kind: 'k', portal: 'p', payload: 'x'.repeat(300 * 1024), decision: 'allow' });
+      equal(a.append({ kind: 'k', portal: 'p', payload: 'end', decision: 'allow' }).seq, 3);
+      equal(verifyChain(readFileSync(path)).length, 4);
     } finally {
       delete _auditTestHooks.tailScanMax;
     }
@@ -1185,7 +1189,7 @@ test('AuditWriter: a release failure after a committed append does not fail the 
       now: () => {
         // First append creates the file; flip the mode on the second, once
         // the only remaining directory write is the release's unlink.
-        if (++calls === 2) chmodSync(dir, 0o500);
+        if (++calls === 2) chmodSync(lockPathFor(path), 0o500);
         return 1;
       },
     });
@@ -1194,14 +1198,20 @@ test('AuditWriter: a release failure after a committed append does not fail the 
       warned += String(c);
       return true;
     }) as typeof process.stderr.write;
-    const helper = spawn('sh', ['-c', `sleep 0.04; chmod 700 "${dir}"`], { stdio: 'ignore' });
+    const helper = spawn('sh', ['-c', `sleep 0.04; chmod 700 "${lockPathFor(path)}"`], {
+      stdio: 'ignore',
+    });
     const helperDone = new Promise<void>((r) => helper.once('exit', () => r()));
     const entry = w.append({ kind: 'k', portal: 'p', payload: 1, decision: 'allow' });
     await helperDone;
     chmodSync(dir, 0o700);
     equal(entry.seq, 1, 'append reported success');
     equal(verifyChain(readFileSync(path)).length, 2, 'entry is on disk');
-    ok(!existsSync(lockPathFor(path)), 'lock released once the directory was writable again');
+    equal(
+      readdirSync(lockPathFor(path)).filter((n) => n.startsWith('t-')).length,
+      0,
+      'ticket released once the directory was writable again',
+    );
     equal(warned, '', 'recovered within the retry window, nothing to report');
     // And the writer is still usable.
     equal(w.append({ kind: 'k', portal: 'p', payload: 2, decision: 'allow' }).seq, 2);

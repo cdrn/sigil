@@ -1,44 +1,46 @@
-import {
-  closeSync,
-  fsyncSync,
-  linkSync,
-  openSync,
-  readFileSync,
-  statSync,
-  unlinkSync,
-  writeSync,
-} from 'node:fs';
+import { closeSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from 'node:fs';
+import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 /**
- * Cross-process mutex over a sidecar file, for the files several
- * `sigil-mcp` instances append to concurrently (one per Claude window: the
- * audit log, the per-portal spend ledgers). Node core has no flock(2) and
- * sigil takes no native deps, so this is built from atomic filesystem
- * operations only.
+ * Cross-process mutex for the files several `sigil-mcp` instances append
+ * to concurrently (one per Claude window: the audit log, the per-portal
+ * spend ledgers). Node core has no flock(2) and sigil takes no native
+ * deps, so this is built from two atomic filesystem operations only:
+ * exclusive create and unlink of a process's *own* files.
  *
- * Establishment. The holder writes its stamp (`<pid> <token>\n`) to a
- * private temp file, fsyncs it, and publishes it with link(2) onto the
- * lock path. link is atomic and fails with EEXIST if the name is taken, so
- * the lock file is *never* observable in an unstamped state: there is no
- * window in which a contender can misjudge a freshly created lock as torn.
- * (An earlier design created the file exclusively and stamped it
- * afterwards; a holder that stalled in between could be evicted and then
- * co-hold with its evictor. That class of race is gone.)
+ * It is Lamport's bakery algorithm on a directory:
  *
- * Staleness. A lock whose stamp names a dead pid is orphaned and may be
- * broken immediately. A stamp naming a live pid is never broken, however
- * old — except by the process that issued it: if this process finds a lock
- * carrying its own pid and a token it minted but no longer holds (a release
- * that failed after retries), it reclaims it. Only unparsable content
- * (hand edits, files left by pre-link versions) falls back to an age rule.
- * Breaking is serialized through a breaker sidecar so two contenders can't
- * both judge a lock stale and unlink a successor's fresh lock.
+ *   1. create   c-<pid>-<token>            "I am choosing a number"
+ *   2. read the directory; my number is 1 + the largest ticket number
+ *   3. create   t-<number>-<pid>-<token>   my ticket
+ *   4. unlink   c-<pid>-<token>
+ *   5. wait until no other live process is choosing, and no other live
+ *      process holds a ticket ordered before mine (number, pid, token)
+ *   6. critical section
+ *   7. unlink my ticket
  *
- * Residual gap, documented rather than hidden: pid reuse. If the original
- * holder died and its pid was recycled by an unrelated live process before
- * anyone noticed, the lock stays until that process exits or a human
- * removes the file. Closing this needs OS-level locking.
+ * Why this and not a single lock file: with one file, recovering from a
+ * holder that died means deleting a path some other process may just
+ * have re-created, and every "check, then unlink" sequence is a race —
+ * in the lock, and again in any sidecar used to serialise the breaking.
+ * Here no process ever unlinks a live process's file. Tickets of dead
+ * pids are simply ignored (and swept, which is safe because their owner
+ * cannot act), so a crashed holder costs nothing and there is nothing to
+ * "break". Correctness needs only that a file present for the whole of a
+ * readdir is listed, which every filesystem gives.
+ *
+ * A process also recognises tickets carrying its own pid: a token it
+ * minted but no longer holds is an orphan of its own (a release that
+ * failed), and a token it never minted belongs to a dead predecessor that
+ * had this pid; both are swept.
+ *
+ * Residual gap, documented rather than hidden: pid reuse across
+ * *different* processes. A dead holder whose pid was recycled by an
+ * unrelated live process looks alive, and its ticket blocks everyone
+ * until that process exits or a human removes the file. That is an
+ * availability limit, not an exclusion failure; closing it needs OS-level
+ * locking.
  */
 export class FileLockError extends Error {
   constructor(msg: string) {
@@ -52,23 +54,19 @@ export const AuditLockError = FileLockError;
 export interface AcquireLockOptions {
   timeoutMs?: number;
   pollMs?: number;
-  /** Age after which an *unparsable* lock file is treated as abandoned. */
-  staleMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_POLL_MS = 25;
-const DEFAULT_STALE_MS = 10_000;
 
 /**
- * Test-only seams. `beforeLink` runs after the temp stamp file is written
- * and before it is linked onto the lock path, so a test can interpose a
- * contender at the only moment that matters. Never set by production code.
+ * Test-only seam: runs after our ticket is created and before we start
+ * waiting, so a test can interpose a contender at the moment that matters.
+ * Never set by production code.
  */
-export const _testHooks: { beforeLink?: (lockPath: string) => void } = {};
+export const _testHooks: { afterTicket?: (lockDir: string) => void } = {};
 
-// Tokens this process has minted, and those it currently holds. A stamp
-// with our pid and a minted-but-unheld token is our own orphan.
+// Tokens this process has minted, and those it currently holds.
 const minted = new Set<string>();
 const held = new Set<string>();
 
@@ -96,141 +94,148 @@ function isAlive(pid: number): boolean {
   }
 }
 
-const STAMP_RE = /^(\d+) ([0-9a-f]{16})\n$/;
+const TICKET_RE = /^t-(\d+)-(\d+)-([0-9a-f]{16})$/;
+const CHOOSING_RE = /^c-(\d+)-([0-9a-f]{16})$/;
 
-/**
- * Judge whether the lock file at `path` is abandoned. Returns false when
- * the file vanished (owner released it — nothing to break).
- */
-function isStale(path: string, staleMs: number): boolean {
-  let content: string;
-  let mtimeMs: number;
-  try {
-    content = readFileSync(path, 'utf8');
-    mtimeMs = statSync(path).mtimeMs;
-  } catch {
-    return false;
-  }
-  const stamp = STAMP_RE.exec(content);
-  if (stamp) {
-    const pid = Number.parseInt(stamp[1]!, 10);
-    const token = stamp[2]!;
-    if (pid === process.pid) return minted.has(token) && !held.has(token);
-    return !isAlive(pid);
-  }
-  return Date.now() - mtimeMs > staleMs;
+interface Entry {
+  name: string;
+  kind: 'ticket' | 'choosing';
+  /** Ticket number; 0 for a choosing marker. */
+  seq: number;
+  pid: number;
+  token: string;
 }
 
-/**
- * Atomically publish a stamped lock file at `path`. Returns true if we now
- * hold it, false if the name was already taken. The stamp is complete and
- * durable before the name exists; on any failure only our private temp
- * file is removed — never anything at `path`.
- */
-function establish(path: string, stamp: string): boolean {
-  const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  const fd = openSync(tmp, 'wx', 0o600);
-  try {
-    writeAllSync(fd, stamp);
-    fsyncSync(fd);
-  } catch (err) {
-    closeSync(fd);
-    unlinkQuiet(tmp);
-    throw err;
-  }
-  closeSync(fd);
-  try {
-    _testHooks.beforeLink?.(path);
-    linkSync(tmp, path);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw err;
-  } finally {
-    unlinkQuiet(tmp);
-  }
+function parseEntry(name: string): Entry | null {
+  const t = TICKET_RE.exec(name);
+  if (t) return { name, kind: 'ticket', seq: Number(t[1]), pid: Number(t[2]), token: t[3]! };
+  const c = CHOOSING_RE.exec(name);
+  if (c) return { name, kind: 'choosing', seq: 0, pid: Number(c[1]), token: c[2]! };
+  return null; // not ours to interpret, never touched
+}
+
+function ticketName(seq: number, pid: number, token: string): string {
+  return `t-${seq}-${pid}-${token}`;
+}
+
+function before(a: Entry, b: Entry): boolean {
+  if (a.seq !== b.seq) return a.seq < b.seq;
+  if (a.pid !== b.pid) return a.pid < b.pid;
+  return a.token < b.token;
+}
+
+function createExclusive(path: string): void {
+  closeSync(openSync(path, 'wx', 0o600));
 }
 
 function unlinkQuiet(path: string): void {
   try {
     unlinkSync(path);
   } catch {
-    /* already gone, or will age out */
+    /* already gone */
   }
 }
 
 /**
- * If the main lock looks stale, remove it — serialized via the breaker lock
- * so two contenders cannot both "break" and unlink a just-reacquired lock.
- * Best effort: on any contention or judgment change, do nothing; the caller
- * polls and retries.
+ * List the live contenders in `dir`, sweeping entries whose owner cannot
+ * act: dead pids, and this pid's own orphans (minted-but-unheld tokens,
+ * or tokens never minted by this process — a dead predecessor with the
+ * same pid). Our own currently held entries are returned too, so a
+ * nested acquire sees the outer ticket as a contender and times out
+ * rather than deadlocking silently or entering twice.
  */
-function tryBreakStaleLock(lockPath: string, staleMs: number): void {
-  if (!isStale(lockPath, staleMs)) return;
-  const breakerPath = `${lockPath}.break`;
-  const breakerToken = randomBytes(8).toString('hex');
-  minted.add(breakerToken);
-  if (!establish(breakerPath, `${process.pid} ${breakerToken}\n`)) {
-    if (isStale(breakerPath, staleMs)) unlinkQuiet(breakerPath);
-    return;
+function liveEntries(dir: string): Entry[] {
+  const out: Entry[] = [];
+  for (const name of readdirSync(dir)) {
+    const e = parseEntry(name);
+    if (!e) continue;
+    let sweep = false;
+    if (e.pid === process.pid) sweep = !held.has(e.token);
+    else sweep = !isAlive(e.pid);
+    if (sweep) {
+      unlinkQuiet(join(dir, name));
+      continue;
+    }
+    out.push(e);
   }
-  held.add(breakerToken);
-  try {
-    // Authoritative re-check now that breakers are serialized.
-    if (isStale(lockPath, staleMs)) unlinkQuiet(lockPath);
-  } finally {
-    unlinkQuiet(breakerPath);
-    held.delete(breakerToken);
-    minted.delete(breakerToken);
-  }
+  return out;
 }
 
 /**
- * Acquire an exclusive cross-process lock. Returns an idempotent release
- * function. Throws FileLockError if the lock cannot be acquired within
- * `timeoutMs`.
+ * Acquire an exclusive cross-process lock over `lockDir` (created if
+ * absent). Returns an idempotent release function. Throws FileLockError
+ * if the lock cannot be acquired within `timeoutMs`.
  */
-export function acquireLockSync(lockPath: string, opts: AcquireLockOptions = {}): () => void {
+export function acquireLockSync(lockDir: string, opts: AcquireLockOptions = {}): () => void {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
-  const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
-  const token = randomBytes(8).toString('hex');
-  const stamp = `${process.pid} ${token}\n`;
   const deadline = Date.now() + timeoutMs;
+  mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+
+  const token = randomBytes(8).toString('hex');
   minted.add(token);
+  const choosing = join(lockDir, `c-${process.pid}-${token}`);
+  let mine: Entry;
+  createExclusive(choosing);
+  try {
+    // Marking the choosing token as held for the duration keeps the sweep
+    // in liveEntries from treating our own marker as an orphan.
+    held.add(token);
+    let max = 0;
+    for (const e of liveEntries(lockDir)) if (e.kind === 'ticket' && e.seq > max) max = e.seq;
+    const seq = max + 1;
+    mine = {
+      name: ticketName(seq, process.pid, token),
+      kind: 'ticket',
+      seq,
+      pid: process.pid,
+      token,
+    };
+    createExclusive(join(lockDir, mine.name));
+  } catch (err) {
+    held.delete(token);
+    minted.delete(token);
+    unlinkQuiet(choosing);
+    throw err;
+  }
+  unlinkQuiet(choosing);
+  _testHooks.afterTicket?.(lockDir);
+
+  const ticketPath = join(lockDir, mine.name);
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    // Drop "held" first: if the unlink fails for good, the ticket on disk
+    // is then minted-but-unheld, i.e. recognisably our own orphan, and the
+    // next acquire in this process sweeps it. A failed release stays
+    // retryable (released is only set on success).
+    held.delete(token);
+    try {
+      unlinkSync(ticketPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    released = true;
+    minted.delete(token);
+  };
 
   for (;;) {
-    if (establish(lockPath, stamp)) {
-      held.add(token);
-      let released = false;
-      return () => {
-        if (released) return;
-        // Drop "held" before the unlink: if the unlink fails for good, the
-        // stamp on disk is then minted-but-unheld, i.e. recognisably our
-        // own orphan, and the next acquire in this process reclaims it.
-        held.delete(token);
-        try {
-          if (readFileSync(lockPath, 'utf8') === stamp) unlinkSync(lockPath);
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-        }
-        released = true;
-        minted.delete(token);
-      };
-    }
-    tryBreakStaleLock(lockPath, staleMs);
+    const blocked = liveEntries(lockDir).some(
+      (e) => e.token !== token && (e.kind === 'choosing' || before(e, mine)),
+    );
+    if (!blocked) return release;
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      minted.delete(token);
-      throw new FileLockError(`timed out after ${timeoutMs}ms waiting for ${lockPath}`);
+      release();
+      throw new FileLockError(`timed out after ${timeoutMs}ms waiting for ${lockDir}`);
     }
     sleepSync(Math.min(pollMs, remaining));
   }
 }
 
-/** Sidecar lock path for a data file: `<target>.lock`. */
+/** Sidecar lock directory for a data file: `<target>.lock.d`. */
 export function lockPathFor(target: string): string {
-  return `${target}.lock`;
+  return `${target}.lock.d`;
 }
 
 /**
@@ -239,27 +244,26 @@ export function lockPathFor(target: string): string {
  * re-entrant: a nested acquire of the same target times out.
  */
 export function withFileLock<T>(target: string, fn: () => T, opts: AcquireLockOptions = {}): T {
-  const lockPath = lockPathFor(target);
-  const release = acquireLockSync(lockPath, opts);
+  const lockDir = lockPathFor(target);
+  const release = acquireLockSync(lockDir, opts);
   try {
     return fn();
   } finally {
-    releaseWithRetry(release, lockPath);
+    releaseWithRetry(release, lockDir);
   }
 }
 
 /**
- * A lock stamped with a live pid is not broken by other processes, so a
- * release that fails would block every other session until this process
- * exits. Retry a transient failure with backoff; if it still won't go,
- * report on stderr — never replace fn's outcome (a committed append must
- * not be reported as a failure, and fn's own error must not be masked).
- * The lock is not lost for good: `minted`/`held` bookkeeping lets this
- * process recognise the orphan as its own and reclaim it on its next
- * acquire, once whatever blocked the unlink has cleared.
+ * A ticket with a live pid blocks every other session until it is gone,
+ * so a release that fails would stall them until this process exits.
+ * Retry a transient failure with backoff; if it still won't go, report on
+ * stderr — never replace fn's outcome (a committed append must not be
+ * reported as a failure, and fn's own error must not be masked). The
+ * ticket is not lost for good: it stays minted, so this process sweeps it
+ * as its own orphan on its next acquire.
  */
 const RELEASE_ATTEMPTS = 5;
-export function releaseWithRetry(release: () => void, lockPath: string): void {
+export function releaseWithRetry(release: () => void, lockDir: string): void {
   let last: unknown;
   for (let i = 0; i < RELEASE_ATTEMPTS; i++) {
     try {
@@ -271,8 +275,8 @@ export function releaseWithRetry(release: () => void, lockPath: string): void {
     }
   }
   process.stderr.write(
-    `sigil: failed to release ${lockPath} after ${RELEASE_ATTEMPTS} attempts ` +
-      `(${(last as Error)?.message ?? String(last)}); this process will reclaim it on ` +
-      `its next acquire, other sessions will wait until then\n`,
+    `sigil: failed to release a ticket in ${lockDir} after ${RELEASE_ATTEMPTS} attempts ` +
+      `(${(last as Error)?.message ?? String(last)}); this process will sweep it on its ` +
+      `next acquire, other sessions will wait until then\n`,
   );
 }
