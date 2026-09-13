@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { equal, ok, rejects } from 'node:assert/strict';
+import { deepEqual, equal, ok, rejects } from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1334,5 +1334,47 @@ test('deploy: omitting `to` (instead of explicit null) is INVALID_PARAMS, not a 
     equal(err!.code, RPC_INVALID_PARAMS);
   } finally {
     cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Two sessions (two MethodContexts) signing against one shared audit log
+// ---------------------------------------------------------------------------
+
+test('two dispatch contexts sharing one audit log produce a single valid chain', async () => {
+  const dir = mkTmp();
+  try {
+    const auditPath = join(dir, 'audit.log');
+    const mk = (byte: number, t: number) => {
+      const handles = new HandleTable();
+      handles.addEntry('evm:bot', new SecretBuffer(priv(byte)));
+      handles.markUnlocked();
+      const audit = new AuditWriter(auditPath, { now: () => t });
+      const ctx: MethodContext = { handles, audit, policy: permissivePolicyResolver() };
+      return { ctx, dispose: () => (audit.close(), handles.dispose()) };
+    };
+    const a = mk(1, 1);
+    const b = mk(2, 2);
+    const msg = { portal: 'evm:bot', message: '0x01' };
+    await dispatch('sigil_eth_sign_message', msg, a.ctx);
+    await dispatch('sigil_eth_sign_message', msg, b.ctx);
+    await rejects(dispatch('sigil_eth_sign_message', { portal: 'nope', message: '0x01' }, a.ctx));
+    await dispatch('sigil_eth_sign_message', msg, a.ctx);
+    await dispatch('sigil_eth_sign_message', msg, b.ctx);
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries.length, 4, 'portal-not-found errors before the policy gate and is not audited');
+    deepEqual(
+      entries.map((e) => [e.seq, e.ts]),
+      [
+        [0, 1],
+        [1, 2],
+        [2, 1],
+        [3, 2],
+      ],
+    );
+    a.dispose();
+    b.dispose();
+  } finally {
+    rmSync(dir, { recursive: true });
   }
 });

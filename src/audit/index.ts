@@ -14,5 +14,6 @@ export {
   parseLine,
   verifyChain,
   readHead,
+  type AuditWriterOpts,
 } from './log.js';
-export { type AcquireLockOptions, AuditLockError, acquireLockSync } from './lock.js';
+export { type AcquireLockOptions, AuditLockError, acquireLockSync } from '../fs/lock.js';

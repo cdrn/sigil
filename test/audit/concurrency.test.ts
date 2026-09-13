@@ -1,11 +1,20 @@
 import { test } from 'node:test';
-import { equal, notEqual, ok, throws } from 'node:assert/strict';
+import { equal, ok, throws } from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditWriter, verifyChain } from '../../src/audit/log.js';
-import { AuditLockError, acquireLockSync } from '../../src/audit/lock.js';
+import { AuditLockError, acquireLockSync } from '../../src/fs/lock.js';
 
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), 'sigil-audit-conc-'));
@@ -15,16 +24,20 @@ function mkTmp(): string {
 // acquireLockSync
 // ============================================================================
 
-test('acquireLockSync creates the lock file and release removes it', () => {
+function tickets(lockDir: string): string[] {
+  return existsSync(lockDir) ? readdirSync(lockDir).filter((n) => n.startsWith('t-')) : [];
+}
+
+test('acquireLockSync creates a ticket in our name and release removes it', () => {
   const dir = mkTmp();
   try {
-    const lockPath = join(dir, 'audit.log.lock');
-    const release = acquireLockSync(lockPath);
-    ok(existsSync(lockPath));
-    const content = readFileSync(lockPath, 'utf8');
-    equal(content, `${process.pid} ${content.split(' ')[1]!.trim()}\n`);
+    const lockDir = join(dir, 'audit.log.lock.d');
+    const release = acquireLockSync(lockDir);
+    const t = tickets(lockDir);
+    equal(t.length, 1);
+    ok(t[0]!.includes(`-${process.pid}-`), `ticket names our pid: ${t[0]}`);
     release();
-    ok(!existsSync(lockPath));
+    equal(tickets(lockDir).length, 0);
     // Release is idempotent.
     release();
   } finally {
@@ -35,103 +48,83 @@ test('acquireLockSync creates the lock file and release removes it', () => {
 test('acquireLockSync times out while a live lock is held', () => {
   const dir = mkTmp();
   try {
-    const lockPath = join(dir, 'audit.log.lock');
-    const release = acquireLockSync(lockPath);
-    throws(() => acquireLockSync(lockPath, { timeoutMs: 100, pollMs: 10 }), AuditLockError);
+    const lockDir = join(dir, 'audit.log.lock.d');
+    const release = acquireLockSync(lockDir);
+    throws(() => acquireLockSync(lockDir, { timeoutMs: 100, pollMs: 10 }), AuditLockError);
     release();
     // Once released, acquisition succeeds again.
-    const release2 = acquireLockSync(lockPath, { timeoutMs: 100, pollMs: 10 });
+    const release2 = acquireLockSync(lockDir, { timeoutMs: 100, pollMs: 10 });
     release2();
   } finally {
     rmSync(dir, { recursive: true });
   }
 });
 
-test('acquireLockSync breaks a lock whose holder pid is dead', async () => {
+test('acquireLockSync sweeps a ticket whose holder pid is dead', async () => {
   const dir = mkTmp();
   try {
-    const lockPath = join(dir, 'audit.log.lock');
+    const lockDir = join(dir, 'audit.log.lock.d');
     // Spawn a process that exits immediately so we hold a guaranteed-dead pid.
     const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
     const deadPid: number = await new Promise((resolve) => {
       child.once('exit', () => resolve(child.pid!));
     });
-    writeFileSync(lockPath, `${deadPid} deadbeefdeadbeef\n`, { mode: 0o600 });
-    const release = acquireLockSync(lockPath, { timeoutMs: 2_000, pollMs: 10 });
-    ok(existsSync(lockPath));
-    notEqual(readFileSync(lockPath, 'utf8'), `${deadPid} deadbeefdeadbeef\n`);
-    // The breaker sidecar must not linger after a successful break.
-    ok(!existsSync(`${lockPath}.break`));
+    mkdirSync(lockDir, { recursive: true });
+    const dead = join(lockDir, `t-1-${deadPid}-deadbeefdeadbeef`);
+    writeFileSync(dead, '');
+    const release = acquireLockSync(lockDir, { timeoutMs: 2_000, pollMs: 10 });
+    ok(!existsSync(dead), 'dead ticket swept');
+    equal(tickets(lockDir).length, 1, 'only our ticket remains');
     release();
   } finally {
     rmSync(dir, { recursive: true });
   }
 });
 
-test('acquireLockSync never evicts a live holder, even past staleMs', () => {
+test('acquireLockSync never evicts a live holder, however old its ticket', () => {
   const dir = mkTmp();
   try {
-    const lockPath = join(dir, 'audit.log.lock');
-    const release = acquireLockSync(lockPath);
-    // Make the live lock look ancient. Liveness must win over age.
+    const lockDir = join(dir, 'audit.log.lock.d');
+    const release = acquireLockSync(lockDir);
+    const mine = join(lockDir, tickets(lockDir)[0]!);
+    // Make the live ticket look ancient. Liveness must win over age.
     const past = (Date.now() - 3_600_000) / 1000;
-    utimesSync(lockPath, past, past);
-    throws(
-      () => acquireLockSync(lockPath, { timeoutMs: 150, pollMs: 10, staleMs: 50 }),
-      AuditLockError,
-    );
-    ok(existsSync(lockPath), 'live lock must survive contenders');
+    utimesSync(mine, past, past);
+    throws(() => acquireLockSync(lockDir, { timeoutMs: 150, pollMs: 10 }), AuditLockError);
+    ok(existsSync(mine), 'live ticket must survive contenders');
     release();
   } finally {
     rmSync(dir, { recursive: true });
   }
 });
 
-test('acquireLockSync breaks an unparsable lock only after it goes stale by age', () => {
+test('files in the lock directory that are not tickets or markers are ignored, never removed', () => {
   const dir = mkTmp();
   try {
-    const lockPath = join(dir, 'audit.log.lock');
-    writeFileSync(lockPath, 'not a pid\n', { mode: 0o600 });
-    // Fresh garbage lock: treated as live, acquisition times out.
-    throws(
-      () => acquireLockSync(lockPath, { timeoutMs: 100, pollMs: 10, staleMs: 60_000 }),
-      AuditLockError,
-    );
-    // Backdate the mtime past staleMs: now breakable.
-    const past = (Date.now() - 120_000) / 1000;
-    utimesSync(lockPath, past, past);
-    const release = acquireLockSync(lockPath, { timeoutMs: 2_000, pollMs: 10, staleMs: 60_000 });
+    const lockDir = join(dir, 'audit.log.lock.d');
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'not a pid'), 'garbage');
+    writeFileSync(join(lockDir, `${process.pid}`), 'torn stamp from an older sigil');
+    const release = acquireLockSync(lockDir, { timeoutMs: 500, pollMs: 10 });
     release();
+    ok(existsSync(join(lockDir, 'not a pid')));
+    ok(existsSync(join(lockDir, `${process.pid}`)));
   } finally {
     rmSync(dir, { recursive: true });
   }
 });
 
-test('a torn stamp with a live pid prefix ages out instead of deferring to that pid', () => {
+test('release only removes our own ticket', () => {
   const dir = mkTmp();
   try {
-    const lockPath = join(dir, 'audit.log.lock');
-    // A truncated stamp: our own (very alive) pid but no token. Must be
-    // judged by age, not by pid liveness.
-    writeFileSync(lockPath, `${process.pid}`, { mode: 0o600 });
-    const past = (Date.now() - 120_000) / 1000;
-    utimesSync(lockPath, past, past);
-    const release = acquireLockSync(lockPath, { timeoutMs: 2_000, pollMs: 10, staleMs: 60_000 });
+    const lockDir = join(dir, 'audit.log.lock.d');
+    const release = acquireLockSync(lockDir);
+    // A foreign live ticket that appeared after us (higher number).
+    const foreign = join(lockDir, `t-99-${process.ppid}-aaaaaaaaaaaaaaaa`);
+    writeFileSync(foreign, '');
     release();
-  } finally {
-    rmSync(dir, { recursive: true });
-  }
-});
-
-test('release does not remove a lock it no longer owns', () => {
-  const dir = mkTmp();
-  try {
-    const lockPath = join(dir, 'audit.log.lock');
-    const release = acquireLockSync(lockPath);
-    // Simulate a stale-breaker replacing our lock with someone else's.
-    writeFileSync(lockPath, '99999 aaaaaaaaaaaaaaaa\n', { mode: 0o600 });
-    release();
-    ok(existsSync(lockPath), 'foreign lock must survive our release');
+    ok(existsSync(foreign), 'foreign ticket must survive our release');
+    equal(tickets(lockDir).length, 1);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -141,7 +134,7 @@ test('AuditWriter construction respects a held lock (startup read is serialized)
   const dir = mkTmp();
   try {
     const path = join(dir, 'audit.log');
-    const release = acquireLockSync(`${path}.lock`);
+    const release = acquireLockSync(`${path}.lock.d`);
     throws(() => new AuditWriter(path, { lock: { timeoutMs: 100, pollMs: 10 } }), AuditLockError);
     release();
     const w = new AuditWriter(path, { lock: { timeoutMs: 100, pollMs: 10 } });
@@ -285,7 +278,7 @@ test('two concurrent processes appending to one file produce a verifiable chain'
     equal(verified.filter((e) => e.kind === 'writer_b').length, perWriter);
     for (let i = 0; i < verified.length; i++) equal(verified[i]!.seq, i);
     // No lock file left behind.
-    ok(!existsSync(`${path}.lock`));
+    equal(tickets(`${path}.lock.d`).length, 0, 'no tickets left behind');
   } finally {
     rmSync(dir, { recursive: true });
   }
