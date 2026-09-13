@@ -30,10 +30,9 @@ import { randomBytes } from 'node:crypto';
  * "break". Correctness needs only that a file present for the whole of a
  * readdir is listed, which every filesystem gives.
  *
- * A process also recognises tickets carrying its own pid: a token it
- * minted but no longer holds is an orphan of its own (a release that
- * failed), and a token it never minted belongs to a dead predecessor that
- * had this pid; both are swept.
+ * A process also recognises files carrying its own pid that no live
+ * acquisition in it holds: an orphan of its own (a release that failed)
+ * or a dead predecessor that had this pid. Both are swept.
  *
  * Residual gap, documented rather than hidden: pid reuse across
  * *different* processes. A dead holder whose pid was recycled by an
@@ -60,14 +59,21 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_POLL_MS = 25;
 
 /**
- * Test-only seam: runs after our ticket is created and before we start
- * waiting, so a test can interpose a contender at the moment that matters.
- * Never set by production code.
+ * Test-only seams. `afterTicket` runs once our ticket exists (before the
+ * choosing marker is withdrawn); `betweenScans` runs between the marker
+ * scan and the ticket scan of each admission check. Either may throw to
+ * simulate a failure at that point. Never set by production code.
  */
-export const _testHooks: { afterTicket?: (lockDir: string) => void } = {};
+export const _testHooks: {
+  afterTicket?: (lockDir: string) => void;
+  betweenScans?: (lockDir: string) => void;
+} = {};
 
-// Tokens this process has minted, and those it currently holds.
-const minted = new Set<string>();
+// Tokens this process currently holds (ticket or marker on disk that a
+// live acquisition in this module instance owns). One module instance per
+// process is assumed: worker threads or a second copy of this module would
+// keep separate sets and could sweep each other's live files. sigil-mcp
+// is single-threaded and loads this once.
 const held = new Set<string>();
 
 function sleepSync(ms: number): void {
@@ -114,35 +120,47 @@ function parseEntry(name: string): Entry | null {
   return null; // not ours to interpret, never touched
 }
 
-function ticketName(seq: number, pid: number, token: string): string {
-  return `t-${seq}-${pid}-${token}`;
-}
-
 function before(a: Entry, b: Entry): boolean {
   if (a.seq !== b.seq) return a.seq < b.seq;
   if (a.pid !== b.pid) return a.pid < b.pid;
   return a.token < b.token;
 }
 
+/** Exclusive create of an empty file; if close fails the file is removed. */
 function createExclusive(path: string): void {
-  closeSync(openSync(path, 'wx', 0o600));
+  const fd = openSync(path, 'wx', 0o600);
+  try {
+    closeSync(fd);
+  } catch (err) {
+    unlinkQuiet(path);
+    throw err;
+  }
 }
 
 function unlinkQuiet(path: string): void {
   try {
     unlinkSync(path);
   } catch {
-    /* already gone */
+    /* already gone, or will be swept later */
+  }
+}
+
+/** Unlink that treats ENOENT as success and rethrows anything else. */
+function unlinkOwn(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
 }
 
 /**
  * List the live contenders in `dir`, sweeping entries whose owner cannot
- * act: dead pids, and this pid's own orphans (minted-but-unheld tokens,
- * or tokens never minted by this process — a dead predecessor with the
- * same pid). Our own currently held entries are returned too, so a
- * nested acquire sees the outer ticket as a contender and times out
- * rather than deadlocking silently or entering twice.
+ * act: dead pids, and this pid's own files that no live acquisition holds
+ * (an orphan of a failed release, or a dead predecessor that had this
+ * pid). Our own held entries are returned too, so a nested acquire sees
+ * the outer ticket as a contender and times out rather than deadlocking
+ * silently or entering twice.
  */
 function liveEntries(dir: string): Entry[] {
   const out: Entry[] = [];
@@ -160,9 +178,36 @@ function liveEntries(dir: string): Entry[] {
 }
 
 /**
+ * Admission check. Two separate enumerations, in this order:
+ *   1. is any other live process choosing?  (if so, not admitted)
+ *   2. does any other live ticket order before mine?
+ *
+ * Why two: readdir is not a snapshot. A contender that withdraws its
+ * marker and publishes its ticket while one enumeration is in flight can
+ * be missed by that enumeration on both counts. With the marker read
+ * strictly before the ticket read, the argument is:
+ *   - If C's marker existed for the whole of scan 1, we see it and retry.
+ *   - If C's marker was created after scan 1 began, C picks its number
+ *     after that, and our ticket (created before scan 1) is present for
+ *     the whole of C's selection scan, so C's number is larger than ours.
+ *   - If C's marker was withdrawn during scan 1, C's ticket already existed
+ *     when scan 1 ended, so it is present for the whole of scan 2 and we
+ *     see it.
+ * This is exactly Lamport's per-variable "wait until not choosing, then
+ * read number", with each variable read as one enumeration.
+ */
+function admitted(dir: string, mine: Entry): boolean {
+  const others = (es: Entry[]): Entry[] => es.filter((e) => e.token !== mine.token);
+  if (others(liveEntries(dir)).some((e) => e.kind === 'choosing')) return false;
+  _testHooks.betweenScans?.(dir);
+  return !others(liveEntries(dir)).some((e) => e.kind === 'ticket' && before(e, mine));
+}
+
+/**
  * Acquire an exclusive cross-process lock over `lockDir` (created if
- * absent). Returns an idempotent release function. Throws FileLockError
- * if the lock cannot be acquired within `timeoutMs`.
+ * absent). Returns an idempotent, retryable release function. Throws
+ * FileLockError if the lock cannot be acquired within `timeoutMs`. Any
+ * failure to acquire — timeout or error — withdraws our files first.
  */
 export function acquireLockSync(lockDir: string, opts: AcquireLockOptions = {}): () => void {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -171,64 +216,70 @@ export function acquireLockSync(lockDir: string, opts: AcquireLockOptions = {}):
   mkdirSync(lockDir, { recursive: true, mode: 0o700 });
 
   const token = randomBytes(8).toString('hex');
-  minted.add(token);
-  const choosing = join(lockDir, `c-${process.pid}-${token}`);
+  const markerPath = join(lockDir, `c-${process.pid}-${token}`);
+  let ticketPath: string | undefined;
+  let markerOnDisk = false;
+
+  // Withdraw everything we put on disk. Throws if something we own could
+  // not be removed (the caller's retry path handles that); the held flag
+  // is dropped first so a leftover is recognisably our own orphan.
+  const withdraw = (): void => {
+    held.delete(token);
+    if (ticketPath) unlinkOwn(ticketPath);
+    if (markerOnDisk) unlinkOwn(markerPath);
+    markerOnDisk = false;
+  };
+
   let mine: Entry;
-  createExclusive(choosing);
   try {
-    // Marking the choosing token as held for the duration keeps the sweep
-    // in liveEntries from treating our own marker as an orphan.
     held.add(token);
+    createExclusive(markerPath);
+    markerOnDisk = true;
     let max = 0;
     for (const e of liveEntries(lockDir)) if (e.kind === 'ticket' && e.seq > max) max = e.seq;
     const seq = max + 1;
     mine = {
-      name: ticketName(seq, process.pid, token),
+      name: `t-${seq}-${process.pid}-${token}`,
       kind: 'ticket',
       seq,
       pid: process.pid,
       token,
     };
-    createExclusive(join(lockDir, mine.name));
+    ticketPath = join(lockDir, mine.name);
+    createExclusive(ticketPath);
+    _testHooks.afterTicket?.(lockDir);
+    // A marker we fail to withdraw now is retried at release; meanwhile it
+    // is ours (held), so our own admission check ignores it.
+    try {
+      unlinkOwn(markerPath);
+      markerOnDisk = false;
+    } catch {
+      /* release() will retry */
+    }
+
+    for (;;) {
+      if (admitted(lockDir, mine)) break;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new FileLockError(`timed out after ${timeoutMs}ms waiting for ${lockDir}`);
+      }
+      sleepSync(Math.min(pollMs, remaining));
+    }
   } catch (err) {
-    held.delete(token);
-    minted.delete(token);
-    unlinkQuiet(choosing);
+    try {
+      withdraw();
+    } catch {
+      /* our leftovers are held-less now; this process sweeps them next time */
+    }
     throw err;
   }
-  unlinkQuiet(choosing);
-  _testHooks.afterTicket?.(lockDir);
 
-  const ticketPath = join(lockDir, mine.name);
   let released = false;
-  const release = (): void => {
+  return () => {
     if (released) return;
-    // Drop "held" first: if the unlink fails for good, the ticket on disk
-    // is then minted-but-unheld, i.e. recognisably our own orphan, and the
-    // next acquire in this process sweeps it. A failed release stays
-    // retryable (released is only set on success).
-    held.delete(token);
-    try {
-      unlinkSync(ticketPath);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
+    withdraw(); // throws on failure, leaving the closure retryable
     released = true;
-    minted.delete(token);
   };
-
-  for (;;) {
-    const blocked = liveEntries(lockDir).some(
-      (e) => e.token !== token && (e.kind === 'choosing' || before(e, mine)),
-    );
-    if (!blocked) return release;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      release();
-      throw new FileLockError(`timed out after ${timeoutMs}ms waiting for ${lockDir}`);
-    }
-    sleepSync(Math.min(pollMs, remaining));
-  }
 }
 
 /** Sidecar lock directory for a data file: `<target>.lock.d`. */
@@ -252,13 +303,14 @@ export function withFileLock<T>(target: string, fn: () => T, opts: AcquireLockOp
 }
 
 /**
- * A ticket with a live pid blocks every other session until it is gone,
- * so a release that fails would stall them until this process exits.
- * Retry a transient failure with backoff; if it still won't go, report on
- * stderr — never replace fn's outcome (a committed append must not be
- * reported as a failure, and fn's own error must not be masked). The
- * ticket is not lost for good: it stays minted, so this process sweeps it
- * as its own orphan on its next acquire.
+ * A ticket or marker with a live pid blocks every other session until it
+ * is gone, so a release that fails would stall them until this process
+ * exits. Retry a transient failure with backoff; if it still won't go,
+ * report on stderr — never replace fn's outcome (a committed append must
+ * not be reported as a failure, and fn's own error must not be masked).
+ * The files are not lost for good: no live acquisition holds their token
+ * any more, so this process sweeps them as its own orphans on its next
+ * acquire.
  */
 const RELEASE_ATTEMPTS = 5;
 export function releaseWithRetry(release: () => void, lockDir: string): void {

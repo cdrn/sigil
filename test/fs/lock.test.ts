@@ -190,22 +190,175 @@ test('a live choosing marker blocks contenders (bakery invariant)', () => {
   }
 });
 
-test('ordering: a lower live ticket wins, a higher one waits', () => {
+// pid 1 (launchd / init) is always alive and always the lowest pid; it never
+// creates tickets, so planting one in its name is a safe stand-in for a live
+// contender that wins every tie-break.
+const LIVE_LOW_PID = 1;
+
+test('ordering: a live ticket with a lower number blocks us', () => {
   const dir = mkTmp();
   try {
     const target = join(dir, 'file');
-    // Our ticket will be max+1 = 6. A live ticket at 5 must block us; one at 7 must not.
-    const lower = plantTicket(target, process.ppid, 5, 'aaaaaaaaaaaaaaaa');
+    const lower = plantTicket(target, LIVE_LOW_PID, 5, 'aaaaaaaaaaaaaaaa'); // ours will be 6
     throws(() => withFileLock(target, () => 1, { timeoutMs: 60 }), FileLockError);
-    rmSync(lower);
-    // Same seq as ours would be 1 now (dir empty) — plant 1 with a *higher* pid
-    // than ours so the tiebreak favours us.
-    plantTicket(target, DEAD_PID - 1, 1, 'ffffffffffffffff'); // dead → swept anyway
+    ok(existsSync(lower), 'never swept');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('ordering: equal numbers are broken by pid — the lower pid goes first', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    // Plant AFTER our number is chosen so both hold number 1; pid 1 < ours.
+    _testHooks.afterTicket = (d) => {
+      if (d === lockPathFor(target)) plantTicket(target, LIVE_LOW_PID, 1, 'aaaaaaaaaaaaaaaa');
+    };
+    try {
+      throws(() => withFileLock(target, () => 1, { timeoutMs: 60 }), FileLockError);
+    } finally {
+      delete _testHooks.afterTicket;
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('ordering: a live ticket with a higher number does not block us', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    let planted: string | undefined;
+    _testHooks.afterTicket = (d) => {
+      if (d === lockPathFor(target) && !planted) {
+        planted = plantTicket(target, LIVE_LOW_PID, 2, 'aaaaaaaaaaaaaaaa'); // ours is 1
+      }
+    };
+    try {
+      equal(
+        withFileLock(target, () => 'ran', { timeoutMs: 500 }),
+        'ran',
+      );
+    } finally {
+      delete _testHooks.afterTicket;
+    }
+    ok(planted && existsSync(planted), 'their ticket untouched');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('admission reads markers before tickets: a ticket published between the two scans is seen', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    const lockDir = lockPathFor(target);
+    // Models the racy transition: a contender withdrew its marker during
+    // our marker scan (so we did not see it) and its lower ticket already
+    // existed when that scan ended. The ticket scan runs afterwards and
+    // must see it. A single combined enumeration could miss both.
+    let calls = 0;
+    _testHooks.betweenScans = (d) => {
+      if (d === lockDir && calls++ === 0) plantTicket(target, LIVE_LOW_PID, 1, 'aaaaaaaaaaaaaaaa');
+    };
+    let ran = false;
+    try {
+      throws(
+        () =>
+          withFileLock(
+            target,
+            () => {
+              ran = true;
+            },
+            { timeoutMs: 120 },
+          ),
+        FileLockError,
+      );
+    } finally {
+      delete _testHooks.betweenScans;
+    }
+    ok(!ran, 'the lower ticket published between the scans kept us out');
+    ok(calls >= 1, 'the seam between the scans fired');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('an error during acquisition withdraws our ticket and marker; the next acquire works', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    const lockDir = lockPathFor(target);
+    _testHooks.afterTicket = (d) => {
+      if (d === lockDir) throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
+    };
+    try {
+      throws(() => withFileLock(target, () => 1), /injected EIO/);
+    } finally {
+      delete _testHooks.afterTicket;
+    }
+    equal(readdirSync(lockDir).filter((n) => /^[ct]-/.test(n)).length, 0, 'nothing left behind');
     equal(
-      withFileLock(target, () => 'ran', { timeoutMs: 500 }),
-      'ran',
+      withFileLock(target, () => 'ok', { timeoutMs: 500 }),
+      'ok',
     );
   } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('an error during the admission wait withdraws our ticket too', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    const lockDir = lockPathFor(target);
+    _testHooks.betweenScans = (d) => {
+      if (d === lockDir) throw Object.assign(new Error('injected EACCES'), { code: 'EACCES' });
+    };
+    try {
+      throws(() => withFileLock(target, () => 1), /injected EACCES/);
+    } finally {
+      delete _testHooks.betweenScans;
+    }
+    equal(readdirSync(lockDir).filter((n) => /^[ct]-/.test(n)).length, 0);
+    equal(
+      withFileLock(target, () => 'ok', { timeoutMs: 500 }),
+      'ok',
+    );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a choosing marker that could not be withdrawn at acquire is removed by release', async () => {
+  if (process.getuid?.() === 0) return;
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    const lockDir = lockPathFor(target);
+    mkdirSync(lockDir, { recursive: true });
+    // Make the directory unwritable right after our ticket exists, so the
+    // marker unlink fails; restore it inside fn so release can finish.
+    _testHooks.afterTicket = (d) => {
+      if (d === lockDir) chmodSync(lockDir, 0o500);
+    };
+    let markerDuringFn: string[] = [];
+    try {
+      const result = withFileLock(target, () => {
+        markerDuringFn = readdirSync(lockDir).filter((n) => n.startsWith('c-'));
+        chmodSync(lockDir, 0o700);
+        return 'ran';
+      });
+      equal(result, 'ran');
+    } finally {
+      delete _testHooks.afterTicket;
+      chmodSync(lockDir, 0o700);
+    }
+    equal(markerDuringFn.length, 1, 'our marker was still on disk inside the section');
+    equal(readdirSync(lockDir).filter((n) => /^[ct]-/.test(n)).length, 0, 'release removed both');
+  } finally {
+    chmodSync(lockPathFor(join(dir, 'file')), 0o700);
     rmSync(dir, { recursive: true });
   }
 });
