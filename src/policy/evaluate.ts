@@ -260,8 +260,9 @@ function formatWei(v: bigint): string {
  * Strict-mode EIP-712 checks, applied once allow_typed_data has passed.
  * A typed-data signature can move funds (Permit, Permit2, exchange orders),
  * so the domain gets the same treatment a transaction's `to` does:
- *   1. domain.chainId, when present, must be in chain_ids — a signature for
- *      another chain is exactly the kind of thing an injected prompt asks for.
+ *   1. domain.chainId must be present and in chain_ids — a signature for
+ *      another chain is exactly the kind of thing an injected prompt asks
+ *      for, and a chain-less domain can't be checked at all.
  *   2. domain.verifyingContract must be allowlisted when the list is set.
  *   3. primaryType must be allowlisted when the list is set.
  * Domain fields are read defensively: the evaluator runs before sign-typed.ts
@@ -271,19 +272,27 @@ function evaluateTypedDataStrict(
   td: TypedData,
   policy: Policy,
 ): { kind: 'deny'; reason: string } | null {
-  const domain: Record<string, unknown> =
-    typeof td.domain === 'object' && td.domain !== null
-      ? (td.domain as unknown as Record<string, unknown>)
-      : {};
+  if (typeof td.domain !== 'object' || td.domain === null || Array.isArray(td.domain)) {
+    return { kind: 'deny', reason: 'EIP-712 denied — domain must be an object' };
+  }
+  const domain = td.domain as unknown as Record<string, unknown>;
   const chainId = domain['chainId'];
-  if (chainId !== undefined) {
-    const id = typeof chainId === 'bigint' || typeof chainId === 'number' ? Number(chainId) : NaN;
-    if (!Number.isInteger(id) || !policy.chainIds.includes(id)) {
-      return {
-        kind: 'deny',
-        reason: `EIP-712 denied — domain.chainId ${String(chainId)} not in chain_ids ${JSON.stringify(policy.chainIds)}`,
-      };
-    }
+  if (chainId === undefined) {
+    // A chain-less domain can't be checked against chain_ids, and a
+    // signature over one is valid wherever that domain is accepted. Strict
+    // mode therefore requires the domain to be chain-bound.
+    return {
+      kind: 'deny',
+      reason:
+        'EIP-712 denied — strict mode requires domain.chainId (chain-less domains cannot be checked against chain_ids)',
+    };
+  }
+  const id = exactChainId(chainId);
+  if (id === null || !policy.chainIds.some((c) => BigInt(c) === id)) {
+    return {
+      kind: 'deny',
+      reason: `EIP-712 denied — domain.chainId ${String(chainId)} not in chain_ids ${JSON.stringify(policy.chainIds)}`,
+    };
   }
   if (policy.typedDataVerifyingContracts.length > 0) {
     const vc = domain['verifyingContract'];
@@ -304,5 +313,12 @@ function evaluateTypedDataStrict(
       };
     }
   }
+  return null;
+}
+
+/** Exact integer chain id as a bigint, or null if it isn't a safe integer / bigint. */
+function exactChainId(v: unknown): bigint | null {
+  if (typeof v === 'bigint') return v >= 0n ? v : null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
   return null;
 }

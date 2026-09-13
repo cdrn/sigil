@@ -62,8 +62,8 @@ export interface Policy {
    *   - typedDataVerifyingContracts: lowercase 0x addresses the domain's
    *     verifyingContract must be one of.
    *   - typedDataPrimaryTypes: primaryType names (e.g. "Permit").
-   * Independently, a domain that carries a chainId must name one of
-   * chain_ids; a domain without a chainId is not chain-bound and passes.
+   * Independently, the domain must carry a chainId naming one of chain_ids;
+   * strict mode refuses chain-less domains (they can't be checked).
    */
   typedDataVerifyingContracts: readonly string[];
   typedDataPrimaryTypes: readonly string[];

@@ -19,6 +19,7 @@ import {
   type PolicyResolver,
   type SpendAsset,
   type SpendLedger,
+  SpendLedgerError,
   windowCapsFor,
 } from '../policy/index.js';
 import {
@@ -74,8 +75,6 @@ export interface MethodContext {
    * fail closed, never silently uncapped.
    */
   ledger?: SpendLedger;
-  /** Clock override for tests. Defaults to Date.now. */
-  now?: () => number;
 }
 
 export type MethodHandler = (params: unknown, ctx: MethodContext) => unknown | Promise<unknown>;
@@ -158,6 +157,8 @@ type GateResult =
 interface Spend {
   asset: SpendAsset;
   amount: bigint;
+  /** False when part of the debit is unknown (undecodable Solana instruction). */
+  bounded?: boolean;
 }
 
 function spendOf(request: PolicyRequest): Spend | null {
@@ -165,10 +166,23 @@ function spendOf(request: PolicyRequest): Spend | null {
   if (request.kind === 'svm_transaction') {
     let total = 0n;
     for (const t of request.transfers) total += t.lamports;
-    return { asset: 'lamports', amount: total };
+    return { asset: 'lamports', amount: total, bounded: request.allDecoded };
   }
   return null;
 }
+
+function looksLikeSvmTransaction(bytes: Buffer): boolean {
+  try {
+    decodeTx(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const UNBOUNDED_REASON =
+  'tx denied — rolling-window lamport caps are set but this transaction has an instruction sigil ' +
+  'cannot decode, so its native SOL debit cannot be bounded (only System-Program transfers count)';
 
 /**
  * Rolling-window pre-check, run before any confirm push so a human isn't
@@ -184,18 +198,23 @@ function windowPrecheck(
 ): string | null {
   const caps = windowCapsFor(policy, spend.asset);
   if (caps.length === 0) return null;
+  if (spend.bounded === false) return UNBOUNDED_REASON;
   if (!ctx.ledger) {
     return 'policy sets rolling-window value caps but no spend ledger is configured — refusing to sign';
   }
   const ledger = ctx.ledger;
-  const now = (ctx.now ?? Date.now)();
-  const reason = checkWindowCaps(
-    caps,
-    spend.amount,
-    (w) => ledger.spent(handle, spend.asset, w, now),
-    spend.asset,
-  );
-  return reason === null ? null : `tx ${reason}`;
+  try {
+    const reason = checkWindowCaps(
+      caps,
+      spend.amount,
+      (w) => ledger.spent(handle, spend.asset, w),
+      spend.asset,
+    );
+    return reason === null ? null : `tx ${reason}`;
+  } catch (err) {
+    if (err instanceof SpendLedgerError) return err.message;
+    throw err;
+  }
 }
 
 /**
@@ -216,13 +235,19 @@ function reserveSpend(
   const caps = windowCapsFor(policy, spend.asset);
   if (caps.length === 0) return;
   let reason: string | null;
-  if (!ctx.ledger) {
+  if (spend.bounded === false) {
+    reason = UNBOUNDED_REASON;
+  } else if (!ctx.ledger) {
     reason =
       'policy sets rolling-window value caps but no spend ledger is configured — refusing to sign';
   } else {
-    const now = (ctx.now ?? Date.now)();
-    const r = ctx.ledger.reserve(handle, spend.asset, spend.amount, caps, now);
-    reason = r === null ? null : `tx ${r}`;
+    try {
+      const r = ctx.ledger.reserve(handle, spend.asset, spend.amount, caps);
+      reason = r === null ? null : `tx ${r}`;
+    } catch (err) {
+      if (!(err instanceof SpendLedgerError)) throw err;
+      reason = err.message;
+    }
   }
   if (reason === null) return;
   ctx.audit.append({ kind, portal: handle, payload, decision: 'deny', reason });
@@ -518,6 +543,16 @@ const sigil_svm_sign_message: MethodHandler = (params, ctx) => {
   const portal = asString(obj, 'portal', 'svm_sign_message');
   const messageB64 = asString(obj, 'message', 'svm_sign_message');
   const message = b64ToBuf(messageB64, 'svm_sign_message', 'message');
+  // ed25519 signs arbitrary bytes, and a Solana transaction message IS
+  // arbitrary bytes: signing one here would authorize a transaction while
+  // skipping the transaction policy (allowlists, caps, confirm). Refuse
+  // anything that parses as a transaction message; use svm_sign_transaction.
+  if (looksLikeSvmTransaction(message)) {
+    throw new RpcMethodError(
+      RPC_INVALID_PAYLOAD,
+      'svm_sign_message: payload is a Solana transaction message — use svm_sign_transaction so the transaction policy applies',
+    );
+  }
   const secret = requirePortal(ctx.handles, portal);
   gatePolicy(
     ctx,

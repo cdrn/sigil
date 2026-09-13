@@ -252,7 +252,6 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         const handle = sub.positionals[0];
         if (!handle) throw new ArgsError('policy spend: missing handle');
         const ledger = new FileSpendLedger(paths.stateDir);
-        const now = Date.now();
         let policy: ReturnType<typeof parsePolicy> | undefined;
         try {
           policy = parsePolicy(readFileSync(join(paths.policyDir, `${handle}.toml`), 'utf8'));
@@ -261,8 +260,15 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
         }
         out.write(`portal ${handle} — rolling-window spend (from ${ledger.pathFor(handle)})\n`);
         for (const asset of ['wei', 'lamports'] as const) {
-          const h = ledger.spent(handle, asset, HOUR_MS, now);
-          const d = ledger.spent(handle, asset, DAY_MS, now);
+          let h: bigint;
+          let d: bigint;
+          try {
+            h = ledger.spent(handle, asset, HOUR_MS);
+            d = ledger.spent(handle, asset, DAY_MS);
+          } catch (e) {
+            err.write(`${(e as Error).message}\n`);
+            return { code: 1 };
+          }
           const caps = policy ? windowCapsFor(policy, asset) : [];
           const capStr = caps.length
             ? caps.map((c) => `${c.label}=${c.cap}`).join(', ')

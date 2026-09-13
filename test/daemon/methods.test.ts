@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects } from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditWriter, verifyChain } from '../../src/audit/index.js';
@@ -27,6 +27,7 @@ import {
   RpcMethodError,
 } from '../../src/daemon/index.js';
 import {
+  FileSpendLedger,
   MemorySpendLedger,
   parsePolicy,
   permissivePolicyResolver,
@@ -1397,8 +1398,9 @@ function windowCtx(
   const ctx: MethodContext = {
     ...base.ctx,
     policy: { resolve: () => policy },
-    now: () => clock.now,
-    ...(opts.ledger === null ? {} : { ledger: opts.ledger ?? new MemorySpendLedger() }),
+    ...(opts.ledger === null
+      ? {}
+      : { ledger: opts.ledger ?? new MemorySpendLedger({ now: () => clock.now }) }),
     ...(opts.confirm ? { confirm: opts.confirm } : {}),
   };
   return { ctx, auditPath: base.auditPath, cleanup: base.cleanup, clock };
@@ -1441,7 +1443,7 @@ test('window caps: spends under the cap sign and accumulate; the breach is denie
   try {
     await dispatch('sigil_eth_sign_transaction', txParams(60n), ctx);
     await dispatch('sigil_eth_sign_transaction', txParams(40n), ctx);
-    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000, T0), 100n);
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 100n);
     let err: RpcMethodError | null = null;
     try {
       await dispatch('sigil_eth_sign_transaction', txParams(1n), ctx);
@@ -1456,7 +1458,7 @@ test('window caps: spends under the cap sign and accumulate; the breach is denie
     equal(entries.length, 3);
     equal(entries[2]!.decision, 'deny');
     ok(/max_value_per_hour_wei/.test(entries[2]!.reason ?? ''));
-    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000, T0), 100n, 'denied spend not recorded');
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 100n, 'denied spend not recorded');
   } finally {
     cleanup();
   }
@@ -1478,7 +1480,7 @@ test('window caps: a zero-value call is never counted and never denied', async (
   const { ctx, cleanup } = windowCtx('mode = "permissive"\nmax_value_per_hour_wei = "0"\n');
   try {
     await dispatch('sigil_eth_sign_transaction', txParams(0n, { data: '0xa9059cbb' }), ctx);
-    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000, T0), 0n);
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 0n);
     await rejects(dispatch('sigil_eth_sign_transaction', txParams(1n), ctx));
   } finally {
     cleanup();
@@ -1512,7 +1514,7 @@ test('window caps: a confirm that is denied records nothing; an approved one rec
   );
   try {
     await rejects(dispatch('sigil_eth_sign_transaction', txParams(50n), a.ctx), /confirm denied/);
-    equal(a.ctx.ledger!.spent('evm:bot', 'wei', 3_600_000, T0), 0n);
+    equal(a.ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 0n);
   } finally {
     a.cleanup();
   }
@@ -1523,7 +1525,7 @@ test('window caps: a confirm that is denied records nothing; an approved one rec
   );
   try {
     await dispatch('sigil_eth_sign_transaction', txParams(50n), b.ctx);
-    equal(b.ctx.ledger!.spent('evm:bot', 'wei', 3_600_000, T0), 50n);
+    equal(b.ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 50n);
   } finally {
     b.cleanup();
   }
@@ -1535,7 +1537,7 @@ test('window caps: strict-mode static denies come first and are not recorded', a
   );
   try {
     await rejects(dispatch('sigil_eth_sign_transaction', txParams(5n), ctx), /not in allow_to/);
-    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000, T0), 0n);
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 0n);
   } finally {
     cleanup();
   }
@@ -1593,7 +1595,7 @@ test('window caps: contract creation counts its value too', async () => {
       txParams(100n, { to: null, data: '0x60006000' }),
       ctx,
     );
-    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000, T0), 100n);
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 100n);
     await rejects(
       dispatch('sigil_eth_sign_transaction', txParams(1n, { to: null, data: '0x60006000' }), ctx),
       /max_value_per_hour_wei/,
@@ -1656,6 +1658,49 @@ test('typed data via dispatch: strict allowlists deny with the evaluator reason 
     const entries = verifyChain(readFileSync(auditPath));
     equal(entries[0]!.decision, 'deny');
     equal(entries[1]!.decision, 'allow');
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: a corrupt ledger fails closed with the ledger error, audited', async () => {
+  const dir = mkTmp();
+  try {
+    const ledger = new FileSpendLedger(dir, { now: () => T0 });
+    ledger.reserve('evm:bot', 'wei', 1n, []);
+    appendFileSync(ledger.pathFor('evm:bot'), 'garbage\n');
+    const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP, { ledger });
+    try {
+      await rejects(dispatch('sigil_eth_sign_transaction', txParams(1n), ctx), /unreadable line 2/);
+      const entries = verifyChain(readFileSync(auditPath));
+      equal(entries[entries.length - 1]!.decision, 'deny');
+      ok(/unreadable line/.test(entries[entries.length - 1]!.reason ?? ''));
+    } finally {
+      cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('typed data via dispatch: strict mode refuses a chain-less domain', async () => {
+  const { ctx, cleanup } = windowCtx('mode = "strict"\nchain_ids = [1]\nallow_typed_data = true\n');
+  try {
+    const typedData = {
+      types: { M: [{ name: 'x', type: 'uint256' }] },
+      primaryType: 'M',
+      domain: { name: 'd' },
+      message: { x: 1 },
+    };
+    await rejects(
+      dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData }, ctx),
+      /requires domain\.chainId/,
+    );
+    await dispatch(
+      'sigil_eth_sign_typed_data',
+      { portal: 'evm:bot', typedData: { ...typedData, domain: { name: 'd', chainId: 1 } } },
+      ctx,
+    );
   } finally {
     cleanup();
   }

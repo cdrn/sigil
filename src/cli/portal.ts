@@ -255,15 +255,14 @@ export function portalRemove(paths: SigilPaths, handle: string): PortalRemoveRes
       /* ignore */
     }
   }
-  // The spend ledger (and its lock directory) go with the portal too — a
-  // re-added portal with the same handle starts with a clean allowance.
-  const ledgerPath = join(paths.stateDir, `${handle}.ledger`);
-  for (const p of [ledgerPath, `${ledgerPath}.lock.d`]) {
-    try {
-      rmSync(p, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
+  // The spend ledger goes with the portal too — a re-added portal with the
+  // same handle starts with a clean allowance. Its lock directory is left
+  // alone: a live sigil-mcp may hold a ticket in it, and deleting another
+  // process's ticket is the one thing the lock protocol forbids.
+  try {
+    rmSync(join(paths.stateDir, `${handle}.ledger`), { force: true });
+  } catch {
+    /* ignore */
   }
   return { removed: keyfileExisted, path: destPath };
 }

@@ -21,4 +21,10 @@ export {
   windowCapsFor,
   checkWindowCaps,
 } from './window.js';
-export { type SpendLedger, MemorySpendLedger, FileSpendLedger } from './ledger.js';
+export {
+  type SpendLedger,
+  type SpendLedgerOpts,
+  SpendLedgerError,
+  MemorySpendLedger,
+  FileSpendLedger,
+} from './ledger.js';

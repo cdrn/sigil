@@ -323,12 +323,11 @@ test('svm_sign_transaction: undecodable tx is denied when human confirm denies',
 // Rolling-window lamport caps on svm_sign_transaction
 // ---------------------------------------------------------------------------
 
-test('svm window caps: decoded transfers accumulate; the breach is denied; undecodable txs add nothing', async () => {
+test('svm window caps: decoded transfers accumulate; the breach is denied', async () => {
   const policy = parsePolicy('mode = "permissive"\nsvm_max_lamports_per_hour = "100"\n');
   const { ctx, cleanup } = makeCtx(policy);
-  const ledger = new MemorySpendLedger();
+  const ledger = new MemorySpendLedger({ now: () => 1_700_000_000_000 });
   ctx.ledger = ledger;
-  ctx.now = () => 1_700_000_000_000;
   try {
     const to = new Uint8Array(32).fill(9);
     await dispatch(
@@ -341,7 +340,7 @@ test('svm window caps: decoded transfers accumulate; the breach is denied; undec
       { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 40n)) },
       ctx,
     );
-    equal(ledger.spent(PORTAL, 'lamports', 3_600_000, 1_700_000_000_000), 100n);
+    equal(ledger.spent(PORTAL, 'lamports', 3_600_000), 100n);
     await rejects(
       dispatch(
         'sigil_svm_sign_transaction',
@@ -350,14 +349,75 @@ test('svm window caps: decoded transfers accumulate; the breach is denied; undec
       ),
       /svm_max_lamports_per_hour = 100/,
     );
-    // Permissive mode allows an undecodable tx outright; it carries no
-    // decoded value, so it neither breaches nor consumes the allowance.
+  } finally {
+    cleanup();
+  }
+});
+
+test('svm window caps: an undecodable instruction cannot be bounded → denied when a lamport cap is set, in both modes', async () => {
+  for (const toml of [
+    'mode = "permissive"\nsvm_max_lamports_per_day = "1000000000000"\n',
+    'mode = "strict"\nchain_ids = [1]\nsvm_max_lamports_per_day = "1000000000000"\n',
+  ]) {
+    const { ctx, cleanup } = makeCtx(parsePolicy(toml), mockConfirm('approved'));
+    ctx.ledger = new MemorySpendLedger();
+    try {
+      await rejects(
+        dispatch(
+          'sigil_svm_sign_transaction',
+          { portal: PORTAL, message: b64(unknownMsg(SVM_PUB)) },
+          ctx,
+        ),
+        /cannot be bounded/,
+      );
+      equal(ctx.ledger.spent(PORTAL, 'lamports', 3_600_000), 0n);
+    } finally {
+      cleanup();
+    }
+  }
+  // Without a lamport cap, permissive still allows it (unchanged behaviour).
+  const { ctx, cleanup } = makeCtx(
+    parsePolicy('mode = "permissive"\nmax_value_per_hour_wei = "1"\n'),
+  );
+  ctx.ledger = new MemorySpendLedger();
+  try {
     await dispatch(
       'sigil_svm_sign_transaction',
       { portal: PORTAL, message: b64(unknownMsg(SVM_PUB)) },
       ctx,
     );
-    equal(ledger.spent(PORTAL, 'lamports', 3_600_000, 1_700_000_000_000), 100n);
+  } finally {
+    cleanup();
+  }
+});
+
+test('svm_sign_message refuses bytes that parse as a transaction message (cap bypass)', async () => {
+  const { ctx, cleanup } = makeCtx(
+    parsePolicy('mode = "permissive"\nsvm_max_lamports_per_hour = "0"\n'),
+  );
+  ctx.ledger = new MemorySpendLedger();
+  try {
+    const to = new Uint8Array(32).fill(9);
+    const txBytes = b64(transferMsg(SVM_PUB, to, 1_000_000_000n));
+    await rejects(
+      dispatch('sigil_svm_sign_transaction', { portal: PORTAL, message: txBytes }, ctx),
+      /svm_max_lamports_per_hour/,
+    );
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_svm_sign_message', { portal: PORTAL, message: txBytes }, ctx);
+    } catch (e) {
+      err = e as RpcMethodError;
+    }
+    ok(err instanceof RpcMethodError && err.code === RPC_INVALID_PAYLOAD, String(err));
+    ok(/use svm_sign_transaction/.test(err!.message));
+    // Ordinary off-chain messages still sign.
+    const r = (await dispatch(
+      'sigil_svm_sign_message',
+      { portal: PORTAL, message: b64(Buffer.from('sign in with solana')) },
+      ctx,
+    )) as { signature: string };
+    ok(typeof r.signature === 'string');
   } finally {
     cleanup();
   }

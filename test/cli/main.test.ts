@@ -623,10 +623,12 @@ test('runCli: policy spend — shows trailing totals against the caps', async ()
       join(home, 'policy', 'evm:bot.toml'),
       'mode = "permissive"\nmax_value_per_hour_wei = "100"\nmax_value_per_day_wei = "500"\n',
     );
-    const ledger = new FileSpendLedger(join(home, 'state'));
     const now = Date.now();
-    ledger.reserve('evm:bot', 'wei', 30n, [], now - 2 * 60 * 60 * 1000); // 2h ago: in 24h, not 1h
-    ledger.reserve('evm:bot', 'wei', 12n, [], now - 1000);
+    const clock = { now: now - 2 * 60 * 60 * 1000 };
+    const ledger = new FileSpendLedger(join(home, 'state'), { now: () => clock.now });
+    ledger.reserve('evm:bot', 'wei', 30n, []); // 2h ago: in 24h, not 1h
+    clock.now = now - 1000;
+    ledger.reserve('evm:bot', 'wei', 12n, []);
     const cap = capture();
     const r = await runCli({
       argv: ['policy', 'spend', 'evm:bot'],

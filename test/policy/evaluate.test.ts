@@ -310,7 +310,7 @@ test('strict mode + allow_typed_data=true allows EIP-712', () => {
   ok(
     isAllow(
       evaluate(
-        { kind: 'typed_data', typedData: {} as TypedData },
+        { kind: 'typed_data', typedData: { domain: { chainId: 1 } } as TypedData },
         strict({ allowTypedData: true }),
       ),
     ),
@@ -554,11 +554,24 @@ test('typed data: domain.chainId must be in chain_ids when present', () => {
   ok(/domain\.chainId 137 not in chain_ids/.test(r), r);
 });
 
-test('typed data: a domain without chainId is not chain-bound and passes', () => {
+test('typed data: strict mode refuses a domain without chainId', () => {
   const p = strict({ allowTypedData: true, chainIds: [1] });
   const noChain = td();
   delete (noChain.domain as { chainId?: unknown }).chainId;
-  ok(isAllow(evaluate(tdReq(noChain), p)));
+  ok(/requires domain\.chainId/.test(denyReason(evaluate(tdReq(noChain), p))));
+});
+
+test('typed data: chainId is compared exactly as an integer (no float collapse)', () => {
+  const big = 9007199254740993n; // MAX_SAFE_INTEGER + 2
+  const p = strict({ allowTypedData: true, chainIds: [9007199254740992] });
+  ok(
+    /chainId 9007199254740993 not in chain_ids/.test(
+      denyReason(evaluate(tdReq(td({}, { chainId: big })), p)),
+    ),
+  );
+  ok(isAllow(evaluate(tdReq(td({}, { chainId: 9007199254740992n })), p)));
+  ok(/chainId/.test(denyReason(evaluate(tdReq(td({}, { chainId: -1 })), p))));
+  ok(/chainId/.test(denyReason(evaluate(tdReq(td({}, { chainId: 1.5 })), p))));
 });
 
 test('typed data: a non-integer chainId is denied, not thrown', () => {
@@ -618,11 +631,12 @@ test('typed data: checks run in order chain → contract → type', () => {
   );
 });
 
-test('typed data: a malformed domain (null / non-object) is denied when contracts are required, allowed when unrestricted', () => {
-  const restricted = strict({ allowTypedData: true, typedDataVerifyingContracts: [PERMIT2] });
-  const bad = td({ domain: null as unknown as TypedData['domain'] });
-  ok(/verifyingContract \(absent\)/.test(denyReason(evaluate(tdReq(bad), restricted))));
-  ok(isAllow(evaluate(tdReq(bad), strict({ allowTypedData: true }))));
+test('typed data: a malformed domain (null / array / non-object) is denied, never thrown', () => {
+  const p = strict({ allowTypedData: true });
+  for (const domain of [null, [], 'x', 7]) {
+    const bad = td({ domain: domain as unknown as TypedData['domain'] });
+    ok(/domain must be an object/.test(denyReason(evaluate(tdReq(bad), p))), String(domain));
+  }
 });
 
 test('typed data: permissive mode ignores the allowlists entirely', () => {

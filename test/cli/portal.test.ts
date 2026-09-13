@@ -665,7 +665,7 @@ test('portalNew: refuses invalid handle format', () => {
   }
 });
 
-test('portalRemove: deletes the spend ledger and its lock directory with the portal', () => {
+test('portalRemove: deletes the spend ledger (but not its lock directory) with the portal', () => {
   const home = mkTmpHome();
   try {
     const paths = resolvePaths({ SIGIL_HOME: home });
@@ -678,14 +678,15 @@ test('portalRemove: deletes the spend ledger and its lock directory with the por
       kdfParams: TEST_KDF,
     });
     const ledger = new FileSpendLedger(paths.stateDir);
-    ledger.reserve('evm:bot', 'wei', 5n, [], Date.now());
+    ledger.reserve('evm:bot', 'wei', 5n, []);
     ok(existsSync(ledger.pathFor('evm:bot')));
     ok(existsSync(`${ledger.pathFor('evm:bot')}.lock.d`));
     // A ledger for another portal must survive.
-    ledger.reserve('evm:other', 'wei', 1n, [], Date.now());
+    ledger.reserve('evm:other', 'wei', 1n, []);
     equal(portalRemove(paths, 'evm:bot').removed, true);
     equal(existsSync(ledger.pathFor('evm:bot')), false);
-    equal(existsSync(`${ledger.pathFor('evm:bot')}.lock.d`), false);
+    // The lock directory is NOT removed: a live daemon may hold a ticket in it.
+    ok(existsSync(`${ledger.pathFor('evm:bot')}.lock.d`));
     ok(existsSync(ledger.pathFor('evm:other')));
   } finally {
     rmSync(home, { recursive: true });
