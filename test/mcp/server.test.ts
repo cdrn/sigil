@@ -7,7 +7,8 @@ import { Readable, Writable } from 'node:stream';
 import { AuditWriter } from '../../src/audit/index.js';
 import { SecretBuffer } from '../../src/crypto/index.js';
 import { HandleTable, type MethodContext } from '../../src/daemon/index.js';
-import { permissivePolicyResolver } from '../../src/policy/index.js';
+import { parsePolicy, permissivePolicyResolver } from '../../src/policy/index.js';
+import type { ConfirmGate } from '../../src/confirm/index.js';
 import {
   handleLine,
   MCP_INVALID_PARAMS,
@@ -350,4 +351,64 @@ test('runMcpStdio: full handshake + tools/list + tools/call via in-memory stream
   } finally {
     tearDown(h);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #90 — a request stuck mid-flight must not keep the process alive after EOF
+// ---------------------------------------------------------------------------
+
+test('#90: runMcpStdio resolves after drainTimeoutMs even if a request never settles', async () => {
+  const { PassThrough } = await import('node:stream');
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-drain-'));
+  const handles = new HandleTable();
+  const priv = Buffer.alloc(32);
+  priv[31] = 1;
+  handles.addEntry('evm:bot', new SecretBuffer(priv));
+  handles.markUnlocked();
+  const audit = new AuditWriter(join(dir, 'audit.log'));
+  // Every value-carrying tx needs a confirm, and the gate never answers.
+  const policy = parsePolicy('mode = "permissive"\nrequire_confirm_above_wei = "0"\n');
+  const context: MethodContext = {
+    handles,
+    audit,
+    policy: { resolve: () => policy },
+    confirm: {
+      transportName: 'stuck',
+      request: () => new Promise(() => undefined),
+    } as unknown as ConfirmGate,
+  };
+  const done = runMcpStdio({ context, stdin, stdout, drainTimeoutMs: 50 });
+  const call = {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: {
+      name: 'sigil_eth_sign_transaction',
+      arguments: {
+        portal: 'evm:bot',
+        tx: {
+          type: 'eip1559',
+          chainId: 1,
+          nonce: 0,
+          maxPriorityFeePerGas: 1,
+          maxFeePerGas: 100,
+          gasLimit: 21000,
+          to: '0x000000000000000000000000000000000000dead',
+          value: '1',
+          data: '0x',
+        },
+      },
+    },
+  };
+  stdin.write(JSON.stringify(call) + '\n');
+  await new Promise((r) => setTimeout(r, 20)); // let the request get stuck in the gate
+  stdin.end();
+  const t0 = Date.now();
+  await done;
+  ok(Date.now() - t0 < 2_000, 'resolved promptly: the drain is bounded');
+  audit.close();
+  handles.dispose();
+  rmSync(dir, { recursive: true });
 });

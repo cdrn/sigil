@@ -28,6 +28,7 @@ import {
   getPublicKey as svmGetPublicKey,
   sign as svmSign,
 } from '../svm/index.js';
+import { SecretBufferDisposedError } from '../crypto/index.js';
 import { type HandleTable } from './handles.js';
 
 // Error codes — these match JSON-RPC 2.0 standard error codes plus a
@@ -129,7 +130,17 @@ function requirePortal(handles: HandleTable, handle: string): Buffer {
   if (!sb) {
     throw new RpcMethodError(RPC_PORTAL_NOT_FOUND, `portal "${handle}" not found`);
   }
-  return sb.bytes();
+  try {
+    return sb.bytes();
+  } catch (err) {
+    if (err instanceof SecretBufferDisposedError) {
+      throw new RpcMethodError(
+        RPC_DAEMON_LOCKED,
+        'sigil locked or shutting down while this request was in flight — refusing to sign',
+      );
+    }
+    throw err;
+  }
 }
 
 /**
@@ -434,7 +445,7 @@ const sigil_eth_sign_transaction: MethodHandler = async (params, ctx) => {
     throw new RpcMethodError(RPC_INVALID_PARAMS, 'eth_sign_transaction: tx must be an object');
   }
   const tx = asTx(txObj as Record<string, unknown>);
-  const priv = requirePortal(ctx.handles, portal);
+  requirePortal(ctx.handles, portal); // locked / unknown portal errors before policy
   const gate = gatePolicy(
     ctx,
     portal,
@@ -448,6 +459,11 @@ const sigil_eth_sign_transaction: MethodHandler = async (params, ctx) => {
   if (gate.proceed === 'confirm') {
     await runConfirmGate(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.summary);
   }
+  // Re-acquire the key AFTER any confirm: the daemon may have locked or begun
+  // shutting down (keys zeroized) while the human was deciding. A stale
+  // buffer captured earlier would be all zeros by now. Nothing is reserved
+  // or signed on a key that is no longer live.
+  const priv = requirePortal(ctx.handles, portal);
   reserveSpend(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.policy, {
     asset: 'wei',
     amount: BigInt(tx.value),
@@ -585,7 +601,7 @@ const sigil_svm_sign_transaction: MethodHandler = async (params, ctx) => {
   const portal = asString(obj, 'portal', 'svm_sign_transaction');
   const messageB64 = asString(obj, 'message', 'svm_sign_transaction');
   const messageBytes = b64ToBuf(messageB64, 'svm_sign_transaction', 'message');
-  const secret = requirePortal(ctx.handles, portal);
+  const secretPre = requirePortal(ctx.handles, portal);
 
   let decoded: ReturnType<typeof decodeTx>;
   try {
@@ -599,7 +615,7 @@ const sigil_svm_sign_transaction: MethodHandler = async (params, ctx) => {
 
   // Refuse to sign a message where our key isn't actually a required signer —
   // signing it would produce a signature in the wrong slot (or no slot at all).
-  const pub = svmGetPublicKey(secret);
+  const pub = svmGetPublicKey(secretPre);
   const signers = decoded.message.staticAccountKeys.slice(0, decoded.message.numRequiredSignatures);
   if (!signers.some((k) => Buffer.from(k).equals(pub))) {
     throw new RpcMethodError(
@@ -630,6 +646,9 @@ const sigil_svm_sign_transaction: MethodHandler = async (params, ctx) => {
     );
   }
 
+  // Re-acquire after any confirm (see eth_sign_transaction): never reserve
+  // or sign with a buffer that may have been zeroized meanwhile.
+  const secret = requirePortal(ctx.handles, portal);
   let lamports = 0n;
   for (const t of decoded.transfers) lamports += t.lamports;
   reserveSpend(ctx, portal, 'svm_sign_transaction', { message: messageB64 }, gate.policy, {

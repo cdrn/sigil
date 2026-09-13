@@ -1836,3 +1836,49 @@ test('#91: a raw ledger I/O failure denies the sign with an audited, named reaso
     rmSync(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// #90 review: a confirm that resolves after the daemon zeroized its keys
+// ---------------------------------------------------------------------------
+
+test('a confirm approved after shutdown/lock zeroized the keys is refused, never signed with zeros', async () => {
+  let handlesRef: HandleTable | null = null;
+  const confirm = {
+    transportName: 'mock',
+    request: async () => {
+      // While the human was deciding, the daemon locked (or began shutdown).
+      handlesRef!.dispose();
+      return { kind: 'approved' as const };
+    },
+  } as unknown as ConfirmGate;
+  const { ctx, auditPath, cleanup } = windowCtx(
+    'mode = "permissive"\nmax_value_per_hour_wei = "100"\nrequire_confirm_above_wei = "10"\n',
+    { confirm },
+  );
+  handlesRef = ctx.handles as HandleTable;
+  try {
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', txParams(50n), ctx);
+    } catch (e) {
+      err = e as RpcMethodError;
+    }
+    ok(err instanceof RpcMethodError, String(err));
+    equal(err!.code, RPC_DAEMON_LOCKED);
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 0n, 'nothing reserved');
+    // Refused at the key re-acquire, before the sign/audit step: no allow
+    // entry can exist (the log may not even have been created).
+    if (existsSync(auditPath)) {
+      ok(
+        verifyChain(readFileSync(auditPath)).every((e) => e.decision !== 'allow'),
+        'no allow entry',
+      );
+    }
+  } finally {
+    try {
+      cleanup();
+    } catch {
+      /* handles already disposed */
+    }
+  }
+});

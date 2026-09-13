@@ -16,6 +16,7 @@ import { HandleTable } from '../daemon/handles.js';
 import type { MethodContext } from '../daemon/index.js';
 import { runMcpStdio } from '../mcp/server.js';
 import { FileSpendLedger, FileSystemPolicyResolver } from '../policy/index.js';
+import { startParentWatchdog } from '../mcp/parent-watchdog.js';
 import { DEFAULT_RPC_PORT, startRpcServer, type RpcProxyServer } from '../rpc/index.js';
 
 /**
@@ -38,9 +39,15 @@ import { DEFAULT_RPC_PORT, startRpcServer, type RpcProxyServer } from '../rpc/in
  * out across every socket in the directory and unlocks them all at once.
  *
  * The control socket is unref'd so it doesn't keep the loop alive on its own;
- * stdin alone gates process lifetime.
+ * stdin gates process lifetime, with a parent-process watchdog as backstop
+ * (see mcp/parent-watchdog.ts) and a bounded drain of in-flight requests
+ * once stdin closes.
  */
 async function main(): Promise<void> {
+  // Capture the spawning parent before any await: if it dies during our
+  // own startup we must not adopt launchd/init as "the parent" and watch
+  // that forever (#90).
+  const startPpid = process.ppid;
   const paths = resolvePaths(process.env);
   mkdirSync(paths.home, { recursive: true, mode: 0o700 });
   mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
@@ -207,6 +214,20 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
 
+  // Belt and braces for the stdin-EOF exit path: if Claude Code goes away
+  // without our pipe closing cleanly, or a stuck request keeps us alive,
+  // notice the parent is gone and leave (#90). Poll interval is overridable
+  // for tests via SIGIL_PARENT_POLL_MS.
+  const pollMs = Number(process.env['SIGIL_PARENT_POLL_MS'] ?? '');
+  startParentWatchdog({
+    ppid: startPpid,
+    ...(Number.isFinite(pollMs) && pollMs > 0 ? { intervalMs: pollMs } : {}),
+    onGone: (reason) => {
+      process.stderr.write(`sigil-mcp: parent gone (${reason}); exiting\n`);
+      process.exit(0);
+    },
+  });
+
   await runMcpStdio({
     context,
     ...(toolNotes ? { toolNotes } : {}),
@@ -215,16 +236,26 @@ async function main(): Promise<void> {
     onLog: (e) => process.stderr.write(JSON.stringify(e) + '\n'),
   });
 
-  // stdin closed (Claude exited) — close the control socket explicitly so
-  // we don't leave a stale socket file behind.
+  // stdin closed (Claude exited). Zeroize keys first — nothing below may
+  // need them — then close the servers, but never wait on a peer that
+  // won't hang up: a control connection that never sends a newline or an
+  // in-flight RPC request must not keep a dead session's daemon alive
+  // (#90). The exit handler makes the remaining cleanup idempotent.
+  handles.dispose();
+  const closes: Promise<unknown>[] = [];
   if (control && !controlClosed) {
     controlClosed = true;
-    await control.close();
+    closes.push(control.close());
   }
-  if (ackServer) await ackServer.close();
-  if (rpcServer) await rpcServer.close();
+  if (ackServer) closes.push(ackServer.close());
+  if (rpcServer) closes.push(rpcServer.close());
+  const limit = new Promise<void>((r) => setTimeout(r, SHUTDOWN_LIMIT_MS).unref());
+  await Promise.race([Promise.allSettled(closes), limit]);
   process.exit(0);
 }
+
+/** How long a clean shutdown may wait for open connections after stdin EOF. */
+const SHUTDOWN_LIMIT_MS = 3_000;
 
 main().catch((err: Error) => {
   process.stderr.write(`sigil-mcp: ${err.message}\n`);
