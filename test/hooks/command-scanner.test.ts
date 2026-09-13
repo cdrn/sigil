@@ -150,18 +150,82 @@ test('#92: heredoc command line itself is still scanned (operands before/after <
 });
 
 test('#92: splitStatements — quoting and heredoc semantics', () => {
-  const s = (c: string) => splitStatements(c).map((x) => x.trim());
-  equal(JSON.stringify(s('a; b | c && d\ne')), JSON.stringify(['a', 'b', 'c', 'd', 'e']));
-  equal(JSON.stringify(s('a "x; y | z" b')), JSON.stringify(['a "x; y | z" b']));
-  equal(JSON.stringify(s("a '$(x)' b")), JSON.stringify(["a '$(x)' b"]));
-  equal(JSON.stringify(s('a "$(x)" b')), JSON.stringify(['a "', 'x)" b']));
+  const s = (c: string) =>
+    splitStatements(c)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  const has = (c: string, ...want: string[]) => {
+    const got = s(c);
+    for (const w of want)
+      ok(
+        got.some((g) => g === w || g.startsWith(w)),
+        `${JSON.stringify(c)} → ${JSON.stringify(got)} lacks ${w}`,
+      );
+  };
+  has('a; b | c && d\ne', 'a', 'b', 'c', 'd', 'e');
+  equal(s('a "x; y | z" b').length, 1);
+  equal(s("a '$(x)' b").length, 1);
+  has('a "$(x)" b', 'x'); // substitution inside double quotes runs
+  equal(s("cat <<'EOF'\nline; one | two\nEOF\nnext").length, 2); // cat, next
+  has('cat <<EOF\nplain $(sub one) `sub two`\nEOF', 'sub one', 'sub two');
+  has('cat <<-EOF\n\tbody\n\tEOF\nafter', 'after');
+  equal(s('cat <<-EOF\n\tbody\n\tEOF\nafter').length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// #92 review: every one of these read a warded file yet slipped the first
+// splitter. They must all be blocked (and were blocked before #92).
+// ---------------------------------------------------------------------------
+
+const BLOCKED_SHAPES: [string, string][] = [
+  ['subst inherits double-quote state (;)', `echo "$(true; cat ${'K'})"`],
+  ['subst inherits double-quote state (|)', `echo "$(true | cat ${'K'})"`],
+  ['backtick subst inside double quotes', 'echo "`true; cat ' + 'K' + '`"'],
+  ['$"…" locale string', `echo $"$(true; cat ${'K'})"`],
+  ['literal backslash in single quotes', `printf '%s' '\\'; cat ${'K'}`],
+  ['comment poisons quote state', `true # '\ntrue; cat ${'K'}`],
+  ['comment invents a heredoc', `true # <<'EOF'\ncat ${'K'}`],
+  ['command after heredoc opener on the same line', `true <<'EOF'; cat ${'K'}\nEOF`],
+  ['pipe after heredoc opener on the same line', `true <<'EOF' | cat ${'K'}\nEOF`],
+  ['here-string is not a heredoc', `true <<<EOF\ncat ${'K'}`],
+  ['arithmetic shift is not a heredoc', `x=1; ((x << y)); cat ${'K'}`],
+  ['partial delimiter EOF-X', `true <<EOF-X\nEOF-X\ncat ${'K'}`],
+  ['quoted delimiter followed by text', `true <<'EOF'X\nEOFX\ncat ${'K'}`],
+  ['escaped delimiter E\\OF', `true <<E\\OF\nEOF\ncat ${'K'}`],
+  ['continuation inside expanding heredoc terminates it', `true <<EOF\nEO\\\nF\ncat ${'K'}`],
+  ['tab-indented delimiter does not close a plain <<', `cat <<EOF\n\tEOF\n'$(cat ${'K'};)'\nEOF`],
+  ['nested subst in expanding heredoc', `cat <<EOF\n$(true; cat ${'K'})\nEOF`],
+  ['doubly nested subst in expanding heredoc', `cat <<EOF\n$(echo $(cat ${'K'}))\nEOF`],
+  ['multi-line subst in expanding heredoc', `cat <<EOF\n$(\ncat ${'K'}\n)\nEOF`],
+  ['queued heredocs: second is expanding', `cat <<'A' <<B\nA\n$(cat ${'K'})\nB`],
+  ['quoted text is code for bash -c', `bash -c 'true; cat ${'K'}; true'`],
+  ['quoted heredoc is code for bash', `bash <<'EOF'\ncat ${'K'}\nEOF`],
+  ['sh -c with double quotes', `sh -c "cat ${'K'}"`],
+  ['eval', `eval "cat ${'K'}"`],
+  ['sudo prefix', `sudo cat ${'K'}`],
+  ['env prefix with assignment', `env FOO=1 cat ${'K'}`],
+  ['xargs with the reader as its command and the path as arg', `echo x | xargs cat ${'K'}`],
+  ['$(< file) redirection read', `echo "$(< ${'K'})"`],
+  ['bare redirection read into a subst', `x=$(<${'K'}); echo $x`],
+  ['dd if= reader', `dd if=${'K'}`],
+  ['line-continued reader args', `cat \\\n${'K'}`],
+];
+
+for (const [name, cmd] of BLOCKED_SHAPES) {
+  test(`#92 regression: ${name}`, () => {
+    ok(scanBashCommand(cmd.replaceAll('K', K)).blocked, cmd);
+  });
+}
+
+test('#92: benign shapes stay allowed alongside the regressions', () => {
+  equal(scanBashCommand(`echo '$(true; cat ${K})'`).blocked, false, 'single quotes are literal');
+  equal(scanBashCommand(`true # cat ${K}`).blocked, false, 'a comment is not a read');
+  equal(scanBashCommand(`echo "x" # cat ${K}`).blocked, false);
+  equal(scanBashCommand(`x=$((1 << 3)); echo $x ${K}`).blocked, false, 'arithmetic + non-reader');
   equal(
-    JSON.stringify(s("cat <<'EOF'\nline; one | two\nEOF\nnext")),
-    JSON.stringify(['cat', 'next']),
+    scanBashCommand(`cat <<'EOF'\n$(cat ${K})\ncat ${K}\nEOF`).blocked,
+    false,
+    'quoted heredoc to cat',
   );
-  equal(
-    JSON.stringify(s('cat <<EOF\nplain $(sub one) `sub two`\nEOF')),
-    JSON.stringify(['cat', 'sub one', 'sub two']),
-  );
-  equal(JSON.stringify(s('cat <<-EOF\n\tbody\n\tEOF\nafter')), JSON.stringify(['cat', 'after']));
+  equal(scanBashCommand(`git commit -m "cat ${K}"`).blocked, false, 'git is not an interpreter');
 });

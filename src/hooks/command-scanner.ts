@@ -19,102 +19,202 @@ import { isBlockedPath, type BlockerOpts, type BlockDecision } from './path-bloc
  */
 
 /**
- * Split a shell command line into the statements that could actually run a
- * program, respecting quoting:
- *   - `;`, `&`, `|` and newlines separate statements only outside quotes;
- *   - `$(` and backticks start a new statement even inside double quotes
- *     (they execute there) but not inside single quotes (literal);
- *   - a heredoc body (`<<EOF` … `EOF`) is data, not commands. With a quoted
- *     delimiter (`<<'EOF'`) it is fully literal and skipped; with an
- *     unquoted one, `$(…)` and backticks inside it still expand, so those
- *     substitutions are surfaced as statements while the prose is dropped.
- *
- * Without this, a commit message or an echo that merely *mentions* a
- * warded path was split at any `;`/`|`/backtick in the prose, and whatever
- * word happened to follow was treated as a program — false positives on
- * text that cannot leak a file's contents (#92). Anything that can read a
- * file still surfaces as a statement whose first token is the reader.
+ * Programs that execute their string arguments (or their stdin) as shell.
+ * Text handed to one of these is code, however it was quoted, so it is
+ * scanned as commands rather than treated as literal data.
  */
-export function splitStatements(command: string): string[] {
+const INTERPRETERS: ReadonlySet<string> = new Set([
+  'bash',
+  'sh',
+  'zsh',
+  'dash',
+  'ksh',
+  'busybox',
+  'eval',
+  'source',
+  '.',
+  'exec',
+  'command',
+  'builtin',
+  'env',
+  'sudo',
+  'doas',
+  'nohup',
+  'time',
+  'nice',
+  'ionice',
+  'timeout',
+  'xargs',
+  'watch',
+  'script',
+]);
+
+const MAX_DEPTH = 6;
+
+/**
+ * Split a shell command line into every statement that could run a
+ * program, following Bash's own lexical rules closely enough that quoted
+ * prose is never mistaken for code and code is never mistaken for prose:
+ *
+ *   - `;`, `&`, `|`, newlines separate statements outside quotes;
+ *   - a `#` that starts a word begins a comment to end of line;
+ *   - single quotes are literal through the next `'` (backslash does not
+ *     escape inside them); double quotes are literal except that `$(…)`
+ *     and backticks inside them execute and are parsed recursively with a
+ *     fresh quote context; `((…))` and `$((…))` are arithmetic and opaque;
+ *   - `<<<` is a here-string (data). `<<` / `<<-` opens a heredoc whose
+ *     delimiter is the whole following word; the rest of the opener line is
+ *     still command text; the body runs from the next line to the
+ *     delimiter line (leading tabs stripped only for `<<-`; for an unquoted
+ *     delimiter, backslash-newline joins body lines first). A quoted
+ *     delimiter makes the body literal to the shell — but it is still code
+ *     if the opener's program is an interpreter (`bash <<'EOF'`). An
+ *     unquoted delimiter's body expands, so the substitutions inside it
+ *     are surfaced as statements;
+ *   - statements whose program is an interpreter (`bash -c '…'`, `eval …`,
+ *     `sudo cat …`, `xargs cat`) have their arguments scanned as commands.
+ *
+ * The result is used only to classify: each statement's first token is
+ * checked against the reader list and its path-like tokens against the
+ * wardlist. Anything this parser cannot follow errs toward *more*
+ * statements (a separator seen is a split made), never fewer.
+ */
+export function splitStatements(command: string, depth = 0): string[] {
+  if (depth > MAX_DEPTH) return [command];
   const out: string[] = [];
+  parseScript(command, 0, null, depth, out);
+  return out;
+}
+
+interface Heredoc {
+  delim: string;
+  quoted: boolean;
+  dash: boolean;
+  /** First token of the opener statement, to tell `bash <<'EOF'` from `cat <<'EOF'`. */
+  program: string;
+}
+
+/**
+ * Parse statements from `src[i..]` until `stop` (a closing `)` for `$(`, a
+ * backtick for `…`, or end of input). Appends statements to `out`; returns
+ * the index just past the terminator.
+ */
+function parseScript(
+  src: string,
+  i: number,
+  stop: ')' | '`' | null,
+  depth: number,
+  out: string[],
+): number {
+  const n = src.length;
   let cur = '';
-  let inSingle = false;
-  let inDouble = false;
+  let parenDepth = 0;
+  let pending: Heredoc[] = [];
   const flush = (): void => {
     if (cur.trim().length > 0) out.push(cur);
     cur = '';
   };
-  let i = 0;
-  const n = command.length;
+  const atWordStart = (): boolean => cur.length === 0 || /[\s;&|(]$/.test(cur);
   while (i < n) {
-    const c = command[i]!;
+    const c = src[i]!;
+    // Terminators for nested contexts.
+    if (stop === '`' && c === '`') {
+      flush();
+      return i + 1;
+    }
+    if (stop === ')' && c === ')' && parenDepth === 0) {
+      flush();
+      return i + 1;
+    }
     if (c === '\\' && i + 1 < n) {
-      cur += c + command[i + 1];
+      // Backslash-newline is a continuation of the same statement.
+      cur += c + src[i + 1];
       i += 2;
       continue;
     }
-    if (c === "'" && !inDouble) {
-      inSingle = !inSingle;
-      cur += c;
-      i++;
+    if (c === '#' && atWordStart()) {
+      const eol = src.indexOf('\n', i);
+      i = eol === -1 ? n : eol; // the newline itself is handled below
       continue;
     }
-    if (c === '"' && !inSingle) {
-      inDouble = !inDouble;
-      cur += c;
-      i++;
+    if (c === "'") {
+      const close = src.indexOf("'", i + 1);
+      const seg = close === -1 ? src.slice(i) : src.slice(i, close + 1);
+      cur += seg;
+      i += seg.length;
       continue;
     }
-    if (inSingle) {
-      cur += c;
-      i++;
+    if (c === '"') {
+      i = parseDoubleQuoted(src, i, depth, out, (t) => (cur += t));
       continue;
     }
-    // Command substitution executes even inside double quotes.
-    if (c === '`' || (c === '$' && command[i + 1] === '(')) {
+    if (c === '$' && src.startsWith('$((', i)) {
+      const close = findArithmeticEnd(src, i + 3);
+      cur += src.slice(i, close);
+      i = close;
+      continue;
+    }
+    if (c === '(' && src.startsWith('((', i) && atWordStart()) {
+      const close = findArithmeticEnd(src, i + 2);
+      cur += src.slice(i, close);
+      i = close;
+      continue;
+    }
+    if (c === '$' && src[i + 1] === '(') {
+      cur += ' ';
+      i = parseScript(src, i + 2, ')', depth + 1, out);
+      continue;
+    }
+    if (c === '`') {
+      cur += ' ';
+      i = parseScript(src, i + 1, '`', depth + 1, out);
+      continue;
+    }
+    if (c === '(') {
+      parenDepth++;
       flush();
-      i += c === '`' ? 1 : 2;
-      continue;
-    }
-    if (inDouble) {
-      cur += c;
       i++;
       continue;
     }
-    // Heredoc: `<<` or `<<-`, optional quotes, a delimiter word.
-    if (c === '<' && command[i + 1] === '<') {
-      const m = /^<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(command.slice(i));
+    if (c === ')') {
+      if (parenDepth > 0) parenDepth--;
+      flush();
+      i++;
+      continue;
+    }
+    if (c === '<' && src.startsWith('<<<', i)) {
+      // Here-string: the operand is data, and `<<<` is not a heredoc opener.
+      cur += '<<<';
+      i += 3;
+      continue;
+    }
+    if (c === '<' && src.startsWith('<<', i)) {
+      // The delimiter is the whole following word; any quoting anywhere in
+      // it (quotes or backslashes) makes the body literal, and the
+      // terminator is the word with that quoting removed.
+      const m = /^<<(-?)\s*((?:'[^']*'|"[^"]*"|\\.|[^\s;&|<>()'"\\])+)/.exec(src.slice(i));
       if (m) {
-        const quoted = m[1] !== '';
-        const delim = m[2]!;
+        const dash = m[1] === '-';
+        const word = m[2]!;
+        const quoted = /['"\\]/.test(word);
+        const delim = word.replace(/'([^']*)'|"([^"]*)"|\\(.)/g, (_, a, b, c) => a ?? b ?? c);
+        const program = firstToken(cur);
+        pending.push({ delim, quoted, dash, program });
+        cur += ' ';
         i += m[0].length;
-        // The rest of this line is still the command (e.g. `cat <<EOF > out`).
-        const eol = command.indexOf('\n', i);
-        if (eol === -1) {
-          cur += command.slice(i);
-          break;
-        }
-        cur += command.slice(i, eol);
-        flush();
-        // Consume body lines up to the delimiter line.
-        let pos = eol + 1;
-        for (;;) {
-          const next = command.indexOf('\n', pos);
-          const line = next === -1 ? command.slice(pos) : command.slice(pos, next);
-          const atEnd = next === -1;
-          pos = atEnd ? n : next + 1;
-          if (line.replace(/^\t+/, '') === delim) break;
-          if (!quoted) {
-            // Substitutions inside an unquoted heredoc body still run.
-            for (const sub of substitutionsIn(line)) out.push(sub);
-          }
-          if (atEnd) break;
-        }
-        i = pos;
         continue;
       }
     }
-    if (c === ';' || c === '&' || c === '|' || c === '\n') {
+    if (c === '\n') {
+      flush();
+      i++;
+      if (pending.length > 0) {
+        i = consumeHeredocBodies(src, i, pending, depth, out);
+        pending = [];
+      }
+      continue;
+    }
+    if (c === ';' || c === '&' || c === '|') {
       flush();
       i++;
       continue;
@@ -123,16 +223,183 @@ export function splitStatements(command: string): string[] {
     i++;
   }
   flush();
-  return out;
+  // Heredocs opened on the last line with no body: nothing to consume.
+  return n;
 }
 
-/** The `$(…)` / backtick command bodies found in a line of expanding text. */
-function substitutionsIn(line: string): string[] {
-  const subs: string[] = [];
-  const re = /\$\(([^)]*)\)|`([^`]*)`/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(line)) !== null) subs.push(m[1] ?? m[2] ?? '');
-  return subs;
+/** Copy a double-quoted string into `emit`, surfacing substitutions as statements. */
+function parseDoubleQuoted(
+  src: string,
+  i: number,
+  depth: number,
+  out: string[],
+  emit: (text: string) => void,
+): number {
+  const n = src.length;
+  emit('"');
+  i++;
+  while (i < n) {
+    const c = src[i]!;
+    if (c === '\\' && i + 1 < n) {
+      emit(c + src[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (c === '"') {
+      emit('"');
+      return i + 1;
+    }
+    if (c === '$' && src.startsWith('$((', i)) {
+      const close = findArithmeticEnd(src, i + 3);
+      emit(src.slice(i, close));
+      i = close;
+      continue;
+    }
+    if (c === '$' && src[i + 1] === '(') {
+      emit(' ');
+      i = parseScript(src, i + 2, ')', depth + 1, out);
+      continue;
+    }
+    if (c === '`') {
+      emit(' ');
+      i = parseScript(src, i + 1, '`', depth + 1, out);
+      continue;
+    }
+    emit(c);
+    i++;
+  }
+  return n; // unterminated: the rest was literal
+}
+
+/** Index just past the `))` closing an arithmetic expression opened at `i`. */
+function findArithmeticEnd(src: string, i: number): number {
+  let depth = 1;
+  while (i < src.length) {
+    if (src.startsWith('((', i)) {
+      depth++;
+      i += 2;
+      continue;
+    }
+    if (src.startsWith('))', i)) {
+      depth--;
+      i += 2;
+      if (depth === 0) return i;
+      continue;
+    }
+    i++;
+  }
+  return src.length;
+}
+
+/** Consume the bodies of every heredoc opened on the line that just ended. */
+function consumeHeredocBodies(
+  src: string,
+  i: number,
+  pending: readonly Heredoc[],
+  depth: number,
+  out: string[],
+): number {
+  const n = src.length;
+  for (const h of pending) {
+    const bodyLines: string[] = [];
+    let carry = '';
+    for (;;) {
+      if (i >= n) break;
+      const nl = src.indexOf('\n', i);
+      let line = nl === -1 ? src.slice(i) : src.slice(i, nl);
+      i = nl === -1 ? n : nl + 1;
+      if (!h.quoted && line.endsWith('\\')) {
+        // Backslash-newline joins lines in an expanding heredoc.
+        carry += line.slice(0, -1);
+        continue;
+      }
+      line = carry + line;
+      carry = '';
+      const cmp = h.dash ? line.replace(/^\t+/, '') : line;
+      if (cmp === h.delim) break;
+      bodyLines.push(line);
+    }
+    if (isInterpreter(h.program)) {
+      // The body is a script for that program, however it was quoted.
+      for (const s of splitStatements(bodyLines.join('\n'), depth + 1)) out.push(s);
+    } else if (!h.quoted) {
+      // Expanding body: only its substitutions run. Quotes are literal in a
+      // heredoc, so scan the whole body (substitutions may span lines) for
+      // `$(…)` and backticks alone.
+      scanExpandingText(bodyLines.join('\n'), depth + 1, out);
+    }
+    // Quoted body for a non-interpreter: literal data, nothing to scan.
+  }
+  return i;
+}
+
+/** Surface the substitutions in text where quotes are literal (heredoc bodies). */
+function scanExpandingText(text: string, depth: number, out: string[]): void {
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i]!;
+    if (c === '\\' && i + 1 < n) {
+      i += 2;
+      continue;
+    }
+    if (c === '$' && text.startsWith('$((', i)) {
+      i = findArithmeticEnd(text, i + 3);
+      continue;
+    }
+    if (c === '$' && text[i + 1] === '(') {
+      i = parseScript(text, i + 2, ')', depth, out);
+      continue;
+    }
+    if (c === '`') {
+      i = parseScript(text, i + 1, '`', depth, out);
+      continue;
+    }
+    i++;
+  }
+}
+
+function firstToken(stmt: string): string {
+  const toks = tokenize(stmt);
+  return toks.length > 0 ? stripShellQuoting(toks[0]!) : '';
+}
+
+function baseName(prog: string): string {
+  const stripped = stripShellQuoting(prog);
+  const slash = stripped.lastIndexOf('/');
+  return (slash === -1 ? stripped : stripped.slice(slash + 1)).toLowerCase();
+}
+
+function isInterpreter(prog: string): boolean {
+  return INTERPRETERS.has(baseName(prog));
+}
+
+/**
+ * Expand statements whose program is an interpreter: its arguments are a
+ * command in their own right (`sudo cat X`, `xargs cat`), and any quoted
+ * argument is a script (`bash -c '…'`, `eval "…"`), scanned recursively.
+ */
+function expandInterpreters(statements: readonly string[], depth = 0): string[] {
+  if (depth > MAX_DEPTH) return [...statements];
+  const out: string[] = [];
+  for (const stmt of statements) {
+    out.push(stmt);
+    const toks = tokenize(stmt);
+    if (toks.length < 2 || !isInterpreter(toks[0]!)) continue;
+    // The remaining tokens as a command of their own (skipping option flags
+    // and VAR=value assignments that env/sudo accept).
+    const rest = toks
+      .slice(1)
+      .filter((t) => !t.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
+    if (rest.length > 0) out.push(...expandInterpreters([rest.join(' ')], depth + 1));
+    // Each quoted argument is a script.
+    for (const t of toks.slice(1)) {
+      const inner = stripShellQuoting(t);
+      if (inner !== t)
+        out.push(...expandInterpreters(splitStatements(inner, depth + 1), depth + 1));
+    }
+  }
+  return out;
 }
 
 const ALWAYS_BLOCK_COMMAND_PATTERNS: readonly { regex: RegExp; reason: string }[] = Object.freeze([
@@ -204,6 +471,8 @@ const READER_COMMANDS: ReadonlySet<string> = new Set([
   'gunzip',
   // walks the tree; `-exec <reader>` is a trivial bypass otherwise
   'find',
+  // block copier: `dd if=<file>` prints the file
+  'dd',
 ]);
 
 export function scanBashCommand(
@@ -221,13 +490,15 @@ export function scanBashCommand(
   //    splitStatements surfaces `$(` and backtick bodies as their own
   //    statements, so a `cat` hidden inside a substitution is seen as the
   //    first token; quoted prose and heredoc bodies never are.
-  const statements = splitStatements(command);
+  const statements = expandInterpreters(splitStatements(command));
   for (const stmt of statements) {
     const tokens = tokenize(stmt);
     if (tokens.length === 0) continue;
-    if (!isReaderCommand(tokens[0]!)) continue;
-    for (let i = 1; i < tokens.length; i++) {
-      const tok = stripShellQuoting(tokens[i]!);
+    // `< file` (or `$(< file)`) reads the file with no program at all.
+    const redirectRead = tokens[0] === '<' || tokens[0]!.startsWith('<');
+    if (!redirectRead && !isReaderCommand(tokens[0]!)) continue;
+    for (let i = redirectRead ? 0 : 1; i < tokens.length; i++) {
+      const tok = stripShellQuoting(tokens[i]!).replace(/^<+/, '');
       if (looksLikePath(tok)) {
         const decision = isBlockedPath(tok, opts);
         if (decision.blocked) {
@@ -267,6 +538,15 @@ function tokenize(s: string): string[] {
   for (let i = 0; i < s.length; i++) {
     const c = s[i]!;
     if (c === '\\' && i + 1 < s.length) {
+      if (s[i + 1] === '\n' && !inSingle) {
+        // Line continuation: acts as whitespace between tokens.
+        if (!inDouble && cur.length > 0) {
+          tokens.push(cur);
+          cur = '';
+        }
+        i++;
+        continue;
+      }
       cur += c + s[i + 1];
       i++;
       continue;
