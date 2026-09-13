@@ -3,6 +3,8 @@ import { equal, ok, throws } from 'node:assert/strict';
 import { execFile, type ChildProcess } from 'node:child_process';
 import {
   appendFileSync,
+  chmodSync,
+  mkdirSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -490,6 +492,80 @@ test('FileSpendLedger: durability is re-established on every append, not remembe
       delete _ledgerTestHooks.fsyncDir;
     }
     ok(seen >= 4, `directory synced on each append (state parent + ledger dir): ${seen}`);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #91 — every I/O failure is a SpendLedgerError (so the sign path audits it)
+// ---------------------------------------------------------------------------
+
+test('#91: a ledger path that is a directory → SpendLedgerError from spent() and reserve()', () => {
+  const dir = mkTmp();
+  try {
+    const l = fileLedger(dir, { now: T0 });
+    mkdirSync(l.pathFor('evm:a'), { recursive: true }); // EISDIR on read/open
+    throws(
+      () => l.spent('evm:a', 'wei', HOUR_MS),
+      (e: unknown) =>
+        e instanceof SpendLedgerError && /I\/O failure \(EISDIR/.test((e as Error).message),
+    );
+    throws(() => l.reserve('evm:a', 'wei', 1n, [HOUR]), SpendLedgerError);
+    throws(
+      () => l.reserve('evm:a', 'wei', 1n, []),
+      SpendLedgerError,
+      'even uncapped: history unknown',
+    );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('#91: a read-only ledger file → SpendLedgerError on reserve, nothing partial written', () => {
+  if (process.getuid?.() === 0) return;
+  const dir = mkTmp();
+  try {
+    const l = fileLedger(dir, { now: T0 });
+    equal(l.reserve('evm:a', 'wei', 1n, []), null);
+    chmodSync(l.pathFor('evm:a'), 0o400); // append opens fail EACCES
+    try {
+      throws(
+        () => l.reserve('evm:a', 'wei', 1n, []),
+        (e: unknown) =>
+          e instanceof SpendLedgerError && /I\/O failure \(EACCES/.test((e as Error).message),
+      );
+      equal(
+        l.spent('evm:a', 'wei', HOUR_MS),
+        1n,
+        'reads still work; the refused spend was not recorded',
+      );
+    } finally {
+      chmodSync(l.pathFor('evm:a'), 0o600);
+    }
+    equal(l.reserve('evm:a', 'wei', 1n, []), null, 'healthy again');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('#91: a compaction whose rename target is blocked → SpendLedgerError, history intact', () => {
+  const dir = mkTmp();
+  try {
+    const clock = { now: T0 };
+    const l = fileLedger(dir, clock);
+    for (let i = 0; i < FileSpendLedger.COMPACT_AFTER + 1; i++) l.reserve('evm:a', 'wei', 1n, []);
+    // Occupy the temp path with a non-empty directory: openSync(tmp,'w') fails EISDIR.
+    mkdirSync(`${l.pathFor('evm:a')}.tmp`, { recursive: true });
+    writeFileSync(join(`${l.pathFor('evm:a')}.tmp`, 'x'), '');
+    clock.now = T0 + DAY_MS + 1;
+    throws(() => l.reserve('evm:a', 'wei', 5n, []), SpendLedgerError);
+    clock.now = T0;
+    equal(
+      l.spent('evm:a', 'wei', HOUR_MS),
+      BigInt(FileSpendLedger.COMPACT_AFTER + 1),
+      'original file untouched',
+    );
   } finally {
     rmSync(dir, { recursive: true });
   }
