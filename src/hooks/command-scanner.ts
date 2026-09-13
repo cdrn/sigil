@@ -106,9 +106,11 @@ const WORD = String.raw`(?!-c\b)[A-Za-z0-9_./:@%+,~-]+|'[^'$\x60\\!;&|<>=]*'|"[^
 // statement, and the whole point of the shape is that there is none.
 const SP = String.raw`[ \t]+`;
 const OPTS = String.raw`(?:${SP}(?:${WORD}))*`;
-const GIT_OR_GH = String.raw`(?:git|gh)\b`;
+// Only the subcommands that STORE a message qualify — never `git bisect
+// run`, `git -c …`, `gh api`, etc., which can run or evaluate arguments.
+const GIT_OR_GH = String.raw`(?:git[ \t]+commit|gh[ \t]+(?:pr|issue|release)[ \t]+(?:create|comment|edit|review))\b`;
 
-/** `git commit … -F - <<'EOF'\n…\nEOF` / `gh … --body-file - <<'EOF'\n…\nEOF` */
+/** `git commit … -F - <<'EOF'\n…\nEOF` / `gh pr create … --body-file - <<'EOF'\n…\nEOF` */
 const STDIN_HEREDOC_SHAPE = new RegExp(
   String.raw`^(${GIT_OR_GH}${OPTS}${SP}(?:-F|--file|--body-file)${SP}-${OPTS}${SP}<<(['"])([A-Za-z_][A-Za-z0-9_]*)\2)\n([\s\S]*?)\n\3\n?$`,
 );

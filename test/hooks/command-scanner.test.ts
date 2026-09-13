@@ -174,6 +174,13 @@ test('#92: any deviation from the exact shape leaves the command untouched for t
     `git --version\necho -m 'true; cat ${K}'`,
     `echo -m 'true; cat ${K}'`,
     `gitx -m 'true; cat ${K}'`,
+    // review round 5: only message-STORING subcommands qualify; bisect run
+    // (and anything not on the allowlist) executes or evaluates arguments
+    `git bisect run sh '-c' -m 'true; cat ${K}; true'`,
+    `git bisect run sh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
+    `git -C . commit -m 'true; cat ${K}'`,
+    `gh api -m 'true; cat ${K}'`,
+    `git version -F - <<'EOF'\nmessage\nEOF`,
   ]) {
     equal(stripInertText(cmd), cmd, `untouched: ${cmd}`);
   }
@@ -190,6 +197,8 @@ test('#92: what the unchanged scanner refused, it still refuses', () => {
     `git version -F - <<'EOF'\nmessage\nEOF\ntrue; cat ${K}\nEOF`,
     `git --version\nsh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
     `echo -m 'true; cat ${K}'`,
+    `git bisect run sh '-c' -m 'true; cat ${K}; true'`,
+    `git bisect run sh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
   ]) {
     ok(scanBashCommand(cmd).blocked, cmd);
   }
