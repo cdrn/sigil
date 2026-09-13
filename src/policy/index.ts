@@ -13,3 +13,19 @@ export {
   STRICT_TEMPLATE,
   policyTemplate,
 } from './template.js';
+export {
+  type SpendAsset,
+  type WindowCap,
+  HOUR_MS,
+  DAY_MS,
+  windowCapsFor,
+  checkWindowCaps,
+} from './window.js';
+export {
+  type SpendLedger,
+  type SpendLedgerOpts,
+  SpendLedgerError,
+  MemorySpendLedger,
+  FileSpendLedger,
+  _ledgerTestHooks,
+} from './ledger.js';

@@ -1,4 +1,4 @@
-import type { SignableTx } from '../eth/index.js';
+import type { SignableTx, TypedData } from '../eth/index.js';
 import type { Policy, PolicyDecision, PolicyRequest, SvmTransferView } from './types.js';
 
 /**
@@ -46,13 +46,15 @@ export function evaluate(request: PolicyRequest, policy: Policy): PolicyDecision
             kind: 'deny',
             reason: 'personal_sign denied — strict mode + allow_message_signing=false',
           };
-    case 'typed_data':
-      return policy.allowTypedData
-        ? { kind: 'allow' }
-        : {
-            kind: 'deny',
-            reason: 'EIP-712 typed-data denied — strict mode + allow_typed_data=false',
-          };
+    case 'typed_data': {
+      if (!policy.allowTypedData) {
+        return {
+          kind: 'deny',
+          reason: 'EIP-712 typed-data denied — strict mode + allow_typed_data=false',
+        };
+      }
+      return evaluateTypedDataStrict(request.typedData, policy) ?? { kind: 'allow' };
+    }
     case 'svm_message':
       return policy.allowSvmMessageSigning
         ? { kind: 'allow' }
@@ -252,4 +254,71 @@ function formatWei(v: bigint): string {
   if (frac === 0n) return whole.toString();
   const fracStr = frac.toString().padStart(18, '0').slice(0, 6).replace(/0+$/, '');
   return fracStr === '' ? whole.toString() : `${whole}.${fracStr}`;
+}
+
+/**
+ * Strict-mode EIP-712 checks, applied once allow_typed_data has passed.
+ * A typed-data signature can move funds (Permit, Permit2, exchange orders),
+ * so the domain gets the same treatment a transaction's `to` does:
+ *   1. domain.chainId must be present and in chain_ids — a signature for
+ *      another chain is exactly the kind of thing an injected prompt asks
+ *      for, and a chain-less domain can't be checked at all.
+ *   2. domain.verifyingContract must be allowlisted when the list is set.
+ *   3. primaryType must be allowlisted when the list is set.
+ * Domain fields are read defensively: the evaluator runs before sign-typed.ts
+ * validates the structure, and a malformed domain must deny, not throw.
+ */
+function evaluateTypedDataStrict(
+  td: TypedData,
+  policy: Policy,
+): { kind: 'deny'; reason: string } | null {
+  if (typeof td.domain !== 'object' || td.domain === null || Array.isArray(td.domain)) {
+    return { kind: 'deny', reason: 'EIP-712 denied — domain must be an object' };
+  }
+  const domain = td.domain as unknown as Record<string, unknown>;
+  const chainId = domain['chainId'];
+  if (chainId === undefined) {
+    // A chain-less domain can't be checked against chain_ids, and a
+    // signature over one is valid wherever that domain is accepted. Strict
+    // mode therefore requires the domain to be chain-bound.
+    return {
+      kind: 'deny',
+      reason:
+        'EIP-712 denied — strict mode requires domain.chainId (chain-less domains cannot be checked against chain_ids)',
+    };
+  }
+  const id = exactChainId(chainId);
+  if (id === null || !policy.chainIds.some((c) => BigInt(c) === id)) {
+    return {
+      kind: 'deny',
+      reason: `EIP-712 denied — domain.chainId ${String(chainId)} not in chain_ids ${JSON.stringify(policy.chainIds)}`,
+    };
+  }
+  if (policy.typedDataVerifyingContracts.length > 0) {
+    const vc = domain['verifyingContract'];
+    const norm = typeof vc === 'string' ? vc.toLowerCase() : undefined;
+    if (norm === undefined || !policy.typedDataVerifyingContracts.includes(norm)) {
+      return {
+        kind: 'deny',
+        reason: `EIP-712 denied — domain.verifyingContract ${norm ?? '(absent)'} not in typed_data_verifying_contracts`,
+      };
+    }
+  }
+  if (policy.typedDataPrimaryTypes.length > 0) {
+    const pt = td.primaryType;
+    if (typeof pt !== 'string' || !policy.typedDataPrimaryTypes.includes(pt)) {
+      return {
+        kind: 'deny',
+        reason: `EIP-712 denied — primaryType ${typeof pt === 'string' ? pt : '(absent)'} not in typed_data_primary_types`,
+      };
+    }
+  }
+  return null;
+}
+
+/** Exact integer chain id as a bigint, or null if it isn't a safe integer / bigint. */
+function exactChainId(v: unknown): bigint | null {
+  if (typeof v === 'bigint') return v >= 0n ? v : null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
+  return null;
 }

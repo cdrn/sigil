@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects } from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditWriter, verifyChain } from '../../src/audit/index.js';
@@ -27,10 +27,14 @@ import {
   RpcMethodError,
 } from '../../src/daemon/index.js';
 import {
+  FileSpendLedger,
+  MemorySpendLedger,
   parsePolicy,
   permissivePolicyResolver,
   type PolicyResolver,
   PolicyLoadError,
+  type SpendLedger,
+  _ledgerTestHooks,
 } from '../../src/policy/index.js';
 
 function mkTmp(): string {
@@ -1374,6 +1378,438 @@ test('two dispatch contexts sharing one audit log produce a single valid chain',
     );
     a.dispose();
     b.dispose();
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rolling-window value caps on eth_sign_transaction
+// ---------------------------------------------------------------------------
+
+const T0 = 1_700_000_000_000;
+
+function windowCtx(
+  policyToml: string,
+  opts: { ledger?: SpendLedger | null; confirm?: ConfirmGate } = {},
+): { ctx: MethodContext; auditPath: string; cleanup: () => void; clock: { now: number } } {
+  const base = makeCtx();
+  const policy = parsePolicy(policyToml);
+  const clock = { now: T0 };
+  const ctx: MethodContext = {
+    ...base.ctx,
+    policy: { resolve: () => policy },
+    ...(opts.ledger === null
+      ? {}
+      : { ledger: opts.ledger ?? new MemorySpendLedger({ now: () => clock.now }) }),
+    ...(opts.confirm ? { confirm: opts.confirm } : {}),
+  };
+  return { ctx, auditPath: base.auditPath, cleanup: base.cleanup, clock };
+}
+
+function txParams(valueWei: bigint, over: Record<string, unknown> = {}): unknown {
+  return {
+    portal: 'evm:bot',
+    tx: {
+      type: 'eip1559',
+      chainId: 1,
+      nonce: 0,
+      maxPriorityFeePerGas: 1,
+      maxFeePerGas: 100,
+      gasLimit: 21000,
+      to: '0x000000000000000000000000000000000000dead',
+      value: valueWei.toString(),
+      data: '0x',
+      ...over,
+    },
+  };
+}
+
+function recordingConfirm(kind: 'approved' | 'denied'): ConfirmGate & { calls: number } {
+  const g = {
+    calls: 0,
+    transportName: 'mock',
+    request: async () => {
+      g.calls++;
+      return { kind };
+    },
+  };
+  return g as unknown as ConfirmGate & { calls: number };
+}
+
+const HOUR_CAP = 'mode = "permissive"\nmax_value_per_hour_wei = "100"\n';
+
+test('window caps: spends under the cap sign and accumulate; the breach is denied and audited', async () => {
+  const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP);
+  try {
+    await dispatch('sigil_eth_sign_transaction', txParams(60n), ctx);
+    await dispatch('sigil_eth_sign_transaction', txParams(40n), ctx);
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 100n);
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_eth_sign_transaction', txParams(1n), ctx);
+    } catch (e) {
+      err = e as RpcMethodError;
+    }
+    ok(err instanceof RpcMethodError);
+    equal(err!.code, RPC_POLICY_DENIED);
+    ok(/max_value_per_hour_wei = 100/.test(err!.message), err!.message);
+    ok(/trailing 1h total to 101 wei/.test(err!.message));
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries.length, 3);
+    equal(entries[2]!.decision, 'deny');
+    ok(/max_value_per_hour_wei/.test(entries[2]!.reason ?? ''));
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 100n, 'denied spend not recorded');
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: the allowance refills once the window rolls', async () => {
+  const { ctx, cleanup, clock } = windowCtx(HOUR_CAP);
+  try {
+    await dispatch('sigil_eth_sign_transaction', txParams(100n), ctx);
+    await rejects(dispatch('sigil_eth_sign_transaction', txParams(1n), ctx));
+    clock.now = T0 + 3_600_000;
+    await dispatch('sigil_eth_sign_transaction', txParams(100n), ctx);
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: a zero-value call is never counted and never denied', async () => {
+  const { ctx, cleanup } = windowCtx('mode = "permissive"\nmax_value_per_hour_wei = "0"\n');
+  try {
+    await dispatch('sigil_eth_sign_transaction', txParams(0n, { data: '0xa9059cbb' }), ctx);
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 0n);
+    await rejects(dispatch('sigil_eth_sign_transaction', txParams(1n), ctx));
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: the pre-check denies BEFORE the confirm push when the cap would deny anyway', async () => {
+  const confirm = recordingConfirm('approved');
+  const { ctx, cleanup } = windowCtx(
+    'mode = "permissive"\nmax_value_per_hour_wei = "100"\nrequire_confirm_above_wei = "10"\n',
+    { confirm },
+  );
+  try {
+    await dispatch('sigil_eth_sign_transaction', txParams(100n), ctx); // confirmed + recorded
+    equal(confirm.calls, 1);
+    await rejects(
+      dispatch('sigil_eth_sign_transaction', txParams(50n), ctx),
+      /max_value_per_hour_wei/,
+    );
+    equal(confirm.calls, 1, 'no human was bothered for a doomed request');
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: a confirm that is denied records nothing; an approved one records after approval', async () => {
+  const denied = recordingConfirm('denied');
+  const a = windowCtx(
+    'mode = "permissive"\nmax_value_per_hour_wei = "100"\nrequire_confirm_above_wei = "10"\n',
+    { confirm: denied },
+  );
+  try {
+    await rejects(dispatch('sigil_eth_sign_transaction', txParams(50n), a.ctx), /confirm denied/);
+    equal(a.ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 0n);
+  } finally {
+    a.cleanup();
+  }
+  const approved = recordingConfirm('approved');
+  const b = windowCtx(
+    'mode = "permissive"\nmax_value_per_hour_wei = "100"\nrequire_confirm_above_wei = "10"\n',
+    { confirm: approved },
+  );
+  try {
+    await dispatch('sigil_eth_sign_transaction', txParams(50n), b.ctx);
+    equal(b.ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 50n);
+  } finally {
+    b.cleanup();
+  }
+});
+
+test('window caps: strict-mode static denies come first and are not recorded', async () => {
+  const { ctx, cleanup } = windowCtx(
+    'mode = "strict"\nchain_ids = [1]\nallow_to = []\nmax_value_wei = "1000"\nmax_value_per_hour_wei = "100"\n',
+  );
+  try {
+    await rejects(dispatch('sigil_eth_sign_transaction', txParams(5n), ctx), /not in allow_to/);
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 0n);
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: hourly and daily caps both bind; the reason names the binding one', async () => {
+  const { ctx, cleanup, clock } = windowCtx(
+    'mode = "permissive"\nmax_value_per_hour_wei = "100"\nmax_value_per_day_wei = "150"\n',
+  );
+  try {
+    await dispatch('sigil_eth_sign_transaction', txParams(100n), ctx);
+    clock.now = T0 + 3_600_000;
+    await dispatch('sigil_eth_sign_transaction', txParams(50n), ctx);
+    await rejects(
+      dispatch('sigil_eth_sign_transaction', txParams(1n), ctx),
+      /max_value_per_day_wei = 150/,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: no ledger in the context → fail closed, audited', async () => {
+  const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP, { ledger: null });
+  try {
+    await rejects(
+      dispatch('sigil_eth_sign_transaction', txParams(1n), ctx),
+      /no spend ledger is configured/,
+    );
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries[entries.length - 1]!.decision, 'deny');
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: a policy without caps never touches the ledger', async () => {
+  const { ctx, cleanup } = windowCtx('mode = "permissive"\n', { ledger: null });
+  try {
+    await dispatch('sigil_eth_sign_transaction', txParams(10n ** 20n), ctx);
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: contract creation counts its value too', async () => {
+  const confirm = recordingConfirm('approved');
+  const { ctx, cleanup } = windowCtx(
+    'mode = "strict"\nchain_ids = [1]\nallow_contract_creation = true\nmax_value_wei = "1000"\nmax_value_per_hour_wei = "100"\n',
+    { confirm },
+  );
+  try {
+    await dispatch(
+      'sigil_eth_sign_transaction',
+      txParams(100n, { to: null, data: '0x60006000' }),
+      ctx,
+    );
+    equal(ctx.ledger!.spent('evm:bot', 'wei', 3_600_000), 100n);
+    await rejects(
+      dispatch('sigil_eth_sign_transaction', txParams(1n, { to: null, data: '0x60006000' }), ctx),
+      /max_value_per_hour_wei/,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: message and typed-data signing are not counted against value windows', async () => {
+  const { ctx, cleanup } = windowCtx('mode = "permissive"\nmax_value_per_hour_wei = "0"\n');
+  try {
+    await dispatch('sigil_eth_sign_message', { portal: 'evm:bot', message: '0x01' }, ctx);
+    await dispatch(
+      'sigil_eth_sign_typed_data',
+      {
+        portal: 'evm:bot',
+        typedData: {
+          types: { M: [{ name: 'x', type: 'uint256' }] },
+          primaryType: 'M',
+          domain: { name: 'd' },
+          message: { x: 1 },
+        },
+      },
+      ctx,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// EIP-712 allowlists through the real dispatch path
+// ---------------------------------------------------------------------------
+
+test('typed data via dispatch: strict allowlists deny with the evaluator reason and audit it', async () => {
+  const { ctx, auditPath, cleanup } = windowCtx(
+    'mode = "strict"\nchain_ids = [1]\nallow_typed_data = true\ntyped_data_primary_types = ["Permit"]\n',
+  );
+  try {
+    const typedData = {
+      types: { Order: [{ name: 'x', type: 'uint256' }] },
+      primaryType: 'Order',
+      domain: { name: 'd', chainId: 1 },
+      message: { x: 1 },
+    };
+    await rejects(
+      dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData }, ctx),
+      /primaryType Order not in typed_data_primary_types/,
+    );
+    const ok712 = { ...typedData, types: { Permit: typedData.types.Order }, primaryType: 'Permit' };
+    const r = (await dispatch(
+      'sigil_eth_sign_typed_data',
+      { portal: 'evm:bot', typedData: ok712 },
+      ctx,
+    )) as {
+      signature: string;
+    };
+    ok(/^0x[0-9a-f]{130}$/.test(r.signature));
+    const entries = verifyChain(readFileSync(auditPath));
+    equal(entries[0]!.decision, 'deny');
+    equal(entries[1]!.decision, 'allow');
+  } finally {
+    cleanup();
+  }
+});
+
+test('window caps: a corrupt ledger fails closed with the ledger error, audited', async () => {
+  const dir = mkTmp();
+  try {
+    const ledger = new FileSpendLedger(dir, { now: () => T0 });
+    ledger.reserve('evm:bot', 'wei', 1n, []);
+    appendFileSync(ledger.pathFor('evm:bot'), 'garbage\n');
+    const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP, { ledger });
+    try {
+      await rejects(dispatch('sigil_eth_sign_transaction', txParams(1n), ctx), /unreadable line 2/);
+      const entries = verifyChain(readFileSync(auditPath));
+      equal(entries[entries.length - 1]!.decision, 'deny');
+      ok(/unreadable line/.test(entries[entries.length - 1]!.reason ?? ''));
+    } finally {
+      cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('typed data via dispatch: strict mode refuses a chain-less domain', async () => {
+  const { ctx, cleanup } = windowCtx('mode = "strict"\nchain_ids = [1]\nallow_typed_data = true\n');
+  try {
+    const typedData = {
+      types: { M: [{ name: 'x', type: 'uint256' }] },
+      primaryType: 'M',
+      domain: { name: 'd' },
+      message: { x: 1 },
+    };
+    await rejects(
+      dispatch('sigil_eth_sign_typed_data', { portal: 'evm:bot', typedData }, ctx),
+      /requires domain\.chainId/,
+    );
+    await dispatch(
+      'sigil_eth_sign_typed_data',
+      { portal: 'evm:bot', typedData: { ...typedData, domain: { name: 'd', chainId: 1 } } },
+      ctx,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2: negative values must never reach the ledger; pending-confirm race
+// ---------------------------------------------------------------------------
+
+test('a negative tx value is rejected as INVALID_PARAMS before any reservation (file-backed ledger)', async () => {
+  const dir = mkTmp();
+  try {
+    const ledger = new FileSpendLedger(dir, { now: () => T0 });
+    const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP, { ledger });
+    try {
+      for (const key of ['value', 'nonce', 'gasLimit', 'maxFeePerGas']) {
+        let err: RpcMethodError | null = null;
+        try {
+          await dispatch('sigil_eth_sign_transaction', txParams(1n, { [key]: '-1' }), ctx);
+        } catch (e) {
+          err = e as RpcMethodError;
+        }
+        ok(err instanceof RpcMethodError, key);
+        equal(err!.code, RPC_INVALID_PARAMS, key);
+        ok(/must be a non-negative integer/.test(err!.message), err!.message);
+      }
+      ok(!existsSync(ledger.pathFor('evm:bot')), 'ledger never created');
+      ok(!existsSync(auditPath), 'nothing audited: rejected at parse time, before the policy gate');
+      // The portal is still fully usable afterwards.
+      await dispatch('sigil_eth_sign_transaction', txParams(5n), ctx);
+      equal(ledger.spent('evm:bot', 'wei', 3_600_000), 5n);
+    } finally {
+      cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('window caps: an allowance consumed by another window while a confirm is pending is denied at reserve time', async () => {
+  const dir = mkTmp();
+  try {
+    const mine = new FileSpendLedger(dir, { now: () => T0 });
+    const theirs = new FileSpendLedger(dir, { now: () => T0 + 1 });
+    let pushes = 0;
+    const confirm = {
+      transportName: 'mock',
+      request: async () => {
+        pushes++;
+        // While the human is looking at the phone, another window spends it all.
+        equal(
+          theirs.reserve('evm:bot', 'wei', 100n, [
+            { label: 'max_value_per_hour_wei', windowMs: 3_600_000, cap: 100n },
+          ]),
+          null,
+        );
+        return { kind: 'approved' as const };
+      },
+    } as unknown as ConfirmGate;
+    const { ctx, auditPath, cleanup } = windowCtx(
+      'mode = "permissive"\nmax_value_per_hour_wei = "100"\nrequire_confirm_above_wei = "10"\n',
+      { ledger: mine, confirm },
+    );
+    try {
+      await rejects(
+        dispatch('sigil_eth_sign_transaction', txParams(50n), ctx),
+        /max_value_per_hour_wei = 100/,
+      );
+      equal(pushes, 1, 'pre-check passed (nothing spent yet), so the human was asked');
+      equal(
+        mine.spent('evm:bot', 'wei', 3_600_000),
+        100n,
+        "only the other window's spend is recorded",
+      );
+      const last = verifyChain(readFileSync(auditPath)).at(-1)!;
+      equal(last.decision, 'deny');
+    } finally {
+      cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('window caps: a durability failure in the ledger denies the sign and is audited', async () => {
+  const dir = mkTmp();
+  try {
+    const ledger = new FileSpendLedger(dir, { now: () => T0 });
+    const { ctx, auditPath, cleanup } = windowCtx(HOUR_CAP, { ledger });
+    try {
+      _ledgerTestHooks.fsyncDir = (d) => {
+        if (d === dir) throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
+      };
+      try {
+        await rejects(
+          dispatch('sigil_eth_sign_transaction', txParams(1n), ctx),
+          /could not make .* durable/,
+        );
+      } finally {
+        delete _ledgerTestHooks.fsyncDir;
+      }
+      const last = verifyChain(readFileSync(auditPath)).at(-1)!;
+      equal(last.decision, 'deny');
+      ok(/durable/.test(last.reason ?? ''));
+      await dispatch('sigil_eth_sign_transaction', txParams(1n), ctx);
+    } finally {
+      cleanup();
+    }
   } finally {
     rmSync(dir, { recursive: true });
   }

@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { ok, rejects } from 'node:assert/strict';
+import { equal, ok, rejects } from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +14,12 @@ import {
   RPC_POLICY_DENIED,
   RpcMethodError,
 } from '../../src/daemon/index.js';
-import { parsePolicy, type Policy, type PolicyResolver } from '../../src/policy/index.js';
+import {
+  MemorySpendLedger,
+  parsePolicy,
+  type Policy,
+  type PolicyResolver,
+} from '../../src/policy/index.js';
 import type { ConfirmGate } from '../../src/confirm/index.js';
 import { base58Decode, base58Encode, getPublicKey, verify } from '../../src/svm/index.js';
 
@@ -309,6 +314,204 @@ test('svm_sign_transaction: undecodable tx is denied when human confirm denies',
         ),
       (e: RpcMethodError) => e.code === RPC_POLICY_DENIED && /denied by human/.test(e.message),
     );
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rolling-window lamport caps on svm_sign_transaction
+// ---------------------------------------------------------------------------
+
+test('svm window caps: decoded transfers accumulate; the breach is denied', async () => {
+  const policy = parsePolicy('mode = "permissive"\nsvm_max_lamports_per_hour = "100"\n');
+  const { ctx, cleanup } = makeCtx(policy);
+  const ledger = new MemorySpendLedger({ now: () => 1_700_000_000_000 });
+  ctx.ledger = ledger;
+  try {
+    const to = new Uint8Array(32).fill(9);
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 60n)) },
+      ctx,
+    );
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 40n)) },
+      ctx,
+    );
+    equal(ledger.spent(PORTAL, 'lamports', 3_600_000), 100n);
+    await rejects(
+      dispatch(
+        'sigil_svm_sign_transaction',
+        { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 1n)) },
+        ctx,
+      ),
+      /svm_max_lamports_per_hour = 100/,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('svm window caps: an undecodable instruction cannot be bounded → denied when a lamport cap is set, in both modes', async () => {
+  for (const toml of [
+    'mode = "permissive"\nsvm_max_lamports_per_day = "1000000000000"\n',
+    'mode = "strict"\nchain_ids = [1]\nsvm_max_lamports_per_day = "1000000000000"\n',
+  ]) {
+    const { ctx, cleanup } = makeCtx(parsePolicy(toml), mockConfirm('approved'));
+    ctx.ledger = new MemorySpendLedger();
+    try {
+      await rejects(
+        dispatch(
+          'sigil_svm_sign_transaction',
+          { portal: PORTAL, message: b64(unknownMsg(SVM_PUB)) },
+          ctx,
+        ),
+        /cannot be bounded/,
+      );
+      equal(ctx.ledger.spent(PORTAL, 'lamports', 3_600_000), 0n);
+    } finally {
+      cleanup();
+    }
+  }
+  // Without a lamport cap, permissive still allows it (unchanged behaviour).
+  const { ctx, cleanup } = makeCtx(
+    parsePolicy('mode = "permissive"\nmax_value_per_hour_wei = "1"\n'),
+  );
+  ctx.ledger = new MemorySpendLedger();
+  try {
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(unknownMsg(SVM_PUB)) },
+      ctx,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('svm_sign_message refuses bytes that parse as a transaction message (cap bypass)', async () => {
+  const { ctx, cleanup } = makeCtx(
+    parsePolicy('mode = "permissive"\nsvm_max_lamports_per_hour = "0"\n'),
+  );
+  ctx.ledger = new MemorySpendLedger();
+  try {
+    const to = new Uint8Array(32).fill(9);
+    const txBytes = b64(transferMsg(SVM_PUB, to, 1_000_000_000n));
+    await rejects(
+      dispatch('sigil_svm_sign_transaction', { portal: PORTAL, message: txBytes }, ctx),
+      /svm_max_lamports_per_hour/,
+    );
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch('sigil_svm_sign_message', { portal: PORTAL, message: txBytes }, ctx);
+    } catch (e) {
+      err = e as RpcMethodError;
+    }
+    ok(err instanceof RpcMethodError && err.code === RPC_INVALID_PAYLOAD, String(err));
+    ok(/use svm_sign_transaction/.test(err!.message));
+    // Ordinary off-chain messages still sign.
+    const r = (await dispatch(
+      'sigil_svm_sign_message',
+      { portal: PORTAL, message: b64(Buffer.from('sign in with solana')) },
+      ctx,
+    )) as { signature: string };
+    ok(typeof r.signature === 'string');
+  } finally {
+    cleanup();
+  }
+});
+
+test('svm window caps: wei caps do not constrain lamports and vice versa', async () => {
+  const policy = parsePolicy('mode = "permissive"\nmax_value_per_hour_wei = "0"\n');
+  const { ctx, cleanup } = makeCtx(policy);
+  ctx.ledger = new MemorySpendLedger();
+  try {
+    const to = new Uint8Array(32).fill(9);
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(transferMsg(SVM_PUB, to, 10n ** 12n)) },
+      ctx,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+/** Same transfer as transferMsg, framed as a v0 message with no address-lookup tables. */
+function transferMsgV0(signer: Uint8Array, recipient: Uint8Array, lamports: bigint): Uint8Array {
+  const legacy = transferMsg(signer, recipient, lamports);
+  return Uint8Array.from([0x80, ...legacy, 0]); // version prefix … + zero ALT lookups
+}
+
+test('svm_sign_message refuses a v0 transaction message as well', async () => {
+  const { ctx, cleanup } = makeCtx(permissive);
+  try {
+    const to = new Uint8Array(32).fill(9);
+    let err: RpcMethodError | null = null;
+    try {
+      await dispatch(
+        'sigil_svm_sign_message',
+        { portal: PORTAL, message: b64(transferMsgV0(SVM_PUB, to, 1n)) },
+        ctx,
+      );
+    } catch (e) {
+      err = e as RpcMethodError;
+    }
+    ok(err instanceof RpcMethodError && err.code === RPC_INVALID_PAYLOAD, String(err));
+    // And the transaction path decodes it (so the refusal isn't a false positive).
+    ctx.ledger = new MemorySpendLedger();
+    await dispatch(
+      'sigil_svm_sign_transaction',
+      { portal: PORTAL, message: b64(transferMsgV0(SVM_PUB, to, 1n)) },
+      ctx,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('svm window caps: a tx mixing a decoded transfer with an unknown instruction is unbounded → denied under a cap', async () => {
+  const { ctx, cleanup } = makeCtx(
+    parsePolicy('mode = "permissive"\nsvm_max_lamports_per_hour = "1000000000"\n'),
+  );
+  ctx.ledger = new MemorySpendLedger();
+  try {
+    const to = new Uint8Array(32).fill(9);
+    const SYSTEM = new Uint8Array(32);
+    const data = new Uint8Array(12);
+    data[0] = 2;
+    data[4] = 1; // 1 lamport
+    // accounts: signer, recipient, system, unknownProgram
+    const msg = Uint8Array.from([
+      1,
+      0,
+      2,
+      4,
+      ...SVM_PUB,
+      ...to,
+      ...SYSTEM,
+      ...new Uint8Array(32).fill(7),
+      ...new Uint8Array(32),
+      2,
+      2,
+      2,
+      0,
+      1,
+      data.length,
+      ...data, // decoded transfer
+      3,
+      1,
+      0,
+      1,
+      0xff, // unknown program call
+    ]);
+    await rejects(
+      dispatch('sigil_svm_sign_transaction', { portal: PORTAL, message: b64(msg) }, ctx),
+      /cannot be bounded/,
+    );
+    equal(ctx.ledger.spent(PORTAL, 'lamports', 3_600_000), 0n);
   } finally {
     cleanup();
   }

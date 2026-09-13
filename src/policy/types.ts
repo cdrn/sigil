@@ -44,6 +44,29 @@ export interface Policy {
    * fires first); validation catches that misconfiguration at load time.
    */
   requireConfirmAboveWei?: bigint;
+  /**
+   * Rolling-window caps on the total native value (tx.value, in wei) this
+   * portal may sign in any trailing hour / day. Mode-independent, like
+   * requireConfirmAboveWei: a permissive portal with a daily ceiling is the
+   * most common "bot with an allowance" setup. Enforced against the
+   * per-portal spend ledger (see ledger.ts); a breach is a hard deny.
+   * `undefined` = no cap for that window. Token transfers are calldata, not
+   * value, and are not counted — use allowed_selectors for those.
+   */
+  maxValuePerHourWei?: bigint;
+  maxValuePerDayWei?: bigint;
+  /**
+   * Strict mode, EIP-712 only. When allow_typed_data is true these refine
+   * what may be signed; each empty list means "no restriction on that axis"
+   * so an existing `allow_typed_data = true` policy keeps working.
+   *   - typedDataVerifyingContracts: lowercase 0x addresses the domain's
+   *     verifyingContract must be one of.
+   *   - typedDataPrimaryTypes: primaryType names (e.g. "Permit").
+   * Independently, the domain must carry a chainId naming one of chain_ids;
+   * strict mode refuses chain-less domains (they can't be checked).
+   */
+  typedDataVerifyingContracts: readonly string[];
+  typedDataPrimaryTypes: readonly string[];
 
   // --- Solana (SVM) -------------------------------------------------------
   // The same secp256k1 secret also backs an ed25519 Solana key; these fields
@@ -63,6 +86,9 @@ export interface Policy {
    * confirm only applies in strict mode (permissive allows them outright).
    */
   requireConfirmAboveLamports?: bigint;
+  /** Rolling-window caps on decoded native SOL transfers, in lamports. */
+  svmMaxLamportsPerHour?: bigint;
+  svmMaxLamportsPerDay?: bigint;
 }
 
 /** A native SOL transfer the evaluator was handed, pre-decoded by the caller. */

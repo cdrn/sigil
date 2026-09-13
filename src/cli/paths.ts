@@ -16,6 +16,8 @@ export interface SigilPaths {
   readonly home: string;
   readonly keysDir: string;
   readonly policyDir: string;
+  /** Per-portal spend ledgers backing the rolling-window value caps. */
+  readonly stateDir: string;
   readonly controlDir: string;
   readonly auditLog: string;
   readonly configFile: string;
@@ -27,6 +29,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): SigilPaths {
     home,
     keysDir: join(home, 'keys'),
     policyDir: join(home, 'policy'),
+    stateDir: join(home, 'state'),
     controlDir: env['SIGIL_CONTROL_DIR'] ?? join(home, 'control'),
     auditLog: join(home, 'audit.log'),
     configFile: join(home, 'config.toml'),

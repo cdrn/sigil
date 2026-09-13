@@ -15,7 +15,7 @@ import { startControlServer } from '../control/index.js';
 import { HandleTable } from '../daemon/handles.js';
 import type { MethodContext } from '../daemon/index.js';
 import { runMcpStdio } from '../mcp/server.js';
-import { FileSystemPolicyResolver } from '../policy/index.js';
+import { FileSpendLedger, FileSystemPolicyResolver } from '../policy/index.js';
 import { DEFAULT_RPC_PORT, startRpcServer, type RpcProxyServer } from '../rpc/index.js';
 
 /**
@@ -45,6 +45,7 @@ async function main(): Promise<void> {
   mkdirSync(paths.home, { recursive: true, mode: 0o700 });
   mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.controlDir, { recursive: true, mode: 0o700 });
   // mkdir's `mode` only applies to a freshly-created dir (and is masked by
   // umask), so re-assert 0o700 in case the dir pre-existed with looser perms.
@@ -87,11 +88,16 @@ async function main(): Promise<void> {
   // file is renamed, never deleted.
   const audit = new AuditWriter(paths.auditLog, { onCorrupt: 'quarantine' });
   const policy = new FileSystemPolicyResolver(paths.policyDir);
+  // Rolling-window value caps are enforced against per-portal ledgers in
+  // ~/.sigil/state; shared across every window's sigil-mcp via the same
+  // lock the audit log uses.
+  const ledger = new FileSpendLedger(paths.stateDir);
 
   const context: MethodContext = {
     handles,
     audit,
     policy,
+    ledger,
     ...(confirmGate ? { confirm: confirmGate } : {}),
   };
 

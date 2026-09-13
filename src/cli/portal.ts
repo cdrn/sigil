@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -253,6 +254,15 @@ export function portalRemove(paths: SigilPaths, handle: string): PortalRemoveRes
     } catch {
       /* ignore */
     }
+  }
+  // The spend ledger goes with the portal too — a re-added portal with the
+  // same handle starts with a clean allowance. Its lock directory is left
+  // alone: a live sigil-mcp may hold a ticket in it, and deleting another
+  // process's ticket is the one thing the lock protocol forbids.
+  try {
+    rmSync(join(paths.stateDir, `${handle}.ledger`), { force: true });
+  } catch {
+    /* ignore */
   }
   return { removed: keyfileExisted, path: destPath };
 }

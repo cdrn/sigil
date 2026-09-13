@@ -11,10 +11,16 @@ import {
   type TypedData,
 } from '../eth/index.js';
 import {
+  checkWindowCaps,
   evaluate,
+  type Policy,
   PolicyLoadError,
   type PolicyRequest,
   type PolicyResolver,
+  type SpendAsset,
+  type SpendLedger,
+  SpendLedgerError,
+  windowCapsFor,
 } from '../policy/index.js';
 import {
   base58Encode,
@@ -62,6 +68,13 @@ export interface MethodContext {
    * deny — fail closed.
    */
   confirm?: ConfirmGate;
+  /**
+   * Per-portal spend ledger backing the rolling-window value caps
+   * (max_value_per_hour_wei etc.). Optional so tests can omit it; a policy
+   * that sets a window cap while no ledger is configured is a hard deny —
+   * fail closed, never silently uncapped.
+   */
+  ledger?: SpendLedger;
 }
 
 export type MethodHandler = (params: unknown, ctx: MethodContext) => unknown | Promise<unknown>;
@@ -137,7 +150,109 @@ function requirePortal(handles: HandleTable, handle: string): Buffer {
  *
  * Deny is not returned: gatePolicy throws RPC_POLICY_DENIED directly.
  */
-type GateResult = { proceed: 'allow' } | { proceed: 'confirm'; summary: string };
+type GateResult =
+  { proceed: 'allow'; policy: Policy } | { proceed: 'confirm'; summary: string; policy: Policy };
+
+/** The native value a request would add to the portal's rolling windows. */
+interface Spend {
+  asset: SpendAsset;
+  amount: bigint;
+  /** False when part of the debit is unknown (undecodable Solana instruction). */
+  bounded?: boolean;
+}
+
+function spendOf(request: PolicyRequest): Spend | null {
+  if (request.kind === 'transaction') return { asset: 'wei', amount: BigInt(request.tx.value) };
+  if (request.kind === 'svm_transaction') {
+    let total = 0n;
+    for (const t of request.transfers) total += t.lamports;
+    return { asset: 'lamports', amount: total, bounded: request.allDecoded };
+  }
+  return null;
+}
+
+function looksLikeSvmTransaction(bytes: Buffer): boolean {
+  try {
+    decodeTx(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const UNBOUNDED_REASON =
+  'tx denied — rolling-window lamport caps are set but this transaction has an instruction sigil ' +
+  'cannot decode, so its native SOL debit cannot be bounded (only System-Program transfers count)';
+
+/**
+ * Rolling-window pre-check, run before any confirm push so a human isn't
+ * asked to approve something the cap would deny anyway. Read-only: the
+ * authoritative check-and-record happens in reserveSpend, right before
+ * signing. Returns a deny reason or null.
+ */
+function windowPrecheck(
+  ctx: MethodContext,
+  handle: string,
+  policy: Policy,
+  spend: Spend,
+): string | null {
+  const caps = windowCapsFor(policy, spend.asset);
+  if (caps.length === 0) return null;
+  if (spend.bounded === false) return UNBOUNDED_REASON;
+  if (!ctx.ledger) {
+    return 'policy sets rolling-window value caps but no spend ledger is configured — refusing to sign';
+  }
+  const ledger = ctx.ledger;
+  try {
+    const reason = checkWindowCaps(
+      caps,
+      spend.amount,
+      (w) => ledger.spent(handle, spend.asset, w),
+      spend.asset,
+    );
+    return reason === null ? null : `tx ${reason}`;
+  } catch (err) {
+    if (err instanceof SpendLedgerError) return err.message;
+    throw err;
+  }
+}
+
+/**
+ * Atomically check the rolling-window caps against the ledger and record
+ * this spend. Called after the policy gate and any confirm have passed,
+ * immediately before the signature is produced, so two windows racing for
+ * the last of an allowance can't both get it. On breach: audit a deny and
+ * throw RPC_POLICY_DENIED.
+ */
+function reserveSpend(
+  ctx: MethodContext,
+  handle: string,
+  kind: string,
+  payload: unknown,
+  policy: Policy,
+  spend: Spend,
+): void {
+  const caps = windowCapsFor(policy, spend.asset);
+  if (caps.length === 0) return;
+  let reason: string | null;
+  if (spend.bounded === false) {
+    reason = UNBOUNDED_REASON;
+  } else if (!ctx.ledger) {
+    reason =
+      'policy sets rolling-window value caps but no spend ledger is configured — refusing to sign';
+  } else {
+    try {
+      const r = ctx.ledger.reserve(handle, spend.asset, spend.amount, caps);
+      reason = r === null ? null : `tx ${r}`;
+    } catch (err) {
+      if (!(err instanceof SpendLedgerError)) throw err;
+      reason = err.message;
+    }
+  }
+  if (reason === null) return;
+  ctx.audit.append({ kind, portal: handle, payload, decision: 'deny', reason });
+  throw new RpcMethodError(RPC_POLICY_DENIED, reason);
+}
 
 function gatePolicy(
   ctx: MethodContext,
@@ -150,9 +265,18 @@ function gatePolicy(
   try {
     const policy = ctx.policy.resolve(handle);
     const decision = evaluate(request, policy);
-    if (decision.kind === 'allow') return { proceed: 'allow' };
-    if (decision.kind === 'confirm') return { proceed: 'confirm', summary: decision.summary };
-    reason = decision.reason;
+    if (decision.kind !== 'deny') {
+      const spend = spendOf(request);
+      const windowReason = spend ? windowPrecheck(ctx, handle, policy, spend) : null;
+      if (windowReason === null) {
+        return decision.kind === 'allow'
+          ? { proceed: 'allow', policy }
+          : { proceed: 'confirm', summary: decision.summary, policy };
+      }
+      reason = windowReason;
+    } else {
+      reason = decision.reason;
+    }
   } catch (err) {
     if (err instanceof PolicyLoadError) {
       reason = err.message;
@@ -209,11 +333,16 @@ function asTx(obj: Record<string, unknown>): SignableTx {
   const num = (key: string): bigint => {
     const v = obj[key];
     if (typeof v === 'string') {
+      let n: bigint;
       try {
-        return BigInt(v);
+        n = BigInt(v);
       } catch {
         throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} not a valid bigint string`);
       }
+      if (n < 0n) {
+        throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} must be a non-negative integer`);
+      }
+      return n;
     }
     if (typeof v === 'number') {
       if (!Number.isInteger(v) || v < 0) {
@@ -319,6 +448,10 @@ const sigil_eth_sign_transaction: MethodHandler = async (params, ctx) => {
   if (gate.proceed === 'confirm') {
     await runConfirmGate(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.summary);
   }
+  reserveSpend(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.policy, {
+    asset: 'wei',
+    amount: BigInt(tx.value),
+  });
   const signed = signTransaction(tx, priv);
   ctx.audit.append({
     kind: 'eth_sign_transaction',
@@ -415,6 +548,16 @@ const sigil_svm_sign_message: MethodHandler = (params, ctx) => {
   const portal = asString(obj, 'portal', 'svm_sign_message');
   const messageB64 = asString(obj, 'message', 'svm_sign_message');
   const message = b64ToBuf(messageB64, 'svm_sign_message', 'message');
+  // ed25519 signs arbitrary bytes, and a Solana transaction message IS
+  // arbitrary bytes: signing one here would authorize a transaction while
+  // skipping the transaction policy (allowlists, caps, confirm). Refuse
+  // anything that parses as a transaction message; use svm_sign_transaction.
+  if (looksLikeSvmTransaction(message)) {
+    throw new RpcMethodError(
+      RPC_INVALID_PAYLOAD,
+      'svm_sign_message: payload is a Solana transaction message — use svm_sign_transaction so the transaction policy applies',
+    );
+  }
   const secret = requirePortal(ctx.handles, portal);
   gatePolicy(
     ctx,
@@ -487,6 +630,12 @@ const sigil_svm_sign_transaction: MethodHandler = async (params, ctx) => {
     );
   }
 
+  let lamports = 0n;
+  for (const t of decoded.transfers) lamports += t.lamports;
+  reserveSpend(ctx, portal, 'svm_sign_transaction', { message: messageB64 }, gate.policy, {
+    asset: 'lamports',
+    amount: lamports,
+  });
   const sig = base58Encode(svmSign(messageBytes, secret));
   ctx.audit.append({
     kind: 'svm_sign_transaction',

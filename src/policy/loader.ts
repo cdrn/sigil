@@ -46,6 +46,8 @@ export function parsePolicy(source: string): Policy {
     raw['require_confirm_above_lamports'],
     'require_confirm_above_lamports',
   );
+  // Rolling-window caps are mode-independent too.
+  const windows = parseWindowCaps(raw);
 
   if (mode === 'permissive') {
     return {
@@ -60,8 +62,11 @@ export function parsePolicy(source: string): Policy {
       allowSvmMessageSigning: true,
       svmAllowTo: [],
       svmMaxLamports: 0n,
+      typedDataVerifyingContracts: [],
+      typedDataPrimaryTypes: [],
       ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
       ...(requireConfirmAboveLamports !== undefined ? { requireConfirmAboveLamports } : {}),
+      ...windows,
     };
   }
 
@@ -100,6 +105,26 @@ export function parsePolicy(source: string): Policy {
   );
   const allowMessageSigning = asBool(raw['allow_message_signing'], 'allow_message_signing', false);
   const allowTypedData = asBool(raw['allow_typed_data'], 'allow_typed_data', false);
+  const typedDataVerifyingContracts = asStringArray(
+    raw['typed_data_verifying_contracts'],
+    'typed_data_verifying_contracts',
+  ).map((s, i) => {
+    if (!ADDR_RE.test(s)) {
+      throw new PolicyLoadError(
+        `policy.typed_data_verifying_contracts[${i}] must be 0x-prefixed 20-byte address`,
+      );
+    }
+    return s.toLowerCase();
+  });
+  const typedDataPrimaryTypes = asStringArray(
+    raw['typed_data_primary_types'],
+    'typed_data_primary_types',
+  ).map((s, i) => {
+    if (s.trim() === '') {
+      throw new PolicyLoadError(`policy.typed_data_primary_types[${i}] must be a non-empty string`);
+    }
+    return s;
+  });
 
   const allowSvmMessageSigning = asBool(
     raw['allow_svm_message_signing'],
@@ -163,8 +188,44 @@ export function parsePolicy(source: string): Policy {
     allowSvmMessageSigning,
     svmAllowTo,
     svmMaxLamports,
+    typedDataVerifyingContracts,
+    typedDataPrimaryTypes,
     ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
     ...(requireConfirmAboveLamports !== undefined ? { requireConfirmAboveLamports } : {}),
+    ...windows,
+  };
+}
+
+type WindowFields = Pick<
+  Policy,
+  'maxValuePerHourWei' | 'maxValuePerDayWei' | 'svmMaxLamportsPerHour' | 'svmMaxLamportsPerDay'
+>;
+
+/**
+ * Parse the four optional rolling-window caps. An hourly cap above the daily
+ * cap for the same asset can never bind, so it is rejected as a
+ * misconfiguration rather than silently ignored.
+ */
+function parseWindowCaps(raw: toml.JsonMap): WindowFields {
+  const hourWei = parseOptionalDec(raw['max_value_per_hour_wei'], 'max_value_per_hour_wei');
+  const dayWei = parseOptionalDec(raw['max_value_per_day_wei'], 'max_value_per_day_wei');
+  const hourLam = parseOptionalDec(raw['svm_max_lamports_per_hour'], 'svm_max_lamports_per_hour');
+  const dayLam = parseOptionalDec(raw['svm_max_lamports_per_day'], 'svm_max_lamports_per_day');
+  if (hourWei !== undefined && dayWei !== undefined && hourWei > dayWei) {
+    throw new PolicyLoadError(
+      `policy.max_value_per_hour_wei (${hourWei}) must not exceed max_value_per_day_wei (${dayWei})`,
+    );
+  }
+  if (hourLam !== undefined && dayLam !== undefined && hourLam > dayLam) {
+    throw new PolicyLoadError(
+      `policy.svm_max_lamports_per_hour (${hourLam}) must not exceed svm_max_lamports_per_day (${dayLam})`,
+    );
+  }
+  return {
+    ...(hourWei !== undefined ? { maxValuePerHourWei: hourWei } : {}),
+    ...(dayWei !== undefined ? { maxValuePerDayWei: dayWei } : {}),
+    ...(hourLam !== undefined ? { svmMaxLamportsPerHour: hourLam } : {}),
+    ...(dayLam !== undefined ? { svmMaxLamportsPerDay: dayLam } : {}),
   };
 }
 
@@ -186,6 +247,8 @@ export function permissivePolicyResolver(): PolicyResolver {
     allowSvmMessageSigning: true,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
   };
   return { resolve: () => policy };
 }

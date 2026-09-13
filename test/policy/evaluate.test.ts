@@ -40,6 +40,8 @@ function strict(over: Partial<Omit<Policy, 'mode'>> = {}): Policy {
     allowSvmMessageSigning: false,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
     ...over,
   };
 }
@@ -79,6 +81,8 @@ test('permissive mode allows transactions, messages, typed data', () => {
     allowSvmMessageSigning: false,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
   };
   ok(isAllow(evaluate(txReq(tx()), p)));
   ok(isAllow(evaluate({ kind: 'message', messageBytes: Buffer.from('hi') }, p)));
@@ -306,7 +310,7 @@ test('strict mode + allow_typed_data=true allows EIP-712', () => {
   ok(
     isAllow(
       evaluate(
-        { kind: 'typed_data', typedData: {} as TypedData },
+        { kind: 'typed_data', typedData: { domain: { chainId: 1 } } as TypedData },
         strict({ allowTypedData: true }),
       ),
     ),
@@ -350,6 +354,8 @@ test('confirm: permissive mode honours the confirm threshold', () => {
     allowSvmMessageSigning: true,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
     requireConfirmAboveWei: 500n,
   };
   const r = evaluate(txReq(tx({ value: 1_000n })), p);
@@ -369,6 +375,8 @@ test('confirm: permissive mode without threshold → allow', () => {
     allowSvmMessageSigning: true,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
   };
   ok(isAllow(evaluate(txReq(tx({ value: 999_999n })), p)));
 });
@@ -386,6 +394,8 @@ test('confirm: contract creation summary names "contract creation"', () => {
     allowSvmMessageSigning: true,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ to: null, value: 1n, data: '0x6080604052' })), p);
@@ -407,6 +417,8 @@ test('confirm: message/typed_data do not trigger confirm gate (deferred)', () =>
     allowSvmMessageSigning: true,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
     requireConfirmAboveWei: 0n,
   };
   ok(isAllow(evaluate({ kind: 'message', messageBytes: Buffer.from('hi') }, p)));
@@ -426,6 +438,8 @@ test('confirm: summary renders 0.5 ETH cleanly', () => {
     allowSvmMessageSigning: true,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ value: 500_000_000_000_000_000n })), p);
@@ -445,6 +459,8 @@ test('confirm: summary renders whole-ETH amounts without a decimal', () => {
     allowSvmMessageSigning: true,
     svmAllowTo: [],
     svmMaxLamports: 0n,
+    typedDataVerifyingContracts: [],
+    typedDataPrimaryTypes: [],
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ value: 1_000_000_000_000_000_000n })), p);
@@ -491,4 +507,146 @@ test('end-to-end: parse + evaluate a deploy-enabled policy', () => {
   equal(call.kind, 'deny');
   // Wrong chain still denies the deploy itself.
   equal(evaluate(txReq(tx({ to: null, data: initcode, chainId: 137n })), p).kind, 'deny');
+});
+
+// ---------------------------------------------------------------------------
+// EIP-712 domain / primary-type allowlists (strict mode)
+// ---------------------------------------------------------------------------
+
+const PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3';
+
+function td(over: Partial<TypedData> = {}, domain: TypedData['domain'] = {}): TypedData {
+  return {
+    types: { Permit: [{ name: 'owner', type: 'address' }] },
+    primaryType: 'Permit',
+    domain: { name: 'Permit2', chainId: 1, verifyingContract: PERMIT2, ...domain },
+    message: { owner: DEAD },
+    ...over,
+  };
+}
+
+function tdReq(t: TypedData): PolicyRequest {
+  return { kind: 'typed_data', typedData: t };
+}
+
+test('typed data: allow_typed_data=false denies before any domain check', () => {
+  const r = denyReason(evaluate(tdReq(td()), strict({ allowTypedData: false })));
+  ok(/allow_typed_data=false/.test(r));
+});
+
+test('typed data: empty allowlists + allowed = unrestricted (backwards compatible)', () => {
+  ok(isAllow(evaluate(tdReq(td()), strict({ allowTypedData: true }))));
+  ok(
+    isAllow(
+      evaluate(
+        tdReq(td({ primaryType: 'Anything' }, { verifyingContract: DEAD })),
+        strict({ allowTypedData: true }),
+      ),
+    ),
+  );
+});
+
+test('typed data: domain.chainId must be in chain_ids when present', () => {
+  const p = strict({ allowTypedData: true, chainIds: [1, 8453] });
+  ok(isAllow(evaluate(tdReq(td({}, { chainId: 8453 })), p)));
+  ok(isAllow(evaluate(tdReq(td({}, { chainId: 1n })), p)), 'bigint chainId');
+  const r = denyReason(evaluate(tdReq(td({}, { chainId: 137 })), p));
+  ok(/domain\.chainId 137 not in chain_ids/.test(r), r);
+});
+
+test('typed data: strict mode refuses a domain without chainId', () => {
+  const p = strict({ allowTypedData: true, chainIds: [1] });
+  const noChain = td();
+  delete (noChain.domain as { chainId?: unknown }).chainId;
+  ok(/requires domain\.chainId/.test(denyReason(evaluate(tdReq(noChain), p))));
+});
+
+test('typed data: chainId is compared exactly as an integer (no float collapse)', () => {
+  const big = 9007199254740993n; // MAX_SAFE_INTEGER + 2
+  const p = strict({ allowTypedData: true, chainIds: [9007199254740992] });
+  ok(
+    /chainId 9007199254740993 not in chain_ids/.test(
+      denyReason(evaluate(tdReq(td({}, { chainId: big })), p)),
+    ),
+  );
+  ok(isAllow(evaluate(tdReq(td({}, { chainId: 9007199254740992n })), p)));
+  ok(/chainId/.test(denyReason(evaluate(tdReq(td({}, { chainId: -1 })), p))));
+  ok(/chainId/.test(denyReason(evaluate(tdReq(td({}, { chainId: 1.5 })), p))));
+});
+
+test('typed data: a non-integer chainId is denied, not thrown', () => {
+  const p = strict({ allowTypedData: true });
+  const weird = td({}, { chainId: '1' as unknown as number });
+  ok(/domain\.chainId/.test(denyReason(evaluate(tdReq(weird), p))));
+});
+
+test('typed data: verifyingContract allowlist is enforced, case-insensitively, when set', () => {
+  const p = strict({ allowTypedData: true, typedDataVerifyingContracts: [PERMIT2] });
+  ok(isAllow(evaluate(tdReq(td()), p)));
+  ok(
+    isAllow(
+      evaluate(
+        tdReq(
+          td({}, { verifyingContract: PERMIT2.toUpperCase().replace('0X', '0x') as `0x${string}` }),
+        ),
+        p,
+      ),
+    ),
+  );
+  ok(
+    /verifyingContract 0x0000…dead|verifyingContract 0x000000000000000000000000000000000000dead/.test(
+      denyReason(evaluate(tdReq(td({}, { verifyingContract: DEAD })), p)),
+    ),
+  );
+  const absent = td();
+  delete (absent.domain as { verifyingContract?: unknown }).verifyingContract;
+  ok(/verifyingContract \(absent\)/.test(denyReason(evaluate(tdReq(absent), p))));
+});
+
+test('typed data: primaryType allowlist is enforced when set', () => {
+  const p = strict({ allowTypedData: true, typedDataPrimaryTypes: ['Permit', 'Order'] });
+  ok(isAllow(evaluate(tdReq(td({ primaryType: 'Order' })), p)));
+  ok(
+    /primaryType Mail not in typed_data_primary_types/.test(
+      denyReason(evaluate(tdReq(td({ primaryType: 'Mail' })), p)),
+    ),
+  );
+  const missing = td();
+  delete (missing as { primaryType?: unknown }).primaryType;
+  ok(/primaryType \(absent\)/.test(denyReason(evaluate(tdReq(missing), p))));
+});
+
+test('typed data: checks run in order chain → contract → type', () => {
+  const p = strict({
+    allowTypedData: true,
+    typedDataVerifyingContracts: [DEAD],
+    typedDataPrimaryTypes: ['X'],
+  });
+  ok(/chainId/.test(denyReason(evaluate(tdReq(td({ primaryType: 'Y' }, { chainId: 2 })), p))));
+  ok(/verifyingContract/.test(denyReason(evaluate(tdReq(td({ primaryType: 'Y' })), p))));
+  ok(
+    /primaryType/.test(
+      denyReason(evaluate(tdReq(td({ primaryType: 'Y' }, { verifyingContract: DEAD })), p)),
+    ),
+  );
+});
+
+test('typed data: a malformed domain (null / array / non-object) is denied, never thrown', () => {
+  const p = strict({ allowTypedData: true });
+  for (const domain of [null, [], 'x', 7]) {
+    const bad = td({ domain: domain as unknown as TypedData['domain'] });
+    ok(/domain must be an object/.test(denyReason(evaluate(tdReq(bad), p))), String(domain));
+  }
+});
+
+test('typed data: permissive mode ignores the allowlists entirely', () => {
+  const p: Policy = {
+    ...strict({
+      allowTypedData: true,
+      typedDataVerifyingContracts: [DEAD],
+      typedDataPrimaryTypes: ['X'],
+    }),
+    mode: 'permissive',
+  };
+  ok(isAllow(evaluate(tdReq(td({ primaryType: 'Y' }, { chainId: 999 })), p)));
 });

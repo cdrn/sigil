@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { readPassphrase } from '../daemon/passphrase.js';
 import type { KdfParams } from '../crypto/index.js';
 import { type InitScope, installInto } from '../hooks/install.js';
-import { parsePolicy } from '../policy/index.js';
+import { DAY_MS, FileSpendLedger, HOUR_MS, parsePolicy, windowCapsFor } from '../policy/index.js';
 import { ArgsError, parseSubcommand } from './args.js';
 import { resolvePaths } from './paths.js';
 import { encode as encodeQr, renderTerminal } from '../qr/index.js';
@@ -30,6 +30,7 @@ Usage:
   sigil portal qr <handle>
   sigil portal remove <handle>
   sigil policy show <handle>
+  sigil policy spend <handle>
   sigil policy init <handle> [--strict]
   sigil rpc init <handle> --upstream <url> [--port <n>]
   sigil unlock
@@ -244,8 +245,38 @@ export async function runCli(opts: RunCliOpts): Promise<CliExit> {
     if (head === 'policy') {
       const sub = parseSubcommand(rest, {
         show: { options: {} },
+        spend: { options: {} },
         init: { options: { strict: { type: 'boolean' } } },
       });
+      if (sub.command === 'spend') {
+        const handle = sub.positionals[0];
+        if (!handle) throw new ArgsError('policy spend: missing handle');
+        const ledger = new FileSpendLedger(paths.stateDir);
+        let policy: ReturnType<typeof parsePolicy> | undefined;
+        try {
+          policy = parsePolicy(readFileSync(join(paths.policyDir, `${handle}.toml`), 'utf8'));
+        } catch {
+          policy = undefined;
+        }
+        out.write(`portal ${handle} — rolling-window spend (from ${ledger.pathFor(handle)})\n`);
+        for (const asset of ['wei', 'lamports'] as const) {
+          let h: bigint;
+          let d: bigint;
+          try {
+            h = ledger.spent(handle, asset, HOUR_MS);
+            d = ledger.spent(handle, asset, DAY_MS);
+          } catch (e) {
+            err.write(`${(e as Error).message}\n`);
+            return { code: 1 };
+          }
+          const caps = policy ? windowCapsFor(policy, asset) : [];
+          const capStr = caps.length
+            ? caps.map((c) => `${c.label}=${c.cap}`).join(', ')
+            : 'no window caps set';
+          out.write(`  ${asset.padEnd(8)} 1h: ${h}  24h: ${d}   (${capStr})\n`);
+        }
+        return { code: 0 };
+      }
       if (sub.command === 'init') {
         const handle = sub.positionals[0];
         if (!handle) throw new ArgsError('policy init: missing handle');
