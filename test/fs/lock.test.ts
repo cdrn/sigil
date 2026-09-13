@@ -625,17 +625,90 @@ test('bridge: a new acquirer holds the legacy file for the section and frees it 
   }
 });
 
-test('bridge: a dead legacy holder is broken and acquisition proceeds', () => {
+test('bridge: fail-closed — a stale legacy file (dead holder) is NOT broken, blocks with guidance', () => {
   const dir = mkTmp();
   try {
     const target = join(dir, 'file');
+    // A crashed old daemon left this. We must never race-break it (that is
+    // the old .break protocol's race); we block and tell the user.
     writeFileSync(`${target}.lock`, `${DEAD_PID} aaaaaaaaaaaaaaaa\n`);
+    throws(
+      () => withFileLock(target, () => 'ran', { timeoutMs: 80 }),
+      (err: unknown) =>
+        err instanceof FileLockError && /remove this file by hand/.test(err.message),
+    );
+    ok(existsSync(`${target}.lock`), 'never deleted a file we did not create');
+    equal(tickets(target).length, 0, 'our bakery ticket withdrawn');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('bridge: a legacy file with our own pid but an unheld token is reclaimed as our orphan', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    writeFileSync(`${target}.lock`, `${process.pid} bbbbbbbbbbbbbbbb\n`);
     equal(
-      withFileLock(target, () => 'ran', { timeoutMs: 2000 }),
+      withFileLock(target, () => 'ran', { timeoutMs: 1000 }),
       'ran',
     );
-    ok(!existsSync(`${target}.lock`));
+    ok(!existsSync(`${target}.lock`), 'own orphan reclaimed and released');
   } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('bridge: a stale legacy file that cannot be unlinked does not busy-loop, it times out', () => {
+  if (process.getuid?.() === 0) return;
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    writeFileSync(`${target}.lock`, `${process.ppid} cccccccccccccccc\n`); // live foreign holder
+    const t0 = Date.now();
+    throws(() => withFileLock(target, () => 1, { timeoutMs: 120, pollMs: 20 }), FileLockError);
+    const elapsed = Date.now() - t0;
+    ok(elapsed >= 110, `waited out the deadline (${elapsed}ms), did not spin or return early`);
+    ok(elapsed < 2000, 'but bounded by the timeout');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('bridge: a legacy release failing throughout retries strands an own-orphan, reclaimed next time', () => {
+  if (process.getuid?.() === 0) return;
+  const dir = mkTmp();
+  const savedWrite = process.stderr.write;
+  let warned = '';
+  try {
+    const target = join(dir, 'file');
+    process.stderr.write = ((c: string | Uint8Array) => {
+      warned += String(c);
+      return true;
+    }) as typeof process.stderr.write;
+    // Parent dir unwritable inside the section → the legacy-file unlink fails
+    // the whole retry window (the bakery dir is a separate subdir, so the
+    // ticket release still succeeds).
+    let result: string;
+    try {
+      result = withFileLock(target, () => {
+        chmodSync(dir, 0o500);
+        return 'committed';
+      });
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    equal(result, 'committed');
+    ok(/failed to release/.test(warned), 'stranded legacy file reported');
+    ok(existsSync(`${target}.lock`), 'legacy file stranded with our live pid');
+    equal(
+      withFileLock(target, () => 'again', { timeoutMs: 1000 }),
+      'again',
+    );
+    ok(!existsSync(`${target}.lock`), 'own legacy orphan reclaimed');
+  } finally {
+    process.stderr.write = savedWrite;
+    chmodSync(dir, 0o700);
     rmSync(dir, { recursive: true });
   }
 });

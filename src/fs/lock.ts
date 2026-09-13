@@ -4,7 +4,6 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  statSync,
   unlinkSync,
   writeSync,
 } from 'node:fs';
@@ -374,27 +373,42 @@ export function releaseWithRetry(release: () => void, lockDir: string): void {
 
 // ---------------------------------------------------------------------------
 // Cross-version bridge to the pre-PR single-file lock (`<target>.lock`).
+//
+// A daemon built before this change O_EXCL-creates `<target>.lock` for the
+// duration of one append. To keep an old and a new session from both
+// appending during an upgrade, a new session — once it is the bakery holder,
+// so only one new session is ever here at a time — also holds that legacy
+// file, which blocks old sessions (their O_EXCL create fails EEXIST).
+//
+// The bridge is deliberately FAIL-CLOSED: it never deletes a legacy file it
+// did not create, except one it can prove is its own orphan (its pid + a
+// token it holds-but-released). So it can neither race an old session's
+// break protocol nor delete a live holder's file. The price is that a
+// genuinely stale legacy file left by a crashed old daemon blocks new
+// sessions until it is removed by hand — a documented, one-time upgrade
+// artifact, not a steady-state path (nothing creates `<target>.lock` once
+// every session runs this version).
 // ---------------------------------------------------------------------------
 
-const LEGACY_STALE_MS = 10_000;
+// Legacy tokens whose files this process currently holds.
+const legacyHeld = new Set<string>();
 
 /** `<target>.lock` for a bakery dir named `<target>.lock.d`; else null. */
 function legacyLockFor(lockDir: string): string | null {
   return lockDir.endsWith('.lock.d') ? lockDir.slice(0, -2) : null;
 }
 
-function legacyStale(path: string): boolean {
+/** Our own orphaned stamp (our pid, a token we minted but no longer hold)? */
+function isOwnLegacyOrphan(path: string): boolean {
   let content: string;
-  let mtimeMs: number;
   try {
     content = readFileSync(path, 'utf8');
-    mtimeMs = statSync(path).mtimeMs;
   } catch {
-    return false; // vanished — released
+    return false;
   }
-  const m = /^(\d+) [0-9a-f]{16}\n$/.exec(content);
-  if (m) return !isAlive(Number.parseInt(m[1]!, 10));
-  return Date.now() - mtimeMs > LEGACY_STALE_MS; // torn/foreign: age out
+  const m = /^(\d+) ([0-9a-f]{16})\n$/.exec(content);
+  if (!m) return false;
+  return Number.parseInt(m[1]!, 10) === process.pid && !legacyHeld.has(m[2]!);
 }
 
 function acquireLegacy(path: string, deadline: number, pollMs: number, token: string): void {
@@ -407,23 +421,33 @@ function acquireLegacy(path: string, deadline: number, pollMs: number, token: st
       } finally {
         closeSync(fd);
       }
+      legacyHeld.add(token);
       return;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
-    if (legacyStale(path)) {
-      unlinkQuiet(path);
+    // Reclaim only our own orphan (a prior release that failed); never break
+    // anyone else's file, live or dead — that is the old break protocol's
+    // race, and we refuse to play it.
+    if (isOwnLegacyOrphan(path)) {
+      unlinkOwn(path);
       continue;
     }
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new FileLockError(`timed out waiting for legacy lock ${path}`);
+    if (remaining <= 0) {
+      throw new FileLockError(
+        `timed out waiting for the legacy lock ${path}; if no old sigil session is ` +
+          `running, remove this file by hand (an upgrade left it behind)`,
+      );
+    }
     sleepSync(Math.min(pollMs, remaining));
   }
 }
 
 function releaseLegacy(path: string, token: string): void {
-  // Only remove it if it is still our stamp (a stale-breaker may have taken
-  // over). ENOENT is success.
+  // Drop held first, so a failed unlink leaves a recognisable own-orphan
+  // this process reclaims on its next acquire (mirrors the ticket path).
+  legacyHeld.delete(token);
   try {
     if (readFileSync(path, 'utf8') === `${process.pid} ${token}\n`) unlinkSync(path);
   } catch (err) {
