@@ -584,3 +584,75 @@ test('competing processes: barrier-released contenders never overlap inside the 
     rmSync(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Cross-version bridge and ticket-number bounds
+// ---------------------------------------------------------------------------
+
+test('bridge: a live legacy single-file lock blocks a new-version acquirer', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    // A pre-PR daemon holds `<target>.lock` (a stamped file), our parent pid = live.
+    writeFileSync(`${target}.lock`, `${process.ppid} aaaaaaaaaaaaaaaa\n`);
+    throws(
+      () => withFileLock(target, () => 1, { timeoutMs: 80 }),
+      (err: unknown) => err instanceof FileLockError && /legacy lock/.test(err.message),
+    );
+    ok(existsSync(`${target}.lock`), 'legacy holder untouched');
+    equal(tickets(target).length, 0, 'our bakery ticket withdrawn after the legacy timeout');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('bridge: a new acquirer holds the legacy file for the section and frees it after', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    let legacyDuring = false;
+    const result = withFileLock(target, () => {
+      legacyDuring = existsSync(`${target}.lock`);
+      const stamp = readFileSync(`${target}.lock`, 'utf8');
+      ok(stamp.startsWith(`${process.pid} `), 'legacy stamp is ours');
+      return 'ran';
+    });
+    equal(result, 'ran');
+    ok(legacyDuring, 'legacy file held during the section (old daemons block on it)');
+    ok(!existsSync(`${target}.lock`), 'legacy file released after');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('bridge: a dead legacy holder is broken and acquisition proceeds', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    writeFileSync(`${target}.lock`, `${DEAD_PID} aaaaaaaaaaaaaaaa\n`);
+    equal(
+      withFileLock(target, () => 'ran', { timeoutMs: 2000 }),
+      'ran',
+    );
+    ok(!existsSync(`${target}.lock`));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('ticket numbering fails closed at the safe-integer ceiling instead of tying', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    // A live ticket already at MAX_SAFE_INTEGER: our max+1 would not be
+    // strictly larger, so we must refuse rather than share the number.
+    plantTicket(target, LIVE_LOW_PID, Number.MAX_SAFE_INTEGER, 'aaaaaaaaaaaaaaaa');
+    throws(
+      () => withFileLock(target, () => 1, { timeoutMs: 500 }),
+      (err: unknown) => err instanceof FileLockError && /number space exhausted/.test(err.message),
+    );
+    equal(tickets(target).filter(([, pid]) => pid === process.pid).length, 0, 'we left no ticket');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});

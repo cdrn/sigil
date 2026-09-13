@@ -1,4 +1,13 @@
-import { closeSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -40,6 +49,12 @@ import { randomBytes } from 'node:crypto';
  * until that process exits or a human removes the file. That is an
  * availability limit, not an exclusion failure; closing it needs OS-level
  * locking.
+ *
+ * Cross-version: a daemon from before this change locks `<target>.lock`
+ * (a single stamped file) and never touches the bakery directory. A new
+ * acquisition, once it is the bakery holder, also takes that legacy file
+ * (see acquireLegacy), so old and new writers still mutually exclude
+ * during an upgrade with a straggler window open.
  */
 export class FileLockError extends Error {
   constructor(msg: string) {
@@ -219,12 +234,19 @@ export function acquireLockSync(lockDir: string, opts: AcquireLockOptions = {}):
   const markerPath = join(lockDir, `c-${process.pid}-${token}`);
   let ticketPath: string | undefined;
   let markerOnDisk = false;
+  let legacyPath: string | undefined;
+  const legacyToken = randomBytes(8).toString('hex');
 
   // Withdraw everything we put on disk. Throws if something we own could
   // not be removed (the caller's retry path handles that); the held flag
   // is dropped first so a leftover is recognisably our own orphan.
   const withdraw = (): void => {
     held.delete(token);
+    // Release the legacy bridge first (outermost lock last-acquired).
+    if (legacyPath) {
+      releaseLegacy(legacyPath, legacyToken);
+      legacyPath = undefined;
+    }
     if (ticketPath) unlinkOwn(ticketPath);
     if (markerOnDisk) unlinkOwn(markerPath);
     markerOnDisk = false;
@@ -238,6 +260,14 @@ export function acquireLockSync(lockDir: string, opts: AcquireLockOptions = {}):
     let max = 0;
     for (const e of liveEntries(lockDir)) if (e.kind === 'ticket' && e.seq > max) max = e.seq;
     const seq = max + 1;
+    // Fail closed rather than hand out a number that isn't strictly larger
+    // than a live holder's: past MAX_SAFE_INTEGER, max + 1 === max, and two
+    // holders with the same number could both be admitted. One line per
+    // sign op, so this is unreachable in practice; refusing is still safer
+    // than a silent tie. (Withdraw runs via the catch below.)
+    if (!Number.isSafeInteger(seq) || seq <= max) {
+      throw new FileLockError(`ticket number space exhausted in ${lockDir}`);
+    }
     mine = {
       name: `t-${seq}-${process.pid}-${token}`,
       kind: 'ticket',
@@ -265,6 +295,17 @@ export function acquireLockSync(lockDir: string, opts: AcquireLockOptions = {}):
       }
       sleepSync(Math.min(pollMs, remaining));
     }
+    // Cross-version bridge. A daemon built before this change locks the
+    // pre-PR single file `<target>.lock`; it knows nothing of the bakery
+    // directory `<target>.lock.d`. While we are the bakery holder — so only
+    // one new-version acquisition is ever here at once — take that legacy
+    // file too, so an old and a new session mutually exclude. Because the
+    // bakery already serialises new-vs-new, the legacy file is contended
+    // only across the version boundary (transient: the old code was never
+    // published), never among new sessions, so its single-file break race
+    // can't affect the common path.
+    legacyPath = legacyLockFor(lockDir) ?? undefined;
+    if (legacyPath) acquireLegacy(legacyPath, deadline, pollMs, legacyToken);
   } catch (err) {
     try {
       withdraw();
@@ -329,4 +370,63 @@ export function releaseWithRetry(release: () => void, lockDir: string): void {
       `(${(last as Error)?.message ?? String(last)}); this process will sweep it on its ` +
       `next acquire, other sessions will wait until then\n`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-version bridge to the pre-PR single-file lock (`<target>.lock`).
+// ---------------------------------------------------------------------------
+
+const LEGACY_STALE_MS = 10_000;
+
+/** `<target>.lock` for a bakery dir named `<target>.lock.d`; else null. */
+function legacyLockFor(lockDir: string): string | null {
+  return lockDir.endsWith('.lock.d') ? lockDir.slice(0, -2) : null;
+}
+
+function legacyStale(path: string): boolean {
+  let content: string;
+  let mtimeMs: number;
+  try {
+    content = readFileSync(path, 'utf8');
+    mtimeMs = statSync(path).mtimeMs;
+  } catch {
+    return false; // vanished — released
+  }
+  const m = /^(\d+) [0-9a-f]{16}\n$/.exec(content);
+  if (m) return !isAlive(Number.parseInt(m[1]!, 10));
+  return Date.now() - mtimeMs > LEGACY_STALE_MS; // torn/foreign: age out
+}
+
+function acquireLegacy(path: string, deadline: number, pollMs: number, token: string): void {
+  const stamp = `${process.pid} ${token}\n`;
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx', 0o600);
+      try {
+        writeAllSync(fd, stamp);
+      } finally {
+        closeSync(fd);
+      }
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    if (legacyStale(path)) {
+      unlinkQuiet(path);
+      continue;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new FileLockError(`timed out waiting for legacy lock ${path}`);
+    sleepSync(Math.min(pollMs, remaining));
+  }
+}
+
+function releaseLegacy(path: string, token: string): void {
+  // Only remove it if it is still our stamp (a stale-breaker may have taken
+  // over). ENOENT is success.
+  try {
+    if (readFileSync(path, 'utf8') === `${process.pid} ${token}\n`) unlinkSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
 }
