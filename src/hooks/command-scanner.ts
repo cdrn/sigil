@@ -102,17 +102,20 @@ const READER_COMMANDS: ReadonlySet<string> = new Set([
 // as gpg.program or core.pager, which can run a program) or a quoted string
 // with nothing the shell or git could act on inside it.
 const WORD = String.raw`(?!-c\b)[A-Za-z0-9_./:@%+,~-]+|'[^'$\x60\\!;&|<>=]*'|"[^"$\x60\\!;&|<>=]*"`;
-const OPTS = String.raw`(?:\s+(?:${WORD}))*`;
-const GIT_OR_GH = String.raw`(?:git|gh)`;
+// Only spaces and tabs separate arguments: a newline would be a second
+// statement, and the whole point of the shape is that there is none.
+const SP = String.raw`[ \t]+`;
+const OPTS = String.raw`(?:${SP}(?:${WORD}))*`;
+const GIT_OR_GH = String.raw`(?:git|gh)\b`;
 
 /** `git commit … -F - <<'EOF'\n…\nEOF` / `gh … --body-file - <<'EOF'\n…\nEOF` */
 const STDIN_HEREDOC_SHAPE = new RegExp(
-  String.raw`^(${GIT_OR_GH}${OPTS}\s+(?:-F|--file|--body-file)\s+-${OPTS}\s+<<(['"])([A-Za-z_][A-Za-z0-9_]*)\2)\n([\s\S]*?)\n\3\n?$`,
+  String.raw`^(${GIT_OR_GH}${OPTS}${SP}(?:-F|--file|--body-file)${SP}-${OPTS}${SP}<<(['"])([A-Za-z_][A-Za-z0-9_]*)\2)\n([\s\S]*?)\n\3\n?$`,
 );
 
 /** `git commit … -m '…' …` / `gh … --body "…" …` (one message string, no substitutions) */
 const INLINE_MESSAGE_SHAPE = new RegExp(
-  String.raw`^(${GIT_OR_GH}${OPTS}\s+(?:-m|--message|--body|--title|--notes)(?:\s+|=))('[^']*'|"[^"$\x60\\]*")(${OPTS})$`,
+  String.raw`^(${GIT_OR_GH}${OPTS}${SP}(?:-m|--message|--body|--title|--notes)(?:${SP}|=))('[^']*'|"[^"$\x60\\]*")(${OPTS})$`,
 );
 
 /**
@@ -130,7 +133,9 @@ const INLINE_MESSAGE_SHAPE = new RegExp(
  */
 export function stripInertText(command: string): string {
   const h = STDIN_HEREDOC_SHAPE.exec(command);
-  if (h) {
+  // The shell ends the heredoc at the FIRST delimiter line; a body that
+  // contains one would mean everything after it is a command, so refuse.
+  if (h && !h[4]!.split('\n').includes(h[3]!)) {
     const body = h[4]!;
     const start = h[1]!.length + 1;
     return (

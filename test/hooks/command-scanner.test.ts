@@ -165,6 +165,15 @@ test('#92: any deviation from the exact shape leaves the command untouched for t
     `git commit -m "$(cat ${K})"`,
     `echo "$(true; cat ${K})"`,
     `bash -c 'true; cat ${K}; true'`,
+    // review round 4: an earlier terminator line ends the heredoc; what
+    // follows it is a command, not message text
+    `git version -F - <<'EOF'\nmessage\nEOF\ntrue; cat ${K}\nEOF`,
+    // review round 4: a newline is a statement separator, never an
+    // argument separator — the message would go to sh, not git
+    `git --version\nsh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
+    `git --version\necho -m 'true; cat ${K}'`,
+    `echo -m 'true; cat ${K}'`,
+    `gitx -m 'true; cat ${K}'`,
   ]) {
     equal(stripInertText(cmd), cmd, `untouched: ${cmd}`);
   }
@@ -178,6 +187,9 @@ test('#92: what the unchanged scanner refused, it still refuses', () => {
     `git commit -m "$(cat ${K})"`,
     `cat ${K}`,
     `true; cat ${K}`,
+    `git version -F - <<'EOF'\nmessage\nEOF\ntrue; cat ${K}\nEOF`,
+    `git --version\nsh -s -- -F - <<'EOF'\ntrue; cat ${K}\nEOF`,
+    `echo -m 'true; cat ${K}'`,
   ]) {
     ok(scanBashCommand(cmd).blocked, cmd);
   }
