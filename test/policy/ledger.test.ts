@@ -549,7 +549,7 @@ test('#91: a read-only ledger file → SpendLedgerError on reserve, nothing part
   }
 });
 
-test('#91: a compaction whose rename target is blocked → SpendLedgerError, history intact', () => {
+test('#91: a compaction whose temp file cannot be opened (EISDIR) → SpendLedgerError, history intact', () => {
   const dir = mkTmp();
   try {
     const clock = { now: T0 };
@@ -559,7 +559,13 @@ test('#91: a compaction whose rename target is blocked → SpendLedgerError, his
     mkdirSync(`${l.pathFor('evm:a')}.tmp`, { recursive: true });
     writeFileSync(join(`${l.pathFor('evm:a')}.tmp`, 'x'), '');
     clock.now = T0 + DAY_MS + 1;
-    throws(() => l.reserve('evm:a', 'wei', 5n, []), SpendLedgerError);
+    throws(
+      () => l.reserve('evm:a', 'wei', 5n, []),
+      (e: unknown) =>
+        e instanceof SpendLedgerError &&
+        /I\/O failure \(EISDIR/.test((e as Error).message) &&
+        (e as { cause?: NodeJS.ErrnoException }).cause?.code === 'EISDIR',
+    );
     clock.now = T0;
     equal(
       l.spent('evm:a', 'wei', HOUR_MS),

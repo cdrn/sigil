@@ -32,6 +32,7 @@ export interface SpendLedger {
 }
 
 export class SpendLedgerError extends Error {
+  override cause?: unknown;
   constructor(message: string) {
     super(message);
     this.name = 'SpendLedgerError';
@@ -241,9 +242,11 @@ function ledgerIo<T>(path: string, fn: () => T): T {
   } catch (err) {
     if (err instanceof SpendLedgerError) throw err;
     const e = err as NodeJS.ErrnoException;
-    throw new SpendLedgerError(
+    const wrapped = new SpendLedgerError(
       `spend ledger ${path}: I/O failure (${e.code ?? e.name}: ${e.message}) — refusing to sign`,
     );
+    wrapped.cause = err; // keep the stack and errno fields for diagnostics
+    throw wrapped;
   }
 }
 
