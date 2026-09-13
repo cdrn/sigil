@@ -32,6 +32,7 @@ export interface SpendLedger {
 }
 
 export class SpendLedgerError extends Error {
+  override cause?: unknown;
   constructor(message: string) {
     super(message);
     this.name = 'SpendLedgerError';
@@ -161,10 +162,12 @@ export class FileSpendLedger implements SpendLedger {
 
   spent(handle: string, asset: SpendAsset, windowMs: number): bigint {
     const path = this.pathFor(handle);
-    mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
-    return withFileLock(path, () =>
-      sumWindow(readEntries(path).entries, asset, windowMs, this.#now()),
-    );
+    return ledgerIo(path, () => {
+      mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
+      return withFileLock(path, () =>
+        sumWindow(readEntries(path).entries, asset, windowMs, this.#now()),
+      );
+    });
   }
 
   reserve(
@@ -174,47 +177,76 @@ export class FileSpendLedger implements SpendLedger {
     caps: readonly WindowCap[],
   ): string | null {
     if (amount < 0n) return NEGATIVE_REASON;
-    this.#ensureDir();
     const path = this.pathFor(handle);
-    return withFileLock(path, () => {
-      const { entries, endsWithNewline, size } = readEntries(path);
-      const now = this.#now();
-      const reason = checkWindowCaps(caps, amount, (w) => sumWindow(entries, asset, w, now), asset);
-      if (reason !== null) return reason;
-      if (amount === 0n) return null;
-      const entry: LedgerEntry = { ts: now, asset, amount };
-      const stale = entries.filter((e) => e.ts <= now - DAY_MS).length;
-      if (stale > FileSpendLedger.COMPACT_AFTER) {
-        const live = entries.filter((e) => e.ts > now - DAY_MS);
-        live.push(entry);
-        const tmp = `${path}.tmp`;
-        const fd = openSync(tmp, 'w', 0o600);
-        try {
-          writeAllSync(fd, live.map(serialize).join(''));
-          fsyncSync(fd);
-        } finally {
-          closeSync(fd);
+    return ledgerIo(path, () => {
+      this.#ensureDir();
+      return withFileLock(path, () => {
+        const { entries, endsWithNewline, size } = readEntries(path);
+        const now = this.#now();
+        const reason = checkWindowCaps(
+          caps,
+          amount,
+          (w) => sumWindow(entries, asset, w, now),
+          asset,
+        );
+        if (reason !== null) return reason;
+        if (amount === 0n) return null;
+        const entry: LedgerEntry = { ts: now, asset, amount };
+        const stale = entries.filter((e) => e.ts <= now - DAY_MS).length;
+        if (stale > FileSpendLedger.COMPACT_AFTER) {
+          const live = entries.filter((e) => e.ts > now - DAY_MS);
+          live.push(entry);
+          const tmp = `${path}.tmp`;
+          const fd = openSync(tmp, 'w', 0o600);
+          try {
+            writeAllSync(fd, live.map(serialize).join(''));
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
+          renameSync(tmp, path);
+          fsyncDirOrFail(dirname(path));
+        } else {
+          const fd = openSync(path, 'a', 0o600);
+          try {
+            // Never merge with a torn fragment: start on a fresh line.
+            writeAllSync(fd, (size > 0 && !endsWithNewline ? '\n' : '') + serialize(entry));
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
+          // The directory entry needs its own fsync, or a power cut right after
+          // a signature can lose a brand-new ledger and hand back a fresh
+          // allowance on reboot. Done on every append rather than only the
+          // first: if a previous attempt's sync failed, the file's mere
+          // existence proves nothing about durability.
+          fsyncDirOrFail(dirname(path));
         }
-        renameSync(tmp, path);
-        fsyncDirOrFail(dirname(path));
-      } else {
-        const fd = openSync(path, 'a', 0o600);
-        try {
-          // Never merge with a torn fragment: start on a fresh line.
-          writeAllSync(fd, (size > 0 && !endsWithNewline ? '\n' : '') + serialize(entry));
-          fsyncSync(fd);
-        } finally {
-          closeSync(fd);
-        }
-        // The directory entry needs its own fsync, or a power cut right after
-        // a signature can lose a brand-new ledger and hand back a fresh
-        // allowance on reboot. Done on every append rather than only the
-        // first: if a previous attempt's sync failed, the file's mere
-        // existence proves nothing about durability.
-        fsyncDirOrFail(dirname(path));
-      }
-      return null;
+        return null;
+      });
     });
+  }
+}
+
+/**
+ * Run a ledger operation, turning any I/O failure — read, open, write,
+ * fsync, rename, lock — into a SpendLedgerError naming the file, so the
+ * sign path records an audited deny rather than surfacing a bare
+ * filesystem error (#91). Errors that are already SpendLedgerError (parse
+ * failures, durability failures) pass through unchanged. Signing stops
+ * either way; this only makes the audit log say why.
+ */
+function ledgerIo<T>(path: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof SpendLedgerError) throw err;
+    const e = err as NodeJS.ErrnoException;
+    const wrapped = new SpendLedgerError(
+      `spend ledger ${path}: I/O failure (${e.code ?? e.name}: ${e.message}) — refusing to sign`,
+    );
+    wrapped.cause = err; // keep the stack and errno fields for diagnostics
+    throw wrapped;
   }
 }
 
