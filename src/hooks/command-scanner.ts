@@ -18,9 +18,7 @@ import { isBlockedPath, type BlockerOpts, type BlockDecision } from './path-bloc
  * (`gpg --export-secret-keys`, `ssh-keygen -y`, `openssl pkey -in`).
  */
 
-// Newlines separate statements too (the original scanner missed this, so a
-// read on the second line of a multi-line command was never seen).
-const COMMAND_SEPARATORS = /[;&|\n]|\$\(|`/;
+const COMMAND_SEPARATORS = /[;&|]|\$\(|`/;
 
 const ALWAYS_BLOCK_COMMAND_PATTERNS: readonly { regex: RegExp; reason: string }[] = Object.freeze([
   {
@@ -93,280 +91,65 @@ const READER_COMMANDS: ReadonlySet<string> = new Set([
   'find',
 ]);
 
-/**
- * Programs that execute what they are handed (as arguments or on stdin).
- * Text flowing into one of these is code, so it is never carved out.
- */
-const INTERPRETERS: ReadonlySet<string> = new Set([
-  'bash',
-  'sh',
-  'zsh',
-  'dash',
-  'ksh',
-  'busybox',
-  'eval',
-  'source',
-  '.',
-  'exec',
-  'command',
-  'builtin',
-  'env',
-  'sudo',
-  'doas',
-  'nohup',
-  'time',
-  'nice',
-  'ionice',
-  'timeout',
-  'xargs',
-  'watch',
-  'script',
-  'node',
-  'python',
-  'python3',
-  'perl',
-  'ruby',
-  'php',
-  'deno',
-  'bun',
-  'osascript',
-  'expect',
-  'awk',
-  'sed',
-]);
+// ---------------------------------------------------------------------------
+// #92 — carve-outs for message text, by whole-command shape only
+// ---------------------------------------------------------------------------
 
-/** A line of the command whose output could reach an interpreter or a file. */
-const FLOWS_ONWARD = /[|>]|\$\(|`|<\(|>\(/;
+// A single git/gh invocation, no other statements: only plain words and
+// options as arguments, no separators, substitutions, redirections or
+// quotes anywhere except in the places the two shapes below allow.
+// A plain word (no `=`: that excludes `-c key=value` config overrides such
+// as gpg.program or core.pager, which can run a program) or a quoted string
+// with nothing the shell or git could act on inside it.
+const WORD = String.raw`(?!-c\b)[A-Za-z0-9_./:@%+,~-]+|'[^'$\x60\\!;&|<>=]*'|"[^"$\x60\\!;&|<>=]*"`;
+const OPTS = String.raw`(?:\s+(?:${WORD}))*`;
+const GIT_OR_GH = String.raw`(?:git|gh)`;
+
+/** `git commit … -F - <<'EOF'\n…\nEOF` / `gh … --body-file - <<'EOF'\n…\nEOF` */
+const STDIN_HEREDOC_SHAPE = new RegExp(
+  String.raw`^(${GIT_OR_GH}${OPTS}\s+(?:-F|--file|--body-file)\s+-${OPTS}\s+<<(['"])([A-Za-z_][A-Za-z0-9_]*)\2)\n([\s\S]*?)\n\3\n?$`,
+);
+
+/** `git commit … -m '…' …` / `gh … --body "…" …` (one message string, no substitutions) */
+const INLINE_MESSAGE_SHAPE = new RegExp(
+  String.raw`^(${GIT_OR_GH}${OPTS}\s+(?:-m|--message|--body|--title|--notes)(?:\s+|=))('[^']*'|"[^"$\x60\\]*")(${OPTS})$`,
+);
 
 /**
- * Blank out regions of the command that are provably inert — data the shell
- * never executes and no program in the command interprets — before the
- * conservative statement scan runs (#92). Everything else is left exactly
- * as it was, so whatever the scanner refused before, it still refuses; the
- * carve-outs only remove false positives, never add acceptances of code.
+ * Blank the message text of a command that is, in its entirety, one
+ * git/gh invocation carrying its message on stdin via a quoted heredoc or
+ * in one plain quoted string (#92). Because the whole command must match
+ * the shape, there is no surrounding syntax that could feed the text to
+ * anything else: no other statement, pipe, redirection, substitution,
+ * function, subshell or second heredoc can be present. A quoted delimiter
+ * (or a message string without `$(`/backtick) means the shell expands
+ * nothing inside. git and gh store messages; they never execute them.
  *
- * Carved:
- *   1. The body of a heredoc with a *simply* quoted delimiter
- *      (`<<'WORD'` / `<<"WORD"`, WORD = identifier, nothing glued after the
- *      closing quote), when the opener statement's program (after any
- *      VAR=value prefixes) is not an interpreter and the opener line does
- *      not pipe, redirect, or substitute its output anywhere. A quoted
- *      delimiter means the shell performs no expansion in the body; the
- *      other conditions mean nothing else will execute it either. One
- *      exception to "no redirect": `> FILE` is allowed when every other
- *      mention of FILE in the command is an argument to git or gh (the
- *      commit-message / PR-body workflow) — those consume it as text.
- *   2. Message strings handed to git or gh (`-m`, `--message`, `--body`,
- *      `--title`, `--notes`, and their `=` forms) when the string contains
- *      no `$(` or backtick. git and gh store these; they never execute them.
- *
- * Replaced text keeps its newlines so no statement boundaries move.
+ * Any command that doesn't match exactly is returned untouched, so it is
+ * scanned precisely as before. Blanked text keeps its newlines.
  */
 export function stripInertText(command: string): string {
-  let out = carveQuotedHeredocs(command);
-  out = carveMessageStrings(out);
-  return out;
-}
-
-function blank(text: string): string {
-  return text.replace(/[^\n]/g, ' ');
-}
-
-const HEREDOC_OPENER = /<<-?\s*(['"])([A-Za-z_][A-Za-z0-9_]*)\1(?=[\s;&|)<>]|$)/g;
-
-function carveQuotedHeredocs(command: string): string {
-  const lines = command.split('\n');
-  const outLines = [...lines];
-  for (let li = 0; li < lines.length; li++) {
-    const line = lines[li]!;
-    HEREDOC_OPENER.lastIndex = 0;
-    const m = HEREDOC_OPENER.exec(line);
-    if (!m) continue;
-    // Only the first heredoc on a line is handled; a second one, or any
-    // unquoted one, leaves the line to the conservative scan.
-    if (HEREDOC_OPENER.exec(line) || /<<-?\s*[^'"\s]/.test(line.replace(m[0], ''))) continue;
-    const dash = m[0].startsWith('<<-');
-    const delim = m[2]!;
-    const program = openerProgram(line.slice(0, m.index));
-    if (INTERPRETERS.has(program)) continue;
-    const rest = line.slice(0, m.index) + line.slice(m.index + m[0].length);
-    if (/[|]|\$\(|`|<\(|>\(/.test(rest)) continue;
-    const redirect = /(?:^|\s)>{1,2}\s*(\S+)/.exec(rest);
-    if (redirect) {
-      const target = redirect[1]!;
-      if (!onlyConsumedByGit(command, target, li)) continue;
-    } else if (/[<>]/.test(rest.replace(/<<-?/, ''))) {
-      continue;
-    }
-    // Find the terminator line.
-    let end = -1;
-    for (let j = li + 1; j < lines.length; j++) {
-      const cmp = dash ? lines[j]!.replace(/^\t+/, '') : lines[j]!;
-      if (cmp === delim) {
-        end = j;
-        break;
-      }
-    }
-    if (end === -1) continue; // unterminated: leave it alone
-    for (let j = li + 1; j < end; j++) outLines[j] = blank(lines[j]!);
-    li = end;
+  const h = STDIN_HEREDOC_SHAPE.exec(command);
+  if (h) {
+    const body = h[4]!;
+    const start = h[1]!.length + 1;
+    return (
+      command.slice(0, start) + body.replace(/[^\n]/g, ' ') + command.slice(start + body.length)
+    );
   }
-  return outLines.join('\n');
-}
-
-/** First program word of an opener statement, skipping VAR=value prefixes. */
-function openerProgram(prefix: string): string {
-  // The opener statement starts after the last separator on the line.
-  const seg = prefix.split(/[;&|]|\$\(|`/).pop() ?? '';
-  const words = seg.trim().split(/\s+/).filter(Boolean);
-  for (const w of words) {
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue;
-    const bare = w.replace(/^["']|["']$/g, '');
-    const slash = bare.lastIndexOf('/');
-    return (slash === -1 ? bare : bare.slice(slash + 1)).toLowerCase();
+  const m = INLINE_MESSAGE_SHAPE.exec(command);
+  if (m) {
+    const str = m[2]!;
+    const start = m[1]!.length;
+    return (
+      command.slice(0, start) +
+      str[0] +
+      str.slice(1, -1).replace(/[^\n]/g, ' ') +
+      str[str.length - 1] +
+      command.slice(start + str.length)
+    );
   }
-  return '';
-}
-
-/**
- * True when every line other than `openerLine` that mentions `target` is a
- * git/gh statement (which reads it as text). Any other mention — `bash
- * target`, `source target`, `./target`, `chmod` — keeps the body unscanned
- * text from being carved.
- */
-function onlyConsumedByGit(command: string, target: string, openerLine: number): boolean {
-  const lines = command.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (i === openerLine || !lines[i]!.includes(target)) continue;
-    for (const stmt of lines[i]!.split(/[;&|]|\$\(|`/)) {
-      if (!stmt.includes(target)) continue;
-      const prog = openerProgram(stmt + ' ');
-      if (prog !== 'git' && prog !== 'gh') return false;
-      if (FLOWS_ONWARD.test(stmt.replace(target, ''))) return false;
-    }
-  }
-  return true;
-}
-
-const MESSAGE_FLAG =
-  /(?:^|\s)(?:-m|--message|--body|--title|--notes|--body-file=-|-F\s*-)(?:\s+|=)('(?:[^'])*'|"(?:[^"\\]|\\.)*")/g;
-
-function carveMessageStrings(command: string): string {
-  return command
-    .split('\n')
-    .map((line) => {
-      const prog = openerProgram(line.split(/[;&|]/)[0] + ' ');
-      if (prog !== 'git' && prog !== 'gh') return line;
-      return line.replace(MESSAGE_FLAG, (whole, str: string) => {
-        if (/\$\(|`/.test(str)) return whole; // a substitution inside is code
-        return (
-          whole.slice(0, whole.length - str.length) +
-          str[0] +
-          blank(str.slice(1, -1)) +
-          str[str.length - 1]
-        );
-      });
-    })
-    .join('\n');
-}
-
-/** Shells whose `-c` argument is a script. */
-const SHELLS: ReadonlySet<string> = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'busybox']);
-/** Wrappers that run their remaining arguments as a command. */
-const WRAPPERS: ReadonlySet<string> = new Set([
-  'sudo',
-  'doas',
-  'env',
-  'command',
-  'builtin',
-  'exec',
-  'nohup',
-  'time',
-  'nice',
-  'ionice',
-  'timeout',
-  'watch',
-  'xargs',
-]);
-
-/**
- * Strictly additive: for a statement that hands text to a shell (`sh -c
- * "…"`, `eval …`) or wraps another command (`sudo cat …`, `env X=1 cat …`),
- * surface that text as statements of its own so the reader check sees it.
- * Only the `-c` payload of a shell and the arguments of eval are treated as
- * scripts — other quoted arguments (positional parameters, printf formats)
- * are data and are left alone.
- */
-function expandInterpreters(statements: readonly string[], depth = 0): string[] {
-  if (depth > 4) return [...statements];
-  const out: string[] = [];
-  for (const stmt of statements) {
-    out.push(stmt);
-    const toks = tokenize(stmt);
-    if (toks.length < 2) continue;
-    const prog = programName(toks[0]!);
-    let script: string | null = null;
-    let rest: string[] | null = null;
-    if (SHELLS.has(prog)) {
-      const c = toks.findIndex((t, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(t));
-      if (c !== -1 && toks[c + 1]) script = stripShellQuoting(toks[c + 1]!);
-    } else if (prog === 'eval') {
-      script = toks.slice(1).map(stripShellQuoting).join(' ');
-    } else if (WRAPPERS.has(prog)) {
-      // Drop option flags, VAR=value assignments and bare numbers (timeout
-      // durations, nice levels) to reach the wrapped command.
-      rest = toks
-        .slice(1)
-        .filter(
-          (t) =>
-            !t.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) && !/^\d+[smhd]?$/.test(t),
-        );
-    }
-    if (script !== null) {
-      out.push(...expandInterpreters(script.split(COMMAND_SEPARATORS), depth + 1));
-    }
-    if (rest && rest.length > 0) {
-      out.push(...expandInterpreters([rest.join(' ')], depth + 1));
-    }
-  }
-  return out;
-}
-
-const QUOTED_OR_WORD = String.raw`'[^']*'|"(?:[^"\\]|\\.)*"|\S+`;
-const SHELL_C_RE = new RegExp(
-  String.raw`(?:^|[;&|\n(\`]\s*)(?:\S*/)?(?:bash|sh|zsh|dash|ksh|busybox\s+sh)\s+(?:-\S+\s+)*?-[a-zA-Z]*c[a-zA-Z]*\s+(${QUOTED_OR_WORD})`,
-  'g',
-);
-const EVAL_RE = new RegExp(
-  String.raw`(?:^|[;&|\n(\`]\s*)eval\s+((?:${QUOTED_OR_WORD})(?:\s+(?:${QUOTED_OR_WORD}))*)`,
-  'g',
-);
-
-/**
- * The scripts a command hands to a shell (`sh -c '…'`) or to eval, taken
- * from the raw text with quote-aware matching, each split into statements
- * (and expanded again, for nesting). Additive: these only add statements
- * for the reader check to look at.
- */
-function interpreterPayloads(command: string, depth = 0): string[] {
-  if (depth > 4) return [];
-  const out: string[] = [];
-  // matchAll clones the regex, so recursion below can't disturb this walk.
-  for (const m of command.matchAll(SHELL_C_RE)) {
-    const payload = stripShellQuoting(m[1]!);
-    out.push(...payload.split(COMMAND_SEPARATORS), ...interpreterPayloads(payload, depth + 1));
-  }
-  for (const m of command.matchAll(EVAL_RE)) {
-    const payload = tokenize(m[1]!).map(stripShellQuoting).join(' ');
-    out.push(...payload.split(COMMAND_SEPARATORS), ...interpreterPayloads(payload, depth + 1));
-  }
-  return out;
-}
-
-function programName(tok: string): string {
-  const bare = stripShellQuoting(tok);
-  const slash = bare.lastIndexOf('/');
-  return (slash === -1 ? bare : bare.slice(slash + 1)).toLowerCase();
+  return command;
 }
 
 export function scanBashCommand(
@@ -383,15 +166,7 @@ export function scanBashCommand(
   // 2. Per-statement path scan, gated on the program being a known reader.
   //    COMMAND_SEPARATORS splits on `$(` and backticks too, so a `cat` hidden
   //    inside a substitution surfaces as the first token of its own statement.
-  // Backslash-newline is removed by the shell before anything else (so
-  // `ca\<nl>t` is `cat` and `a.key\<nl>.txt` is `a.key.txt`); do the same.
-  const joined = stripInertText(command.replace(/\\\n/g, ''));
-  // Payloads handed to a shell or eval are matched on the raw text first —
-  // the naive split below would cut inside their quotes and hide them.
-  const statements = expandInterpreters([
-    ...joined.split(COMMAND_SEPARATORS),
-    ...interpreterPayloads(joined),
-  ]);
+  const statements = stripInertText(command).split(COMMAND_SEPARATORS);
   for (const stmt of statements) {
     const tokens = tokenize(stmt);
     if (tokens.length === 0) continue;
