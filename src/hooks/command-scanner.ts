@@ -92,7 +92,6 @@ export function splitStatements(command: string): string[] {
         const eol = command.indexOf('\n', i);
         if (eol === -1) {
           cur += command.slice(i);
-          i = n;
           break;
         }
         cur += command.slice(i, eol);
