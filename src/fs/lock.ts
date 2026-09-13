@@ -1,12 +1,4 @@
-import {
-  closeSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  unlinkSync,
-  writeSync,
-} from 'node:fs';
+import { closeSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -49,11 +41,13 @@ import { randomBytes } from 'node:crypto';
  * availability limit, not an exclusion failure; closing it needs OS-level
  * locking.
  *
- * Cross-version: a daemon from before this change locks `<target>.lock`
- * (a single stamped file) and never touches the bakery directory. A new
- * acquisition, once it is the bakery holder, also takes that legacy file
- * (see acquireLegacy), so old and new writers still mutually exclude
- * during an upgrade with a straggler window open.
+ * Upgrading: a daemon built before this change locks a single file
+ * `<target>.lock` and knows nothing of this directory, and its writer also
+ * has a currency check that a fresh chain can fool. Running old and new
+ * daemons against one log is therefore unsupported, and no bridge here can
+ * make it safe. This is not a new requirement: a running sigil-mcp never
+ * reloads code, so every Claude window must restart its sigil-mcp after any
+ * upgrade anyway (see README, "Multi-window behaviour").
  */
 export class FileLockError extends Error {
   constructor(msg: string) {
@@ -233,19 +227,12 @@ export function acquireLockSync(lockDir: string, opts: AcquireLockOptions = {}):
   const markerPath = join(lockDir, `c-${process.pid}-${token}`);
   let ticketPath: string | undefined;
   let markerOnDisk = false;
-  let legacyPath: string | undefined;
-  const legacyToken = randomBytes(8).toString('hex');
 
   // Withdraw everything we put on disk. Throws if something we own could
   // not be removed (the caller's retry path handles that); the held flag
   // is dropped first so a leftover is recognisably our own orphan.
   const withdraw = (): void => {
     held.delete(token);
-    // Release the legacy bridge first (outermost lock last-acquired).
-    if (legacyPath) {
-      releaseLegacy(legacyPath, legacyToken);
-      legacyPath = undefined;
-    }
     if (ticketPath) unlinkOwn(ticketPath);
     if (markerOnDisk) unlinkOwn(markerPath);
     markerOnDisk = false;
@@ -294,17 +281,6 @@ export function acquireLockSync(lockDir: string, opts: AcquireLockOptions = {}):
       }
       sleepSync(Math.min(pollMs, remaining));
     }
-    // Cross-version bridge. A daemon built before this change locks the
-    // pre-PR single file `<target>.lock`; it knows nothing of the bakery
-    // directory `<target>.lock.d`. While we are the bakery holder — so only
-    // one new-version acquisition is ever here at once — take that legacy
-    // file too, so an old and a new session mutually exclude. Because the
-    // bakery already serialises new-vs-new, the legacy file is contended
-    // only across the version boundary (transient: the old code was never
-    // published), never among new sessions, so its single-file break race
-    // can't affect the common path.
-    legacyPath = legacyLockFor(lockDir) ?? undefined;
-    if (legacyPath) acquireLegacy(legacyPath, deadline, pollMs, legacyToken);
   } catch (err) {
     try {
       withdraw();
@@ -369,88 +345,4 @@ export function releaseWithRetry(release: () => void, lockDir: string): void {
       `(${(last as Error)?.message ?? String(last)}); this process will sweep it on its ` +
       `next acquire, other sessions will wait until then\n`,
   );
-}
-
-// ---------------------------------------------------------------------------
-// Cross-version bridge to the pre-PR single-file lock (`<target>.lock`).
-//
-// A daemon built before this change O_EXCL-creates `<target>.lock` for the
-// duration of one append. To keep an old and a new session from both
-// appending during an upgrade, a new session — once it is the bakery holder,
-// so only one new session is ever here at a time — also holds that legacy
-// file, which blocks old sessions (their O_EXCL create fails EEXIST).
-//
-// The bridge is deliberately FAIL-CLOSED: it never deletes a legacy file it
-// did not create, except one it can prove is its own orphan (its pid + a
-// token it holds-but-released). So it can neither race an old session's
-// break protocol nor delete a live holder's file. The price is that a
-// genuinely stale legacy file left by a crashed old daemon blocks new
-// sessions until it is removed by hand — a documented, one-time upgrade
-// artifact, not a steady-state path (nothing creates `<target>.lock` once
-// every session runs this version).
-// ---------------------------------------------------------------------------
-
-// Legacy tokens whose files this process currently holds.
-const legacyHeld = new Set<string>();
-
-/** `<target>.lock` for a bakery dir named `<target>.lock.d`; else null. */
-function legacyLockFor(lockDir: string): string | null {
-  return lockDir.endsWith('.lock.d') ? lockDir.slice(0, -2) : null;
-}
-
-/** Our own orphaned stamp (our pid, a token we minted but no longer hold)? */
-function isOwnLegacyOrphan(path: string): boolean {
-  let content: string;
-  try {
-    content = readFileSync(path, 'utf8');
-  } catch {
-    return false;
-  }
-  const m = /^(\d+) ([0-9a-f]{16})\n$/.exec(content);
-  if (!m) return false;
-  return Number.parseInt(m[1]!, 10) === process.pid && !legacyHeld.has(m[2]!);
-}
-
-function acquireLegacy(path: string, deadline: number, pollMs: number, token: string): void {
-  const stamp = `${process.pid} ${token}\n`;
-  for (;;) {
-    try {
-      const fd = openSync(path, 'wx', 0o600);
-      try {
-        writeAllSync(fd, stamp);
-      } finally {
-        closeSync(fd);
-      }
-      legacyHeld.add(token);
-      return;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    }
-    // Reclaim only our own orphan (a prior release that failed); never break
-    // anyone else's file, live or dead — that is the old break protocol's
-    // race, and we refuse to play it.
-    if (isOwnLegacyOrphan(path)) {
-      unlinkOwn(path);
-      continue;
-    }
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      throw new FileLockError(
-        `timed out waiting for the legacy lock ${path}; if no old sigil session is ` +
-          `running, remove this file by hand (an upgrade left it behind)`,
-      );
-    }
-    sleepSync(Math.min(pollMs, remaining));
-  }
-}
-
-function releaseLegacy(path: string, token: string): void {
-  // Drop held first, so a failed unlink leaves a recognisable own-orphan
-  // this process reclaims on its next acquire (mirrors the ticket path).
-  legacyHeld.delete(token);
-  try {
-    if (readFileSync(path, 'utf8') === `${process.pid} ${token}\n`) unlinkSync(path);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
 }

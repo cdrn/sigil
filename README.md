@@ -156,6 +156,8 @@ Each window still holds its own decrypted keys only for its own lifetime: closin
 
 OS-keychain integration (planned, v0.3) will make unlock zero-touch for users who set it up.
 
+**After upgrading sigil, restart every Claude window's `sigil-mcp`** (reconnect the MCP server or reopen the window, then `sigil unlock` again). A running `sigil-mcp` never reloads code, and daemons from different versions must not share `~/.sigil/audit.log`: the lock protocol and the writer's chain checks are version-specific. `ps -ax | grep sigil-mcp` shows stragglers.
+
 ## Policy engine
 
 Once a portal is unlocked, signing authority over its key is real. To bound the blast radius of a successful prompt injection, every portal has a policy file at `~/.sigil/policy/<handle>.toml`. Two modes:
