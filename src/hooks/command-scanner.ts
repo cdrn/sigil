@@ -18,7 +18,123 @@ import { isBlockedPath, type BlockerOpts, type BlockDecision } from './path-bloc
  * (`gpg --export-secret-keys`, `ssh-keygen -y`, `openssl pkey -in`).
  */
 
-const COMMAND_SEPARATORS = /[;&|]|\$\(|`/;
+/**
+ * Split a shell command line into the statements that could actually run a
+ * program, respecting quoting:
+ *   - `;`, `&`, `|` and newlines separate statements only outside quotes;
+ *   - `$(` and backticks start a new statement even inside double quotes
+ *     (they execute there) but not inside single quotes (literal);
+ *   - a heredoc body (`<<EOF` … `EOF`) is data, not commands. With a quoted
+ *     delimiter (`<<'EOF'`) it is fully literal and skipped; with an
+ *     unquoted one, `$(…)` and backticks inside it still expand, so those
+ *     substitutions are surfaced as statements while the prose is dropped.
+ *
+ * Without this, a commit message or an echo that merely *mentions* a
+ * warded path was split at any `;`/`|`/backtick in the prose, and whatever
+ * word happened to follow was treated as a program — false positives on
+ * text that cannot leak a file's contents (#92). Anything that can read a
+ * file still surfaces as a statement whose first token is the reader.
+ */
+export function splitStatements(command: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inSingle = false;
+  let inDouble = false;
+  const flush = (): void => {
+    if (cur.trim().length > 0) out.push(cur);
+    cur = '';
+  };
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const c = command[i]!;
+    if (c === '\\' && i + 1 < n) {
+      cur += c + command[i + 1];
+      i += 2;
+      continue;
+    }
+    if (c === "'" && !inDouble) {
+      inSingle = !inSingle;
+      cur += c;
+      i++;
+      continue;
+    }
+    if (c === '"' && !inSingle) {
+      inDouble = !inDouble;
+      cur += c;
+      i++;
+      continue;
+    }
+    if (inSingle) {
+      cur += c;
+      i++;
+      continue;
+    }
+    // Command substitution executes even inside double quotes.
+    if (c === '`' || (c === '$' && command[i + 1] === '(')) {
+      flush();
+      i += c === '`' ? 1 : 2;
+      continue;
+    }
+    if (inDouble) {
+      cur += c;
+      i++;
+      continue;
+    }
+    // Heredoc: `<<` or `<<-`, optional quotes, a delimiter word.
+    if (c === '<' && command[i + 1] === '<') {
+      const m = /^<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(command.slice(i));
+      if (m) {
+        const quoted = m[1] !== '';
+        const delim = m[2]!;
+        i += m[0].length;
+        // The rest of this line is still the command (e.g. `cat <<EOF > out`).
+        const eol = command.indexOf('\n', i);
+        if (eol === -1) {
+          cur += command.slice(i);
+          i = n;
+          break;
+        }
+        cur += command.slice(i, eol);
+        flush();
+        // Consume body lines up to the delimiter line.
+        let pos = eol + 1;
+        for (;;) {
+          const next = command.indexOf('\n', pos);
+          const line = next === -1 ? command.slice(pos) : command.slice(pos, next);
+          const atEnd = next === -1;
+          pos = atEnd ? n : next + 1;
+          if (line.replace(/^\t+/, '') === delim) break;
+          if (!quoted) {
+            // Substitutions inside an unquoted heredoc body still run.
+            for (const sub of substitutionsIn(line)) out.push(sub);
+          }
+          if (atEnd) break;
+        }
+        i = pos;
+        continue;
+      }
+    }
+    if (c === ';' || c === '&' || c === '|' || c === '\n') {
+      flush();
+      i++;
+      continue;
+    }
+    cur += c;
+    i++;
+  }
+  flush();
+  return out;
+}
+
+/** The `$(…)` / backtick command bodies found in a line of expanding text. */
+function substitutionsIn(line: string): string[] {
+  const subs: string[] = [];
+  const re = /\$\(([^)]*)\)|`([^`]*)`/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) subs.push(m[1] ?? m[2] ?? '');
+  return subs;
+}
 
 const ALWAYS_BLOCK_COMMAND_PATTERNS: readonly { regex: RegExp; reason: string }[] = Object.freeze([
   {
@@ -103,9 +219,10 @@ export function scanBashCommand(
   }
 
   // 2. Per-statement path scan, gated on the program being a known reader.
-  //    COMMAND_SEPARATORS splits on `$(` and backticks too, so a `cat` hidden
-  //    inside a substitution surfaces as the first token of its own statement.
-  const statements = command.split(COMMAND_SEPARATORS);
+  //    splitStatements surfaces `$(` and backtick bodies as their own
+  //    statements, so a `cat` hidden inside a substitution is seen as the
+  //    first token; quoted prose and heredoc bodies never are.
+  const statements = splitStatements(command);
   for (const stmt of statements) {
     const tokens = tokenize(stmt);
     if (tokens.length === 0) continue;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import { scanBashCommand } from '../../src/hooks/command-scanner.js';
+import { scanBashCommand, splitStatements } from '../../src/hooks/command-scanner.js';
 
 test('blocks cat of a .key file argument', () => {
   ok(scanBashCommand('cat /etc/ssl/private.key').blocked);
@@ -90,4 +90,78 @@ test('build / runtime tools never path-scan their args', () => {
   equal(scanBashCommand('node ./tool.key').blocked, false);
   equal(scanBashCommand('npm install ./pkg.key').blocked, false);
   equal(scanBashCommand('tsc -p ./tsconfig.key').blocked, false);
+});
+
+// ---------------------------------------------------------------------------
+// #92 — literal mentions of warded paths are not reads
+// ---------------------------------------------------------------------------
+
+const K = '~/.sigil/keys/a.sigil'; // a warded key path
+const L = '~/.sigil/audit.log';
+
+test('#92: a commit message heredoc that mentions a warded path is not a read', () => {
+  const cmd = [
+    "cat > /tmp/msg.txt <<'EOF'",
+    'fix(audit): harden the log',
+    '',
+    `so the old writer kept corrupting ${L}; see \`main:src/audit/log.ts\` | tail`,
+    `and cat ${K} is mentioned here as prose`,
+    'EOF',
+    'git commit -F /tmp/msg.txt',
+  ].join('\n');
+  equal(scanBashCommand(cmd).blocked, false);
+});
+
+test('#92: -m "…" prose with separators and a warded path is not a read', () => {
+  equal(scanBashCommand(`git commit -m "corrupting ${L}; cat ${K} | head"`).blocked, false);
+  equal(scanBashCommand(`echo 'cat ${K}'`).blocked, false);
+  equal(scanBashCommand(`printf "%s\\n" ${K}`).blocked, false, 'printf is not a reader');
+});
+
+test('#92: substitutions still execute inside double quotes and unquoted heredocs → blocked', () => {
+  ok(scanBashCommand(`echo "$(cat ${K})"`).blocked);
+  ok(scanBashCommand(`git commit -m "key: \`cat ${K}\`"`).blocked);
+  ok(scanBashCommand(`cat <<EOF\nhere: $(head -c 32 ${K})\nEOF`).blocked);
+  ok(scanBashCommand(`cat <<EOF\n\`cat ${K}\`\nEOF`).blocked);
+});
+
+test('#92: single-quoted substitutions are literal → not blocked', () => {
+  equal(scanBashCommand(`echo '$(cat ${K})'`).blocked, false);
+  equal(scanBashCommand(`echo '\`cat ${K}\`'`).blocked, false);
+});
+
+test('#92: a quoted-delimiter heredoc body is literal even when it looks like a read', () => {
+  equal(scanBashCommand(`cat <<'EOF'\ncat ${K}\n$(cat ${K})\nEOF`).blocked, false);
+  equal(scanBashCommand(`cat <<"EOF"\ncat ${K}\nEOF`).blocked, false);
+});
+
+test('#92: real reads on other lines / after separators are still blocked', () => {
+  ok(scanBashCommand(`echo hi\ncat ${K}`).blocked);
+  ok(scanBashCommand(`echo hi; cat ${K}`).blocked);
+  ok(scanBashCommand(`echo hi && cat ${K}`).blocked);
+  ok(scanBashCommand(`true || tail ${K}`).blocked);
+  ok(scanBashCommand(`ls | grep x ${K}`).blocked);
+  ok(scanBashCommand(`cat <<'EOF' > /tmp/x\nbody\nEOF\ncat ${K}`).blocked, 'read after a heredoc');
+});
+
+test('#92: heredoc command line itself is still scanned (operands before/after <<)', () => {
+  ok(scanBashCommand(`cat ${K} <<'EOF'\nbody\nEOF`).blocked);
+  ok(scanBashCommand(`cat <<'EOF' ${K}\nbody\nEOF`).blocked, 'operand after the delimiter');
+});
+
+test('#92: splitStatements — quoting and heredoc semantics', () => {
+  const s = (c: string) => splitStatements(c).map((x) => x.trim());
+  equal(JSON.stringify(s('a; b | c && d\ne')), JSON.stringify(['a', 'b', 'c', 'd', 'e']));
+  equal(JSON.stringify(s('a "x; y | z" b')), JSON.stringify(['a "x; y | z" b']));
+  equal(JSON.stringify(s("a '$(x)' b")), JSON.stringify(["a '$(x)' b"]));
+  equal(JSON.stringify(s('a "$(x)" b')), JSON.stringify(['a "', 'x)" b']));
+  equal(
+    JSON.stringify(s("cat <<'EOF'\nline; one | two\nEOF\nnext")),
+    JSON.stringify(['cat', 'next']),
+  );
+  equal(
+    JSON.stringify(s('cat <<EOF\nplain $(sub one) `sub two`\nEOF')),
+    JSON.stringify(['cat', 'sub one', 'sub two']),
+  );
+  equal(JSON.stringify(s('cat <<-EOF\n\tbody\n\tEOF\nafter')), JSON.stringify(['cat', 'after']));
 });
