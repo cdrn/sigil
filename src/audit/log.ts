@@ -240,10 +240,11 @@ export function readHead(path: string): ChainHead {
  * everything else.
  *
  * Multiple processes (one sigil-mcp per Claude session) share one audit file,
- * so every append serializes through a sidecar `<path>.lock`. The in-memory
- * head is only a cache: under the lock, the writer stats the file and, if the
- * on-disk tail moved since the head was last read, re-reads (and re-verifies)
- * the chain before computing the next entry. Without this, concurrent writers
+ * so every append serializes through the sidecar lock directory
+ * `<path>.lock.d` (see src/fs/lock.ts). The in-memory head is only a cache:
+ * under the lock, the writer checks the file's byte length and the hash of
+ * its last line against what it cached and, if either moved, re-reads (and
+ * re-verifies) the chain before computing the next entry. Without this, concurrent writers
  * each extend their own stale tail and the interleaved lines fail startup
  * verification with seq gaps and broken prev_hash links.
  */
@@ -344,9 +345,9 @@ export class AuditWriter {
     return withFileLock(
       this.path,
       () => {
-        // Another process may have appended since we last read the tail. The
-        // cached head is only trusted when the on-disk size still matches;
-        // otherwise re-read (and re-verify) the chain from disk.
+        // Another process may have appended (or replaced the chain) since we
+        // last looked; #syncHead re-verifies unless both the byte length and
+        // the last line's hash still match the cache.
         this.#syncHead();
 
         const entry: AuditEntry = {
