@@ -1728,11 +1728,7 @@ test('a negative tx value is rejected as INVALID_PARAMS before any reservation (
         ok(/must be a non-negative integer/.test(err!.message), err!.message);
       }
       ok(!existsSync(ledger.pathFor('evm:bot')), 'ledger never created');
-      equal(
-        verifyChain(readFileSync(auditPath)).length,
-        0,
-        'nothing audited: rejected at parse time',
-      );
+      ok(!existsSync(auditPath), 'nothing audited: rejected at parse time, before the policy gate');
       // The portal is still fully usable afterwards.
       await dispatch('sigil_eth_sign_transaction', txParams(5n), ctx);
       equal(ledger.spent('evm:bot', 'wei', 3_600_000), 5n);
