@@ -1,7 +1,7 @@
 import {
   closeSync,
-  fstatSync,
   fsyncSync,
+  linkSync,
   openSync,
   readFileSync,
   statSync,
@@ -11,31 +11,35 @@ import {
 import { randomBytes } from 'node:crypto';
 
 /**
- * Cross-process advisory lock for the audit log.
+ * Cross-process mutex over a sidecar file, for the files several
+ * `sigil-mcp` instances append to concurrently (one per Claude window: the
+ * audit log, the per-portal spend ledgers). Node core has no flock(2) and
+ * sigil takes no native deps, so this is built from atomic filesystem
+ * operations only.
  *
- * Node has no flock(2) binding in core, so this uses the next-best portable
- * primitive: O_CREAT|O_EXCL creation of a sidecar lock file. The create is
- * atomic at the filesystem level (no exists-then-create TOCTOU), so exactly
- * one process can hold the lock at a time.
+ * Establishment. The holder writes its stamp (`<pid> <token>\n`) to a
+ * private temp file, fsyncs it, and publishes it with link(2) onto the
+ * lock path. link is atomic and fails with EEXIST if the name is taken, so
+ * the lock file is *never* observable in an unstamped state: there is no
+ * window in which a contender can misjudge a freshly created lock as torn.
+ * (An earlier design created the file exclusively and stamped it
+ * afterwards; a holder that stalled in between could be evicted and then
+ * co-hold with its evictor. That class of race is gone.)
  *
- * Crash recovery rules, chosen so that a LIVE holder can never lose the lock:
- *  - The lock file records `pid token`. A lock whose pid is alive is never
- *    broken, no matter how old — contenders simply time out with an error.
- *  - A lock whose pid is dead is breakable immediately.
- *  - A lock with unreadable content (a crash between create and write) is
- *    breakable only once its mtime is older than `staleMs`.
+ * Staleness. A lock whose stamp names a dead pid is orphaned and may be
+ * broken immediately. A stamp naming a live pid is never broken, however
+ * old — except by the process that issued it: if this process finds a lock
+ * carrying its own pid and a token it minted but no longer holds (a release
+ * that failed after retries), it reclaims it. Only unparsable content
+ * (hand edits, files left by pre-link versions) falls back to an age rule.
+ * Breaking is serialized through a breaker sidecar so two contenders can't
+ * both judge a lock stale and unlink a successor's fresh lock.
  *
- * Breaking is serialized through a second O_EXCL file (`<lock>.break`) that
- * is held only for the microseconds of a re-check + unlink. With breakers
- * serialized, the re-check under the breaker lock is authoritative: the main
- * lock cannot be concurrently replaced (creation requires absence; only
- * breakers unlink other processes' locks), so the unlink removes exactly the
- * file that was judged stale. The one residual hole — a breaker crashing
- * inside its microsecond critical section AND its pid being judged dead by
- * two racing contenders — is accepted and documented; closing it fully
- * requires OS-level locking that core Node does not expose.
+ * Residual gap, documented rather than hidden: pid reuse. If the original
+ * holder died and its pid was recycled by an unrelated live process before
+ * anyone noticed, the lock stays until that process exits or a human
+ * removes the file. Closing this needs OS-level locking.
  */
-
 export class FileLockError extends Error {
   constructor(msg: string) {
     super(`file lock error: ${msg}`);
@@ -46,11 +50,9 @@ export class FileLockError extends Error {
 export const AuditLockError = FileLockError;
 
 export interface AcquireLockOptions {
-  /** Give up and throw after this long waiting for the lock. */
   timeoutMs?: number;
-  /** Delay between acquisition attempts while contended. */
   pollMs?: number;
-  /** Age past which an unreadable (torn) lock file is considered abandoned. */
+  /** Age after which an *unparsable* lock file is treated as abandoned. */
   staleMs?: number;
 }
 
@@ -58,21 +60,29 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_POLL_MS = 25;
 const DEFAULT_STALE_MS = 10_000;
 
-/** Synchronous sleep without spinning: Atomics.wait on a throwaway buffer. */
+/**
+ * Test-only seams. `beforeLink` runs after the temp stamp file is written
+ * and before it is linked onto the lock path, so a test can interpose a
+ * contender at the only moment that matters. Never set by production code.
+ */
+export const _testHooks: { beforeLink?: (lockPath: string) => void } = {};
+
+// Tokens this process has minted, and those it currently holds. A stamp
+// with our pid and a minted-but-unheld token is our own orphan.
+const minted = new Set<string>();
+const held = new Set<string>();
+
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/**
- * writeSync until the whole buffer is on the fd. POSIX permits short writes;
- * a partially written audit line that we then fsync and count as durable
- * would corrupt the chain.
- */
 export function writeAllSync(fd: number, data: string): void {
   const buf = Buffer.from(data, 'utf8');
   let written = 0;
   while (written < buf.length) {
-    written += writeSync(fd, buf, written, buf.length - written);
+    const n = writeSync(fd, buf, written, buf.length - written);
+    if (n <= 0) throw new Error(`short write (${written}/${buf.length} bytes)`);
+    written += n;
   }
 }
 
@@ -86,21 +96,11 @@ function isAlive(pid: number): boolean {
   }
 }
 
-// The full stamp format. Anything else (empty, truncated, garbage) is a torn
-// write and must fall back to age-based staleness — a bare Number.parseInt
-// could latch onto a truncated pid and defer to an unrelated live process.
-/**
- * Test-only seam: called after the lock file is created but before it is
- * stamped, so a test can simulate a holder that stalls in that window.
- * Never set by production code.
- */
-export const _testHooks: { afterCreate?: (path: string) => void } = {};
-
-const STAMP_RE = /^(\d+) [0-9a-f]{16}\n$/;
+const STAMP_RE = /^(\d+) ([0-9a-f]{16})\n$/;
 
 /**
- * Judge whether the lock file at `path` is abandoned. Returns false when the
- * file vanished (owner released it — nothing to break).
+ * Judge whether the lock file at `path` is abandoned. Returns false when
+ * the file vanished (owner released it — nothing to break).
  */
 function isStale(path: string, staleMs: number): boolean {
   let content: string;
@@ -113,68 +113,49 @@ function isStale(path: string, staleMs: number): boolean {
   }
   const stamp = STAMP_RE.exec(content);
   if (stamp) {
-    // A live holder is never evicted; a dead one is stale immediately.
-    return !isAlive(Number.parseInt(stamp[1]!, 10));
+    const pid = Number.parseInt(stamp[1]!, 10);
+    const token = stamp[2]!;
+    if (pid === process.pid) return minted.has(token) && !held.has(token);
+    return !isAlive(pid);
   }
-  // Torn content: a holder crashed between create and write, or we read in
-  // that window. Fresh files get the benefit of the doubt.
   return Date.now() - mtimeMs > staleMs;
 }
 
 /**
- * Create `path` exclusively and stamp it with our pid. Returns true on
- * success. On EEXIST returns false. Cleans up after itself if stamping fails
- * so a half-initialized lock is not left behind.
+ * Atomically publish a stamped lock file at `path`. Returns true if we now
+ * hold it, false if the name was already taken. The stamp is complete and
+ * durable before the name exists; on any failure only our private temp
+ * file is removed — never anything at `path`.
  */
-function createStamped(path: string, token: string): boolean {
-  let fd: number;
+function establish(path: string, stamp: string): boolean {
+  const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  const fd = openSync(tmp, 'wx', 0o600);
   try {
-    fd = openSync(path, 'wx', 0o600);
+    writeAllSync(fd, stamp);
+    fsyncSync(fd);
+  } catch (err) {
+    closeSync(fd);
+    unlinkQuiet(tmp);
+    throw err;
+  }
+  closeSync(fd);
+  try {
+    _testHooks.beforeLink?.(path);
+    linkSync(tmp, path);
+    return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw err;
+  } finally {
+    unlinkQuiet(tmp);
   }
-  let stamped = false;
+}
+
+function unlinkQuiet(path: string): void {
   try {
-    _testHooks.afterCreate?.(path);
-    writeAllSync(fd, `${process.pid} ${token}\n`);
-    fsyncSync(fd);
-    // The file we created may no longer be the one at `path`: if we stalled
-    // between create and stamp for longer than staleMs, a contender was
-    // entitled to treat the empty file as torn, unlink it, and create its
-    // own. Our stamp then went into an orphaned inode. Compare identities
-    // before claiming the lock; on mismatch, back off without touching
-    // the contender's file.
-    const ours = fstatSync(fd).ino;
-    let current: number | undefined;
-    try {
-      current = statSync(path).ino;
-    } catch {
-      current = undefined;
-    }
-    if (current !== ours) {
-      closeSync(fd);
-      return false;
-    }
-    stamped = true;
-    closeSync(fd);
-    return true;
-  } catch (err) {
-    if (!stamped) {
-      try {
-        closeSync(fd);
-      } catch {
-        /* the unlink below is the cleanup that matters */
-      }
-    }
-    // Remove the lock we failed to fully establish; leaving it would strand
-    // a live-pid lock that no contender is allowed to break.
-    try {
-      unlinkSync(path);
-    } catch {
-      /* worst case a torn lock ages out via staleMs */
-    }
-    throw err;
+    unlinkSync(path);
+  } catch {
+    /* already gone, or will age out */
   }
 }
 
@@ -187,39 +168,26 @@ function createStamped(path: string, token: string): boolean {
 function tryBreakStaleLock(lockPath: string, staleMs: number): void {
   if (!isStale(lockPath, staleMs)) return;
   const breakerPath = `${lockPath}.break`;
-  if (!createStamped(breakerPath, randomBytes(8).toString('hex'))) {
-    // Another contender is mid-break. If they crashed and left the breaker
-    // behind, clear it (same staleness rules) and let the next poll retry.
-    if (isStale(breakerPath, staleMs)) {
-      try {
-        unlinkSync(breakerPath);
-      } catch {
-        /* lost the race to another cleaner — fine */
-      }
-    }
+  const breakerToken = randomBytes(8).toString('hex');
+  minted.add(breakerToken);
+  if (!establish(breakerPath, `${process.pid} ${breakerToken}\n`)) {
+    if (isStale(breakerPath, staleMs)) unlinkQuiet(breakerPath);
     return;
   }
+  held.add(breakerToken);
   try {
     // Authoritative re-check now that breakers are serialized.
-    if (isStale(lockPath, staleMs)) {
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        /* released in the meantime — nothing to break */
-      }
-    }
+    if (isStale(lockPath, staleMs)) unlinkQuiet(lockPath);
   } finally {
-    try {
-      unlinkSync(breakerPath);
-    } catch {
-      /* if this fails the breaker ages out via staleMs */
-    }
+    unlinkQuiet(breakerPath);
+    held.delete(breakerToken);
+    minted.delete(breakerToken);
   }
 }
 
 /**
  * Acquire an exclusive cross-process lock. Returns an idempotent release
- * function. Throws AuditLockError if the lock cannot be acquired within
+ * function. Throws FileLockError if the lock cannot be acquired within
  * `timeoutMs`.
  */
 export function acquireLockSync(lockPath: string, opts: AcquireLockOptions = {}): () => void {
@@ -229,27 +197,31 @@ export function acquireLockSync(lockPath: string, opts: AcquireLockOptions = {})
   const token = randomBytes(8).toString('hex');
   const stamp = `${process.pid} ${token}\n`;
   const deadline = Date.now() + timeoutMs;
+  minted.add(token);
 
   for (;;) {
-    if (createStamped(lockPath, token)) {
+    if (establish(lockPath, stamp)) {
+      held.add(token);
       let released = false;
       return () => {
         if (released) return;
-        // Because a live holder is never evicted, the lock is still ours;
-        // the token check is belt and braces against misuse.
+        // Drop "held" before the unlink: if the unlink fails for good, the
+        // stamp on disk is then minted-but-unheld, i.e. recognisably our
+        // own orphan, and the next acquire in this process reclaims it.
+        held.delete(token);
         try {
-          if (readFileSync(lockPath, 'utf8') === stamp) {
-            unlinkSync(lockPath);
-          }
+          if (readFileSync(lockPath, 'utf8') === stamp) unlinkSync(lockPath);
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
         }
         released = true;
+        minted.delete(token);
       };
     }
     tryBreakStaleLock(lockPath, staleMs);
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
+      minted.delete(token);
       throw new FileLockError(`timed out after ${timeoutMs}ms waiting for ${lockPath}`);
     }
     sleepSync(Math.min(pollMs, remaining));
@@ -264,9 +236,7 @@ export function lockPathFor(target: string): string {
 /**
  * Run `fn` while holding the sidecar lock for `target`. Synchronous by
  * design (callers are synchronous append paths) and therefore not
- * re-entrant: a nested acquire of the same target times out. A release
- * failure never replaces fn's outcome — a committed append must not be
- * reported as a failure — the lock is instead left for the stale path.
+ * re-entrant: a nested acquire of the same target times out.
  */
 export function withFileLock<T>(target: string, fn: () => T, opts: AcquireLockOptions = {}): T {
   const lockPath = lockPathFor(target);
@@ -279,15 +249,17 @@ export function withFileLock<T>(target: string, fn: () => T, opts: AcquireLockOp
 }
 
 /**
- * A lock stamped with a live pid is never broken by contenders, so a
- * release that fails leaves every other session timing out until this
- * process exits. Retry a transient failure a few times; if it still
- * won't go, report loudly — but never replace fn's outcome (a committed
- * append must not be reported as a failure, and fn's own error must not
- * be masked).
+ * A lock stamped with a live pid is not broken by other processes, so a
+ * release that fails would block every other session until this process
+ * exits. Retry a transient failure with backoff; if it still won't go,
+ * report on stderr — never replace fn's outcome (a committed append must
+ * not be reported as a failure, and fn's own error must not be masked).
+ * The lock is not lost for good: `minted`/`held` bookkeeping lets this
+ * process recognise the orphan as its own and reclaim it on its next
+ * acquire, once whatever blocked the unlink has cleared.
  */
 const RELEASE_ATTEMPTS = 5;
-function releaseWithRetry(release: () => void, lockPath: string): void {
+export function releaseWithRetry(release: () => void, lockPath: string): void {
   let last: unknown;
   for (let i = 0; i < RELEASE_ATTEMPTS; i++) {
     try {
@@ -300,7 +272,7 @@ function releaseWithRetry(release: () => void, lockPath: string): void {
   }
   process.stderr.write(
     `sigil: failed to release ${lockPath} after ${RELEASE_ATTEMPTS} attempts ` +
-      `(${(last as Error)?.message ?? String(last)}); other sessions will block on it ` +
-      `until pid ${process.pid} exits — remove the file by hand if this process is gone\n`,
+      `(${(last as Error)?.message ?? String(last)}); this process will reclaim it on ` +
+      `its next acquire, other sessions will wait until then\n`,
   );
 }

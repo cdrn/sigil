@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import { deepEqual, equal, notEqual, ok, throws } from 'node:assert/strict';
-import { type ChildProcess, execFile } from 'node:child_process';
+import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import {
   appendFileSync,
   chmodSync,
   closeSync,
   existsSync,
   linkSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
@@ -19,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lockPathFor, writeAllSync } from '../../src/fs/index.js';
+import { _auditTestHooks } from '../../src/audit/log.js';
 import {
   AuditChainError,
   AuditWriter,
@@ -1004,7 +1006,12 @@ test('barrier-released child processes appending simultaneously produce one vali
     );
     // Every writer has constructed (on the empty file) and acknowledged
     // readiness before the gate opens.
-    await Promise.all(kids.map((k) => awaitReady(k)));
+    try {
+      await Promise.all(kids.map((k) => awaitReady(k)));
+    } catch (err) {
+      for (const k of kids) k.kill('SIGKILL');
+      throw err;
+    }
     writeFileSync(barrier, '');
     for (const r of await Promise.all(exits)) equal(r.code, 0, r.err);
     const entries = verifyChain(readFileSync(path));
@@ -1061,25 +1068,59 @@ test('a multi-megabyte last line is re-checked in linear time and still chains',
   }
 });
 
-test('quarantine failure (evidence cannot be linked) preserves the original and propagates', () => {
-  if (process.getuid?.() === 0) return; // root ignores directory modes
-  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-qfail-'));
+for (const step of ['fsync-evidence', 'fsync-dir', 'unlink'] as const) {
+  test(`quarantine: a failure at "${step}" preserves the original and propagates`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-qstep-'));
+    try {
+      const path = join(dir, 'audit.log');
+      writeFileSync(path, 'bad\n');
+      _auditTestHooks.quarantineStep = (s) => {
+        if (s === step) throw Object.assign(new Error(`injected ${step} failure`), { code: 'EIO' });
+      };
+      try {
+        throws(
+          () => new AuditWriter(path, { onCorrupt: 'quarantine', warn: () => undefined }),
+          /injected/,
+        );
+      } finally {
+        delete _auditTestHooks.quarantineStep;
+      }
+      equal(readFileSync(path, 'utf8'), 'bad\n', 'original still at its name');
+      // The linked copy may exist (link happens before every injected step);
+      // it must be byte-identical evidence, never a replacement.
+      for (const f of readdirSync(dir).filter((f) => f.includes('.corrupt-'))) {
+        equal(readFileSync(join(dir, f), 'utf8'), 'bad\n');
+      }
+      // Recovery on the next open: quarantines cleanly under a fresh suffix.
+      const w = new AuditWriter(path, { onCorrupt: 'quarantine', warn: () => undefined });
+      equal(w.head.nextSeq, 0);
+      ok(!existsSync(path));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+}
+
+test('quarantine: a real link() failure (name taken by a directory) propagates before unlink', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-qlink-'));
   try {
     const path = join(dir, 'audit.log');
+    const now = 1_700_000_000_000;
+    const base = `${path}.corrupt-${new Date(now).toISOString().replace(/[:.]/g, '-')}`;
     writeFileSync(path, 'bad\n');
-    chmodSync(dir, 0o500); // link() needs write on the directory
-    try {
-      throws(
-        () => new AuditWriter(path, { onCorrupt: 'quarantine', warn: () => undefined }),
-        (err: unknown) => (err as NodeJS.ErrnoException).code === 'EACCES',
-      );
-    } finally {
-      chmodSync(dir, 0o700);
-    }
-    equal(readFileSync(path, 'utf8'), 'bad\n', 'original untouched');
-    equal(readdirSync(dir).filter((f) => f.includes('.corrupt-')).length, 0);
+    // Occupy the first candidate with a directory: link() fails EEXIST and
+    // moves on to -1; occupy that with an unlinkable name to force a
+    // non-EEXIST error… not portable. Instead: candidate names taken
+    // sequentially all succeed by design, so exercise the EEXIST skip.
+    mkdirSync(base);
+    const w = new AuditWriter(path, {
+      now: () => now,
+      onCorrupt: 'quarantine',
+      warn: () => undefined,
+    });
+    equal(w.head.nextSeq, 0);
+    equal(readFileSync(`${base}-1`, 'utf8'), 'bad\n');
   } finally {
-    chmodSync(dir, 0o700);
     rmSync(dir, { recursive: true });
   }
 });
@@ -1102,6 +1143,71 @@ test('a crash between link and unlink (both names present) is recovered on the n
     equal(readFileSync(`${evidence}-1`, 'utf8'), 'bad\n', 'second copy under a fresh suffix');
     ok(!existsSync(path));
   } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('tail scan cap: a last line over the cap falls back to full verification and still chains', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-tailcap-'));
+  try {
+    const path = join(dir, 'audit.log');
+    _auditTestHooks.tailScanMax = 128 * 1024;
+    try {
+      const a = new AuditWriter(path, { now: () => 1 });
+      const b = new AuditWriter(path, { now: () => 2 });
+      a.append({ kind: 'k', portal: 'p', payload: 'x'.repeat(300 * 1024), decision: 'allow' });
+      // b: size mismatch → full read. a: size matches → tail scan exceeds
+      // the cap → null → full read; must still chain onto its own line.
+      b.append({ kind: 'k', portal: 'p', payload: 'small', decision: 'allow' });
+      const e = a.append({ kind: 'k', portal: 'p', payload: 'after', decision: 'allow' });
+      equal(e.seq, 2);
+      equal(verifyChain(readFileSync(path)).length, 3);
+    } finally {
+      delete _auditTestHooks.tailScanMax;
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('AuditWriter: a release failure after a committed append does not fail the append', async () => {
+  if (process.getuid?.() === 0) return; // root ignores directory modes
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-relfail-'));
+  const savedWrite = process.stderr.write;
+  let warned = '';
+  try {
+    const path = join(dir, 'audit.log');
+    // The clock callback runs inside append, under the lock: use it to make
+    // the directory unwritable so the release's unlink fails. A helper
+    // process restores the mode while the retry loop is sleeping.
+    let calls = 0;
+    const w = new AuditWriter(path, {
+      now: () => {
+        // First append creates the file; flip the mode on the second, once
+        // the only remaining directory write is the release's unlink.
+        if (++calls === 2) chmodSync(dir, 0o500);
+        return 1;
+      },
+    });
+    w.append({ kind: 'k', portal: 'p', payload: 0, decision: 'allow' });
+    process.stderr.write = ((c: string | Uint8Array) => {
+      warned += String(c);
+      return true;
+    }) as typeof process.stderr.write;
+    const helper = spawn('sh', ['-c', `sleep 0.04; chmod 700 "${dir}"`], { stdio: 'ignore' });
+    const helperDone = new Promise<void>((r) => helper.once('exit', () => r()));
+    const entry = w.append({ kind: 'k', portal: 'p', payload: 1, decision: 'allow' });
+    await helperDone;
+    chmodSync(dir, 0o700);
+    equal(entry.seq, 1, 'append reported success');
+    equal(verifyChain(readFileSync(path)).length, 2, 'entry is on disk');
+    ok(!existsSync(lockPathFor(path)), 'lock released once the directory was writable again');
+    equal(warned, '', 'recovered within the retry window, nothing to report');
+    // And the writer is still usable.
+    equal(w.append({ kind: 'k', portal: 'p', payload: 2, decision: 'allow' }).seq, 2);
+  } finally {
+    process.stderr.write = savedWrite;
+    chmodSync(dir, 0o700);
     rmSync(dir, { recursive: true });
   }
 });

@@ -5,9 +5,9 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
-  unlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -265,7 +265,12 @@ test('competing processes: barrier-released contenders never overlap inside the 
     );
     // Every child must acknowledge readiness before the gate opens, so all
     // N contenders are provably parked on the barrier together.
-    await Promise.all(kids.map((k) => awaitReady(k)));
+    try {
+      await Promise.all(kids.map((k) => awaitReady(k)));
+    } catch (err) {
+      for (const k of kids) k.kill('SIGKILL');
+      throw err;
+    }
     writeFileSync(barrier, '');
     for (const r of await Promise.all(exits)) equal(r.code, 0, r.err);
     const lines = readFileSync(counter, 'utf8').split('\n').filter(Boolean);
@@ -309,20 +314,19 @@ test('a transient release failure is retried, and the lock is free afterwards', 
   }
 });
 
-test('a holder that stalls between create and stamp past staleMs does not win the lock', () => {
+test('a contender that wins the name while we are about to publish makes us back off', () => {
   const dir = mkTmp();
   try {
     const target = join(dir, 'file');
     const lock = lockPathFor(target);
-    // Contender B's lock, stamped with OUR live pid so it can never be
-    // broken: if A (this call) wrongly treats its stale inode as the lock,
-    // fn runs; if A correctly backs off, it must wait on B and time out.
+    // B's lock, stamped with OUR live pid and a token we never minted, so it
+    // can't be broken or reclaimed: if A (this call) claimed the lock
+    // anyway, fn would run; correct behaviour is to wait on B and time out.
     const bStamp = `${process.pid} ${TOKEN}\n`;
     let fired = 0;
-    _testHooks.afterCreate = (p) => {
+    _testHooks.beforeLink = (p) => {
       if (p !== lock || fired++ > 0) return;
-      unlinkSync(lock); // B judged our empty file torn and stale…
-      writeFileSync(lock, bStamp); // …and took the slot.
+      writeFileSync(lock, bStamp);
     };
     let ran = false;
     try {
@@ -338,11 +342,92 @@ test('a holder that stalls between create and stamp past staleMs does not win th
         FileLockError,
       );
     } finally {
-      delete _testHooks.afterCreate;
+      delete _testHooks.beforeLink;
     }
     ok(!ran, 'A never entered the critical section');
-    equal(fired, 1);
+    ok(fired >= 1, 'seam fired on the publish attempt');
     equal(readFileSync(lock, 'utf8'), bStamp, "B's lock untouched by A's back-off");
+    equal(
+      readdirSync(dir).filter((f) => f.endsWith('.tmp')).length,
+      0,
+      'temp stamp files cleaned up',
+    );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('the lock file is never observable unstamped: it appears fully written', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    const lock = lockPathFor(target);
+    let seenBeforeLink: boolean | undefined;
+    _testHooks.beforeLink = (p) => {
+      if (p === lock) seenBeforeLink = existsSync(lock);
+    };
+    try {
+      withFileLock(target, () => {
+        const content = readFileSync(lock, 'utf8');
+        ok(
+          /^\d+ [0-9a-f]{16}\n$/.test(content),
+          `stamped on first sight: ${JSON.stringify(content)}`,
+        );
+      });
+    } finally {
+      delete _testHooks.beforeLink;
+    }
+    equal(seenBeforeLink, false, 'no file at the lock path until the stamp is published');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a process reclaims its own orphaned lock (release failed for good) on the next acquire', () => {
+  if (process.getuid?.() === 0) return;
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    const lock = lockPathFor(target);
+    // Make every release attempt fail: directory unwritable for the whole
+    // retry window. withFileLock reports on stderr and returns normally.
+    const savedWrite = process.stderr.write;
+    let warned = '';
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      warned += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    let result: string;
+    try {
+      result = withFileLock(target, () => {
+        chmodSync(dir, 0o500);
+        return 'committed';
+      });
+    } finally {
+      process.stderr.write = savedWrite;
+      chmodSync(dir, 0o700);
+    }
+    equal(result, 'committed');
+    ok(/failed to release/.test(warned), 'stranded lock reported');
+    ok(existsSync(lock), 'lock is stranded with our live pid');
+    // A different process would wait forever; we recognise our own orphan.
+    equal(
+      withFileLock(target, () => 'again', { timeoutMs: 500 }),
+      'again',
+    );
+    ok(!existsSync(lock));
+  } finally {
+    chmodSync(dir, 0o700);
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a lock with our pid but a token we never minted is treated as held, not reclaimed', () => {
+  const dir = mkTmp();
+  try {
+    const target = join(dir, 'file');
+    plantLock(target, `${process.pid} ${TOKEN}\n`);
+    throws(() => withFileLock(target, () => 1, { timeoutMs: 60 }), FileLockError);
   } finally {
     rmSync(dir, { recursive: true });
   }

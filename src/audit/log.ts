@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import { keccak256 } from '../eth/keccak.js';
-import { type AcquireLockOptions, acquireLockSync, writeAllSync } from '../fs/lock.js';
+import { type AcquireLockOptions, withFileLock, writeAllSync } from '../fs/lock.js';
 
 export type AuditDecision = 'allow' | 'deny' | 'confirm_required';
 
@@ -285,12 +285,7 @@ export class AuditWriter {
     this.#size = -1;
     // Take the lock even for the initial read so startup verification never
     // observes a mid-append view of the file.
-    const release = acquireLockSync(this.lockPath, this.#lockOpts);
-    try {
-      this.#syncHead();
-    } finally {
-      release();
-    }
+    withFileLock(this.path, () => this.#syncHead(), this.#lockOpts);
   }
 
   /**
@@ -346,42 +341,43 @@ export class AuditWriter {
     sig?: string;
   }): StoredAuditEntry {
     if (this.#closed) throw new Error('AuditWriter is closed');
-    const release = acquireLockSync(this.lockPath, this.#lockOpts);
-    try {
-      // Another process may have appended since we last read the tail. The
-      // cached head is only trusted when the on-disk size still matches;
-      // otherwise re-read (and re-verify) the chain from disk.
-      this.#syncHead();
+    return withFileLock(
+      this.path,
+      () => {
+        // Another process may have appended since we last read the tail. The
+        // cached head is only trusted when the on-disk size still matches;
+        // otherwise re-read (and re-verify) the chain from disk.
+        this.#syncHead();
 
-      const entry: AuditEntry = {
-        seq: this.#head.nextSeq,
-        ts: this.#now(),
-        prev_hash: this.#head.prevHash,
-        kind: input.kind,
-        portal: input.portal,
-        payload: input.payload,
-        decision: input.decision,
-        ...(input.reason !== undefined ? { reason: input.reason } : {}),
-        ...(input.sig !== undefined ? { sig: input.sig } : {}),
-      };
-      const stored = sealEntry(entry);
-      const line = serializeEntry(stored);
+        const entry: AuditEntry = {
+          seq: this.#head.nextSeq,
+          ts: this.#now(),
+          prev_hash: this.#head.prevHash,
+          kind: input.kind,
+          portal: input.portal,
+          payload: input.payload,
+          decision: input.decision,
+          ...(input.reason !== undefined ? { reason: input.reason } : {}),
+          ...(input.sig !== undefined ? { sig: input.sig } : {}),
+        };
+        const stored = sealEntry(entry);
+        const line = serializeEntry(stored);
 
-      const fd = openSync(this.path, 'a', 0o600);
-      try {
-        writeAllSync(fd, line);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
+        const fd = openSync(this.path, 'a', 0o600);
+        try {
+          writeAllSync(fd, line);
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
 
-      // Only now — after the bytes are durably on disk — is the cache advanced.
-      this.#head = { nextSeq: stored.seq + 1, prevHash: stored.hash };
-      this.#size += Buffer.byteLength(line, 'utf8');
-      return stored;
-    } finally {
-      release();
-    }
+        // Only now — after the bytes are durably on disk — is the cache advanced.
+        this.#head = { nextSeq: stored.seq + 1, prevHash: stored.hash };
+        this.#size += Buffer.byteLength(line, 'utf8');
+        return stored;
+      },
+      this.#lockOpts,
+    );
   }
 
   close(): void {
@@ -411,8 +407,15 @@ function quarantine(path: string, nowMs: number): string {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
       throw err;
     }
+    // Every step before the unlink may fail; if one does, the original is
+    // still in place and the error propagates (a half-published quarantine
+    // must not report success). The linked name, if it exists, is a
+    // harmless extra copy the next open re-quarantines under a suffix.
+    _auditTestHooks.quarantineStep?.('fsync-evidence');
     fsyncFile(candidate);
+    _auditTestHooks.quarantineStep?.('fsync-dir');
     fsyncDir(dirname(path));
+    _auditTestHooks.quarantineStep?.('unlink');
     unlinkSync(path);
     fsyncDir(dirname(path));
     return candidate;
@@ -428,23 +431,30 @@ function fsyncFile(path: string): void {
   }
 }
 
-/** Directory entries need their own fsync to be durable. Best-effort on
- *  platforms that refuse to fsync a directory descriptor. */
+/**
+ * Directory entries need their own fsync to be durable (fsync(2)). A
+ * failure here is a durability failure and propagates; the caller must not
+ * remove the original name on the strength of an unconfirmed publication.
+ */
 function fsyncDir(dir: string): void {
-  let fd: number;
-  try {
-    fd = openSync(dir, 'r');
-  } catch {
-    return;
-  }
+  const fd = openSync(dir, 'r');
   try {
     fsyncSync(fd);
-  } catch {
-    /* EINVAL on some filesystems — nothing more we can do */
   } finally {
     closeSync(fd);
   }
 }
+
+/**
+ * Test-only seams. `quarantineStep` is invoked before each step of
+ * quarantine publication and may throw to simulate that step failing;
+ * `tailScanMax` overrides the scan cap so the fallback path can be tested
+ * without writing tens of megabytes. Never set by production code.
+ */
+export const _auditTestHooks: {
+  quarantineStep?: (step: 'fsync-evidence' | 'fsync-dir' | 'unlink') => void;
+  tailScanMax?: number;
+} = {};
 
 /**
  * Hash of the last newline-terminated line, read from the tail in fixed
@@ -453,7 +463,8 @@ function fsyncDir(dir: string): void {
  * final line costs O(line), not O(line²/chunk) — this runs under the
  * audit lock, and a caller-controlled payload must not be able to stall
  * every other session. Lines longer than MAX_TAIL_SCAN fall back to a
- * full re-verify. Returns null for a file that doesn't end in a newline
+ * full re-verify — which bounds the *tail scan*, not the lock hold: the
+ * full re-verify is O(file) like every resync (see readHeadAndSize). Returns null for a file that doesn't end in a newline
  * (torn) or whose last line doesn't parse — either way the caller falls
  * through to readHeadAndSize.
  */
@@ -485,7 +496,7 @@ function lastLineHash(path: string, size: number): string | null {
       }
       pieces.push(buf);
       pos = start;
-      if (scanned > MAX_TAIL_SCAN) return null;
+      if (scanned > (_auditTestHooks.tailScanMax ?? MAX_TAIL_SCAN)) return null;
     }
     const line = Buffer.concat(pieces.reverse()).toString('utf8');
     try {
