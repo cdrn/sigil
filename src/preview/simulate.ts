@@ -3,7 +3,7 @@ import type { SignableTx } from '../eth/index.js';
 import { type JsonRpcUpstream, UpstreamRpcError } from '../rpc/upstream.js';
 import { EVENT_TOPICS } from './known.js';
 import type { TokenMeta } from './types.js';
-import { sanitizeSymbol, ZERO_ADDRESS } from './units.js';
+import { hexQuantity, MAX_QTY_HEX_DIGITS, sanitizeSymbol, ZERO_ADDRESS } from './units.js';
 
 /**
  * Dry-run a transaction on the user's configured RPC node and summarize
@@ -311,8 +311,7 @@ function parseSimulateV1(res: unknown): {
     throw new SimShapeError(`status ${JSON.stringify(st)}`);
   }
   const ok = st === '0x1' || st === '0x01';
-  const gu = c['gasUsed'];
-  const gasUsed = typeof gu === 'string' && /^0x[0-9a-fA-F]+$/.test(gu) ? BigInt(gu) : null;
+  const gasUsed = hexQuantity(c['gasUsed']);
   const rawLogs = c['logs'] ?? [];
   if (!Array.isArray(rawLogs)) throw new SimShapeError('logs is not an array');
   const logs: RawLog[] = rawLogs.filter(isObj).map((l) => ({
@@ -703,11 +702,14 @@ function qtyHex(v: bigint): string {
   return '0x' + v.toString(16);
 }
 
+/** A node quantity, or throw: malformed or wider than uint256 (oversized). */
 function parseQty(v: unknown, what: string): bigint {
-  if (typeof v !== 'string' || !/^0x[0-9a-fA-F]+$/.test(v)) {
-    throw new Error(`${what} is not a hex quantity`);
+  const q = hexQuantity(v);
+  if (q === null) {
+    const oversized = typeof v === 'string' && v.length > MAX_QTY_HEX_DIGITS + 2;
+    throw new Error(`${what} is ${oversized ? 'an oversized quantity' : 'not a hex quantity'}`);
   }
-  return BigInt(v);
+  return q;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {

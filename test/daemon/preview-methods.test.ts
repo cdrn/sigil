@@ -17,6 +17,7 @@ import {
   type MethodContext,
   type PreviewContext,
   RPC_DAEMON_LOCKED,
+  RPC_INVALID_PARAMS,
   RPC_POLICY_DENIED,
   RPC_PORTAL_NOT_FOUND,
   RpcMethodError,
@@ -387,6 +388,32 @@ test('preview_transaction: locked → DAEMON_LOCKED; unknown portal → PORTAL_N
       dispatch('sigil_eth_preview_transaction', { ...txParams(), portal: 'evm:nope' }, h.ctx),
       (e: RpcMethodError) => e.code === RPC_PORTAL_NOT_FOUND,
     );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('tx quantities wider than uint256 are INVALID_PARAMS before any preview work', async () => {
+  const h = harness();
+  try {
+    const max = ((1n << 256n) - 1n).toString();
+    // uint256 max itself is fine as a value (the sign may fail later on funds, not here).
+    await dispatch('sigil_eth_preview_transaction', txParams({ value: max, data: '0x' }), h.ctx);
+    for (const [key, v] of [
+      ['value', (1n << 256n).toString()],
+      ['value', '9'.repeat(100_000)],
+      ['gasLimit', '0x' + 'f'.repeat(65)],
+      ['maxFeePerGas', (1n << 300n).toString()],
+      ['nonce', (1n << 256n).toString()],
+    ] as const) {
+      const start = Date.now();
+      await rejects(
+        dispatch('sigil_eth_sign_transaction', txParams({ [key]: v }), h.ctx),
+        (e: RpcMethodError) => e.code === RPC_INVALID_PARAMS && /exceeds uint256/.test(e.message),
+      );
+      ok(Date.now() - start < 200);
+    }
+    equal(entries(h.auditPath).length, 0);
   } finally {
     h.cleanup();
   }

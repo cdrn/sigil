@@ -1,5 +1,6 @@
 import { HttpUpstream, type JsonRpcUpstream } from '../rpc/upstream.js';
 import { DEFAULT_SIM_TIMEOUT_MS, withTimeout } from './simulate.js';
+import { hexQuantity } from './units.js';
 
 /**
  * Chain id → simulation node, built from config at sigil-mcp boot.
@@ -88,8 +89,9 @@ export class SimulatorResolver {
         'eth_chainId timed out',
       )
         .then((v) => {
-          if (typeof v === 'string' && /^0x[0-9a-fA-F]+$/.test(v)) return BigInt(v);
-          throw new Error('malformed eth_chainId');
+          const id = hexQuantity(v);
+          if (id === null) throw new Error('malformed eth_chainId');
+          return id;
         })
         .catch(() => {
           // Forget the attempt so a later sign (after the cool-down) retries.

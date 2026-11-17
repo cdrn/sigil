@@ -17,12 +17,46 @@ export function shortAddr(addr: string): string {
   return a.length === 42 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
 }
 
-/** 1234567 → "1,234,567". */
+/**
+ * Anything at or above 10^80 is not a real amount (uint256 tops out at
+ * ~1.2e77). Formatting refuses it before calling BigInt.toString, whose
+ * cost grows super-linearly with the digit count — a node or contract
+ * must not be able to stall the event loop with a 100k-digit "gasUsed".
+ */
+const FORMAT_CAP = 10n ** 80n;
+const HUGE = '≥1e80 (not a real amount)';
+
+/** Longest hex quantity accepted from a node: uint256, 64 hex digits. */
+export const MAX_QTY_HEX_DIGITS = 64;
+const QTY_RE = /^0x[0-9a-fA-F]{1,64}$/;
+
+/**
+ * Parse a JSON-RPC hex quantity from a node, or null if it is malformed or
+ * wider than uint256. Bounded regex, so the check itself is linear.
+ */
+export function hexQuantity(v: unknown): bigint | null {
+  if (typeof v !== 'string' || !QTY_RE.test(v)) return null;
+  return BigInt(v);
+}
+
+/** 1234567 → "1,234,567". Linear: built with a loop, no regex. */
 export function groupThousands(n: bigint): string {
   const neg = n < 0n;
-  const s = (neg ? -n : n).toString();
-  const out = s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const abs = neg ? -n : n;
+  if (abs >= FORMAT_CAP) return (neg ? '-' : '') + HUGE;
+  const s = abs.toString();
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 === 0) out += ',';
+    out += s[i];
+  }
   return neg ? `-${out}` : out;
+}
+
+function trimTrailingZeros(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === '0') end--;
+  return s.slice(0, end);
 }
 
 /**
@@ -33,10 +67,11 @@ export function groupThousands(n: bigint): string {
 export function formatUnits(amount: bigint, decimals: number): string {
   const neg = amount < 0n;
   const abs = neg ? -amount : amount;
+  if (abs >= FORMAT_CAP) return (neg ? '-' : '') + HUGE;
   if (decimals === 0) return (neg ? '-' : '') + groupThousands(abs);
   const scale = 10n ** BigInt(decimals);
   const whole = abs / scale;
-  const frac = (abs % scale).toString().padStart(decimals, '0').replace(/0+$/, '');
+  const frac = trimTrailingZeros((abs % scale).toString().padStart(decimals, '0'));
   return (neg ? '-' : '') + groupThousands(whole) + (frac === '' ? '' : `.${frac}`);
 }
 
@@ -167,7 +202,10 @@ export function splitTopLevel(s: string): string[] {
  * or nothing (callers then fall back to the address).
  */
 export function sanitizeSymbol(s: string): string | undefined {
-  const t = s.replace(/\0+$/, '').trim();
+  if (s.length > 64) return undefined;
+  let end = s.length;
+  while (end > 0 && s[end - 1] === '\0') end--;
+  const t = s.slice(0, end).trim();
   if (!/^[A-Za-z0-9.$_+-]{1,16}$/.test(t)) return undefined;
   return t;
 }

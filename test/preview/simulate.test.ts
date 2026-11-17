@@ -448,3 +448,23 @@ test('a deploy that eth_simulateV1 cannot build (anvil: missing "to") falls back
   const n2 = new FakeNode().on('eth_simulateV1', new UpstreamRpcError(-32602, 'bad params'));
   equal((await simulateTransaction(tx(), PORTAL, n2)).status, 'unavailable');
 });
+
+test('oversized quantities from the node never reach the formatters', async () => {
+  const huge = '0x' + 'f'.repeat(100_000);
+  const start = Date.now();
+  const sim = ran(
+    await simulateTransaction(
+      tx(),
+      PORTAL,
+      new FakeNode().on('eth_simulateV1', simResult({ gasUsed: huge })),
+    ),
+  );
+  equal(sim.gasUsed, null);
+  // Fallback path: an oversized eth_estimateGas is "unavailable", not a number.
+  const fb = ran(
+    await simulateTransaction(tx(), PORTAL, new FakeNode().on('eth_estimateGas', huge)),
+  );
+  equal(fb.gasUsed, null);
+  ok(fb.notes.includes('gas estimate unavailable'), fb.notes.join('|'));
+  ok(Date.now() - start < 500, `${Date.now() - start} ms`);
+});

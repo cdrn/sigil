@@ -40,6 +40,10 @@ import {
 import type { JsonRpcUpstream } from '../rpc/upstream.js';
 import { type HandleTable } from './handles.js';
 
+const MAX_UINT256 = (1n << 256n) - 1n;
+/** Decimal digits in 2^256−1; longer strings are rejected before BigInt parses them. */
+const MAX_UINT256_DIGITS = 78;
+
 // Error codes — these match JSON-RPC 2.0 standard error codes plus a
 // sigil-specific range (-32000..-32099). They flow through the MCP wire
 // unchanged so the client sees the exact diagnosis.
@@ -381,6 +385,11 @@ function asTx(obj: Record<string, unknown>): SignableTx {
   const num = (key: string): bigint => {
     const v = obj[key];
     if (typeof v === 'string') {
+      // Bound the input before BigInt sees it: a 0x prefix plus 64 hex
+      // digits or 78 decimal digits covers every uint256.
+      if (v.length > MAX_UINT256_DIGITS + 2) {
+        throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} exceeds uint256`);
+      }
       let n: bigint;
       try {
         n = BigInt(v);
@@ -389,6 +398,11 @@ function asTx(obj: Record<string, unknown>): SignableTx {
       }
       if (n < 0n) {
         throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} must be a non-negative integer`);
+      }
+      // Every tx field is at most a uint256 on the wire; anything wider is
+      // garbage that would otherwise reach RLP encoding and the formatters.
+      if (n > MAX_UINT256) {
+        throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} exceeds uint256`);
       }
       return n;
     }
