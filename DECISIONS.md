@@ -105,15 +105,28 @@ Verified end-to-end against a local anvil node: real `eth_simulateV1`
 response shape, traced native transfer, a freshly deployed ERC-20's
 `symbol()`/`decimals()`, an unlimited approve preview, a transfer signed
 with its preview audited, and an overdraw denied with
-`Error("TOK: balance")`.
+`Error("TOK: balance")`. Then against a hosted Sepolia node
+(publicnode, reth v2.11): USDC approve, USDC transfer and a plain ETH send
+from the unfunded smoke portal. Two divergences found and fixed: reth
+reports traced native transfers from `0xffff…fffe` (now a native
+sentinel, so the ETH was no longer double-counted as a fake token), and a
+bare revert that burned ≥95% of the gas limit is now reported as "likely
+out of gas (used X of the Y gas limit)" — a USDC approve on Sepolia costs
+~140k gas and had shown as a plain "execution reverted" at gas 100000.
+After the fix: approve says out of gas, transfer says
+`Error("ERC20: transfer amount exceeds balance")`, the ETH send shows
+`-0.001 ETH` once.
 
 **Unverified.**
 
-- No test against mainnet nodes or hosted providers (Alchemy, Infura,
+- No test against mainnet nodes or the paid providers (Alchemy, Infura,
   QuickNode); their `eth_simulateV1` support and error codes are assumed to
-  match geth's. A provider that rejects `validation: false` or
+  match geth's/reth's. A provider that rejects `validation: false` or
   `traceTransfers` would surface as `unavailable`.
-- reth and geth themselves were not run; only anvil.
+- geth itself was not run; anvil and a hosted reth were.
+- The out-of-gas heuristic (≥95% of the limit, no revert data) can
+  misread a contract that reverts late with no reason; the message says
+  "likely" for that reason.
 - The real ntfy rendering of the multi-line confirm body (headline + `⚠`
   lines) was not looked at on a phone.
 - Built-in descriptions for Universal Router `execute` name only the

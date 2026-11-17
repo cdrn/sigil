@@ -161,6 +161,60 @@ test('revert with Error(string) via the call result', async () => {
   equal(sim.revertReason, 'Error("STF")');
 });
 
+test('reth’s 0xffff…fffe native sentinel is ETH, not a token', async () => {
+  const RETH_NATIVE = '0xfffffffffffffffffffffffffffffffffffffffe';
+  const node = new FakeNode().on(
+    'eth_simulateV1',
+    simResult({
+      gasUsed: '0x5208',
+      logs: [
+        {
+          address: RETH_NATIVE,
+          topics: [TOPIC.Transfer, t(PORTAL), t(SPENDER)],
+          data: '0x' + w(10n ** 15n),
+        },
+      ],
+    }),
+  );
+  const sim = ran(await simulateTransaction(tx({ to: SPENDER, value: 10n ** 15n }), PORTAL, node));
+  equal(sim.status, 'ok');
+  equal(sim.changes!.native, -(10n ** 15n));
+  deepEqual(sim.changes!.erc20, []);
+  equal(sim.transfers![0]!.standard, 'native');
+  ok(!node.calls.some((c) => c.method === 'eth_call'), 'no token metadata lookup for ETH');
+});
+
+test('a bare revert that burned the gas limit is reported as out of gas', async () => {
+  // Live shape from reth v2.11: USDC approve with gasLimit 100000.
+  const node = new FakeNode().on(
+    'eth_simulateV1',
+    simResult({
+      status: '0x0',
+      gasUsed: '0x1821c',
+      returnData: '0x',
+      error: { code: 3, message: 'execution reverted', data: '0x' },
+    }),
+  );
+  const sim = ran(await simulateTransaction(tx({ to: USDC, gasLimit: 100_000n }), PORTAL, node));
+  equal(sim.status, 'reverted');
+  equal(
+    sim.revertReason,
+    'likely out of gas (used 98844 of the 100000 gas limit — raise gasLimit)',
+  );
+  // The same bare revert well under the limit stays a plain revert.
+  const node2 = new FakeNode().on(
+    'eth_simulateV1',
+    simResult({
+      status: '0x0',
+      gasUsed: '0x5dc0',
+      returnData: '0x',
+      error: { code: 3, message: 'execution reverted', data: '0x' },
+    }),
+  );
+  const sim2 = ran(await simulateTransaction(tx({ to: USDC, gasLimit: 100_000n }), PORTAL, node2));
+  equal(sim2.revertReason, 'execution reverted');
+});
+
 test('revert with Panic and with a custom error', async () => {
   const panic = '0x4e487b71' + w(0x11);
   const node = new FakeNode().on('eth_simulateV1', simResult({ status: '0x0', returnData: panic }));

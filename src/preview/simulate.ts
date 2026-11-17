@@ -35,14 +35,34 @@ const MAX_TRANSFERS = 32;
 
 /**
  * Addresses traceTransfers uses for synthetic native-ETH Transfer logs.
- * geth emits them from ERC-7528's 0xEeee…EEeE; some implementations and
- * docs use the zero address. Both are treated as native ETH — neither can
- * host a real token contract emitting events.
+ * geth emits them from ERC-7528's 0xEeee…EEeE, reth (seen on v2.11 against
+ * Sepolia) from 0xffff…fffe, and some implementations and docs use the zero
+ * address. All are treated as native ETH — none can host a real token
+ * contract emitting events (the two high addresses are precompile-range
+ * reserved; the zero address has no code).
  */
 const NATIVE_SENTINELS: ReadonlySet<string> = new Set([
   ZERO_ADDRESS,
   '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  '0xfffffffffffffffffffffffffffffffffffffffe',
 ]);
+
+/**
+ * A call that reverts with no data while having burned (almost) all of its
+ * gas limit ran out of gas: EIP-150 keeps 1/64 for the caller, so a true
+ * out-of-gas lands just under the limit rather than exactly on it. A
+ * real revert with no reason string stops well short. Seen live: a USDC
+ * approve on Sepolia needs ~140k gas; with gas_limit 100000 reth reported
+ * status 0x0, data 0x, gasUsed 98844 — a bare "execution reverted" that
+ * would send the human chasing a contract bug instead of a gas limit.
+ */
+const OOG_NUM = 95n;
+const OOG_DEN = 100n;
+export function outOfGasReason(gasUsed: bigint | null, gasLimit: bigint): string | null {
+  if (gasUsed === null || gasLimit <= 0n) return null;
+  if (gasUsed * OOG_DEN < gasLimit * OOG_NUM) return null;
+  return `likely out of gas (used ${gasUsed} of the ${gasLimit} gas limit — raise gasLimit)`;
+}
 
 export interface SimTransfer {
   standard: 'native' | 'erc20' | 'erc721' | 'erc1155';
@@ -166,7 +186,10 @@ async function run(
     status = parsed.ok ? 'ok' : 'reverted';
     gasUsed = parsed.gasUsed;
     logs = parsed.logs;
-    if (!parsed.ok) revertReason = parsed.revertReason;
+    if (!parsed.ok) {
+      revertReason = parsed.revertReason;
+      if (parsed.bareRevert) revertReason = outOfGasReason(gasUsed, gas) ?? revertReason;
+    }
   } catch (err) {
     // Some nodes serve eth_simulateV1 but can't build a creation call with
     // it (anvil rejects a missing `to`); eth_call handles deploys fine.
@@ -272,6 +295,8 @@ function parseSimulateV1(res: unknown): {
   ok: boolean;
   gasUsed: bigint | null;
   revertReason?: string;
+  /** Reverted with no revert data at all (out-of-gas looks like this). */
+  bareRevert?: boolean;
   logs: RawLog[];
 } {
   if (!Array.isArray(res) || res.length === 0) throw new SimShapeError('no blocks');
@@ -303,14 +328,17 @@ function parseSimulateV1(res: unknown): {
   const ret = typeof c['returnData'] === 'string' ? c['returnData'] : undefined;
   const bytes = errData ?? ret;
   let revertReason: string;
+  let bareRevert = false;
   if (bytes !== undefined && bytes !== '0x' && HEX_RE.test(bytes)) {
     revertReason = decodeRevert(bytes);
-  } else if (typeof err?.['message'] === 'string') {
-    revertReason = cleanMessage(err['message']);
   } else {
-    revertReason = 'execution reverted (no reason)';
+    bareRevert = true;
+    revertReason =
+      typeof err?.['message'] === 'string'
+        ? cleanMessage(err['message'])
+        : 'execution reverted (no reason)';
   }
-  return { ok, gasUsed, revertReason, logs };
+  return { ok, gasUsed, revertReason, bareRevert, logs };
 }
 
 // ---------------------------------------------------------------------------
