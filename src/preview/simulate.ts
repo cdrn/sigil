@@ -168,9 +168,17 @@ async function run(
     logs = parsed.logs;
     if (!parsed.ok) revertReason = parsed.revertReason;
   } catch (err) {
-    if (err instanceof UpstreamRpcError && isUnsupported(err)) {
+    // Some nodes serve eth_simulateV1 but can't build a creation call with
+    // it (anvil rejects a missing `to`); eth_call handles deploys fine.
+    const deployRejected =
+      to === null && err instanceof UpstreamRpcError && !isRevert(err) && err.code === -32602;
+    if (err instanceof UpstreamRpcError && (isUnsupported(err) || deployRejected)) {
       method = 'eth_call';
-      notes.push('simulation: eth_call only (node lacks eth_simulateV1)');
+      notes.push(
+        deployRejected
+          ? 'simulation: eth_call only (node cannot simulate a contract creation with eth_simulateV1)'
+          : 'simulation: eth_call only (node lacks eth_simulateV1)',
+      );
       try {
         await call('eth_call', [callObj, 'latest']);
         status = 'ok';

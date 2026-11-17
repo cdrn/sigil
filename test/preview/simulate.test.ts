@@ -369,3 +369,28 @@ test('analyzeLogs: WETH deposit, ERC-721 in/out, ERC-1155 single + batch, malfor
     { token: NFT, tokenId: 2n, delta: -20n },
   ]);
 });
+
+test('a deploy that eth_simulateV1 cannot build (anvil: missing "to") falls back to eth_call', async () => {
+  // Response text and code observed from anvil for a creation call.
+  const node = new FakeNode()
+    .on(
+      'eth_simulateV1',
+      new UpstreamRpcError(
+        -32602,
+        `Invalid transaction request: Failed to build transaction: eip1559 transaction can't be built due to missing keys: ["to"]`,
+      ),
+    )
+    .on('eth_call', new UpstreamRpcError(3, 'execution reverted', '0x'));
+  const sim = ran(await simulateTransaction(tx({ to: null, data: '0x60006000fd' }), PORTAL, node));
+  equal(sim.status, 'reverted');
+  equal(sim.method, 'eth_call');
+  equal(sim.revertReason, 'execution reverted');
+  deepEqual(sim.notes, [
+    'simulation: eth_call only (node cannot simulate a contract creation with eth_simulateV1)',
+  ]);
+  const call = node.calls[0]!.params[0] as { blockStateCalls: { calls: object[] }[] };
+  equal('to' in (call.blockStateCalls[0]!.calls[0] as object), false);
+  // The same -32602 for a normal call is NOT a fallback trigger.
+  const n2 = new FakeNode().on('eth_simulateV1', new UpstreamRpcError(-32602, 'bad params'));
+  equal((await simulateTransaction(tx(), PORTAL, n2)).status, 'unavailable');
+});
