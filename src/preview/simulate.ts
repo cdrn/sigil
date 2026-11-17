@@ -135,7 +135,7 @@ export type Simulation =
   | { status: 'unavailable'; reason: string };
 
 export interface SimulateOpts {
-  /** Per-RPC-call timeout; the whole simulation is bounded at 2×. */
+  /** Per-RPC-call timeout. Execution is bounded at 2× this; token metadata gets 1× on top. */
   timeoutMs?: number;
   /** Extra token addresses to fetch metadata for (e.g. the `to` of an approve). */
   extraTokens?: readonly string[];
@@ -161,28 +161,6 @@ export async function simulateTransaction(
           : `gasLimit ${gas} is below the 21000 intrinsic minimum and cannot be simulated or sent`,
     };
   }
-  const running = run(tx, from.toLowerCase(), upstream, timeoutMs, opts.extraTokens ?? []);
-  running.catch(() => {
-    /* settled below or abandoned after the overall timeout */
-  });
-  try {
-    return await withTimeout(
-      running,
-      timeoutMs * 2,
-      `simulation timed out after ${timeoutMs * 2} ms`,
-    );
-  } catch (err) {
-    return { status: 'unavailable', reason: errText(err) };
-  }
-}
-
-async function run(
-  tx: SignableTx,
-  from: string,
-  upstream: JsonRpcUpstream,
-  timeoutMs: number,
-  extraTokens: readonly string[],
-): Promise<Simulation> {
   const call = (method: string, params: unknown[]): Promise<unknown> =>
     withTimeout(
       upstream.call(method, params),
@@ -190,6 +168,65 @@ async function run(
       `${method} timed out after ${timeoutMs} ms`,
     );
 
+  // Phase 1 — execution (eth_simulateV1 or the fallback, incl. the
+  // fee-stripped retry), bounded at 2× the per-call timeout. Only this
+  // phase can make the simulation 'unavailable'.
+  const running = execute(tx, from.toLowerCase(), call);
+  running.catch(() => {
+    /* settled below or abandoned after the overall timeout */
+  });
+  let sim: Extract<Simulation, { status: 'ok' | 'reverted' }>;
+  try {
+    sim = await withTimeout(
+      running,
+      timeoutMs * 2,
+      `simulation timed out after ${timeoutMs * 2} ms`,
+    );
+  } catch (err) {
+    return { status: 'unavailable', reason: errText(err) };
+  }
+
+  // Phase 2 — token metadata, with its own budget. The status is known by
+  // now and nothing here may turn a known revert (or success) into
+  // 'unavailable': a slow or failing lookup just leaves amounts raw.
+  const wanted: string[] = [];
+  const want = (t: string | null): void => {
+    if (t === null || NATIVE_SENTINELS.has(t) || wanted.includes(t)) return;
+    if (wanted.length < MAX_META_TOKENS) wanted.push(t);
+  };
+  for (const t of opts.extraTokens ?? []) want(t.toLowerCase());
+  for (const c of sim.changes?.erc20 ?? []) want(c.token);
+  for (const t of sim.transfers ?? []) if (t.standard === 'erc20') want(t.token);
+  for (const ap of sim.approvals ?? []) if (ap.standard === 'erc20') want(ap.token);
+  if (wanted.length === 0) return sim;
+  let unreachable = false;
+  const lookups = Promise.all(
+    wanted.map(
+      async (t) => [t, await fetchTokenMeta(t, call, () => (unreachable = true))] as const,
+    ),
+  );
+  lookups.catch(() => {
+    /* abandoned after the metadata budget */
+  });
+  try {
+    const entries = await withTimeout(lookups, timeoutMs, 'token metadata timed out');
+    const tokenMeta: Record<string, TokenMeta> = {};
+    for (const [t, m] of entries) {
+      if (m.symbol !== undefined || m.decimals !== undefined) tokenMeta[t] = m;
+    }
+    const notes = unreachable ? [...sim.notes, 'token metadata unavailable'] : sim.notes;
+    return { ...sim, notes, tokenMeta };
+  } catch {
+    return { ...sim, notes: [...sim.notes, 'token metadata unavailable'] };
+  }
+}
+
+/** Phase 1: run the call on the node and analyse its logs. No metadata. */
+async function execute(
+  tx: SignableTx,
+  from: string,
+  call: (method: string, params: unknown[]) => Promise<unknown>,
+): Promise<Extract<Simulation, { status: 'ok' | 'reverted' }>> {
   const to = tx.to === null ? null : tx.to.toLowerCase();
   const value = BigInt(tx.value);
   const dataHex =
@@ -341,24 +378,6 @@ async function run(
     changes = analysis.changes;
   }
 
-  // Token metadata: every ERC-20 touched, plus what the decoder asked for.
-  const wanted: string[] = [];
-  const want = (t: string | null): void => {
-    if (t === null || NATIVE_SENTINELS.has(t) || wanted.includes(t)) return;
-    if (wanted.length < MAX_META_TOKENS) wanted.push(t);
-  };
-  for (const t of extraTokens) want(t.toLowerCase());
-  for (const c of changes?.erc20 ?? []) want(c.token);
-  for (const t of transfers ?? []) if (t.standard === 'erc20') want(t.token);
-  for (const ap of approvals ?? []) if (ap.standard === 'erc20') want(ap.token);
-  const metaEntries = await Promise.all(
-    wanted.map(async (t) => [t, await fetchTokenMeta(t, call)] as const),
-  );
-  const tokenMeta: Record<string, TokenMeta> = {};
-  for (const [t, m] of metaEntries) {
-    if (m.symbol !== undefined || m.decimals !== undefined) tokenMeta[t] = m;
-  }
-
   if (status === undefined) throw new Error('internal: simulation status unset');
   return {
     status,
@@ -372,7 +391,7 @@ async function run(
     wraps,
     faithful,
     notes,
-    tokenMeta,
+    tokenMeta: {},
   };
 }
 
@@ -785,11 +804,17 @@ const DECIMALS_SELECTOR = '0x313ce567';
 export async function fetchTokenMeta(
   token: string,
   call: (method: string, params: unknown[]) => Promise<unknown>,
+  /** Called when a lookup failed for a reason other than the token's own
+   *  answer (timeout, transport) — i.e. the metadata is unknown, not absent. */
+  onUnreachable?: () => void,
 ): Promise<TokenMeta> {
   const [sym, dec] = await Promise.allSettled([
     call('eth_call', [{ to: token, data: SYMBOL_SELECTOR }, 'latest']),
     call('eth_call', [{ to: token, data: DECIMALS_SELECTOR }, 'latest']),
   ]);
+  for (const r of [sym, dec]) {
+    if (r.status === 'rejected' && !(r.reason instanceof UpstreamRpcError)) onUnreachable?.();
+  }
   const meta: TokenMeta = {};
   if (sym.status === 'fulfilled') {
     const s = parseSymbol(sym.value);

@@ -542,3 +542,27 @@ test('the fee-stripped retry needs code -32003 AND an insufficient-funds message
     }
   }
 });
+
+test('default policy denies a revert even when token metadata arrives late', async () => {
+  const later = <T>(ms: number, v: T): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms));
+  const node = new FakeNode()
+    .on('eth_simulateV1', (params: readonly unknown[]) => {
+      const c = (params[0] as { blockStateCalls: { calls: Record<string, unknown>[] }[] })
+        .blockStateCalls[0]!.calls[0]!;
+      return 'maxFeePerGas' in c
+        ? later(
+            70,
+            new UpstreamRpcError(-32003, 'Insufficient funds for gas * price + value'),
+          ).then((e) => Promise.reject(e))
+        : later(70, simResult({ status: '0x0', returnData: ERROR_STF }));
+    })
+    .on('eth_call', () => later(95, '0x'));
+  const h = harness({ preview: { ...withNode(node), timeoutMs: 100 } });
+  try {
+    const err = await denied(dispatch('sigil_eth_sign_transaction', txParams(), h.ctx));
+    equal(err.code, RPC_POLICY_DENIED);
+    ok(err.message.includes('simulation reverted: Error("STF")'), err.message);
+  } finally {
+    h.cleanup();
+  }
+});

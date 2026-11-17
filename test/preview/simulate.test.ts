@@ -635,3 +635,50 @@ test('insufficient funds with fee fields: one retry without them, noted', async 
   equal(s2.status, 'unavailable');
   equal(broke.calls.filter((c) => c.method === 'eth_simulateV1').length, 2);
 });
+
+const later = <T>(ms: number, v: T): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms));
+const laterErr = (ms: number, e: Error): Promise<never> =>
+  new Promise((_, rej) => setTimeout(() => rej(e), ms));
+
+/** Repro timings at timeoutMs = 100: fee refusal 70 ms, retry 70 ms, metadata 95 ms. */
+function slowRevertNode(): FakeNode {
+  const node = new FakeNode()
+    .on('eth_simulateV1', (params: readonly unknown[]) => {
+      const c = (params[0] as { blockStateCalls: { calls: Record<string, unknown>[] }[] })
+        .blockStateCalls[0]!.calls[0]!;
+      return 'maxFeePerGas' in c
+        ? laterErr(70, new UpstreamRpcError(-32003, 'Insufficient funds for gas * price + value'))
+        : later(70, simResult({ status: '0x0', returnData: ERROR_STF }));
+    })
+    .on('eth_call', (params: readonly unknown[]) =>
+      later(
+        95,
+        (params[0] as { data: string }).data === '0x313ce567' ? '0x' + w(6) : encString('USDC'),
+      ),
+    );
+  return node;
+}
+
+test('a known revert survives slow token metadata (execution and metadata have separate budgets)', async () => {
+  const sim = await simulateTransaction(tx(), PORTAL, slowRevertNode(), {
+    timeoutMs: 100,
+    extraTokens: [USDC],
+  });
+  equal(sim.status, 'reverted');
+  equal((sim as Ran).revertReason, 'Error("STF")');
+  deepEqual((sim as Ran).tokenMeta, { [USDC]: { symbol: 'USDC', decimals: 6 } });
+});
+
+test('metadata that blows its budget leaves amounts raw, never "unavailable"', async () => {
+  const node = new FakeNode()
+    .on('eth_simulateV1', simResult({ status: '0x0', returnData: ERROR_STF }))
+    .on('eth_call', () => later(400, '0x'));
+  const keepAlive = setInterval(() => {}, 1000);
+  const sim = ran(
+    await simulateTransaction(tx(), PORTAL, node, { timeoutMs: 100, extraTokens: [USDC] }),
+  );
+  clearInterval(keepAlive);
+  equal(sim.status, 'reverted');
+  deepEqual(sim.tokenMeta, {});
+  ok(sim.notes.includes('token metadata unavailable'), sim.notes.join('|'));
+});
