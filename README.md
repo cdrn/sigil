@@ -16,7 +16,7 @@ One MCP server process, four bins (plus a legacy `sigild` alias), six runtime de
 
 `sigil-mcp` boots **locked**: empty in-memory handle table, no keys loaded. Sign methods return `DAEMON_LOCKED` (-32003) with a "run sigil unlock" message until you push the passphrase in from a separate terminal via `sigil unlock`. That CLI connects to a per-session Unix socket at `~/.sigil/control/<pid>.sock` (0600) that `sigil-mcp` opens at startup — and fans out to every such socket so one `sigil unlock` reaches all open windows. After unlock, signs work for the rest of the session; `sigil lock` zeroizes the table without killing the process.
 
-Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transactions, EIP-712 typed data, plus Solana (ed25519) message + transaction signing — see [Solana support](#solana-svm) below.
+Sign methods exposed today: EIP-191 personal_sign, EIP-1559 + legacy transactions, EIP-712 typed data, plus Solana (ed25519) message + transaction signing — see [Solana support](#solana-svm) below. Every EVM transaction is decoded (and optionally simulated) before it is signed, and `sigil_eth_preview_transaction` shows that preview without signing — see [Transaction preview](#transaction-preview).
 
 ## What it isn't
 
@@ -191,6 +191,10 @@ max_value_per_day_wei = "1000000000000000000"    # 1 ETH / day
 # waits for an approve/deny tap before signing. See "Out-of-band confirm"
 # below. Must be strictly less than max_value_wei.
 require_confirm_above_wei = "10000000000000000"   # 0.01 ETH
+
+# Optional transaction-preview gates (mode-independent; see "Transaction preview").
+# require_simulation = false              # true: deny any tx that couldn't be simulated
+# sign_on_revert     = false              # true: sign even when the simulation reverts
 ```
 
 A failed rule throws `POLICY_DENIED` (-32001) back to the agent with the human-readable reason ("tx denied — value X exceeds max_value_wei Y"), and the deny is appended to the hash-chained audit log alongside allows. Denies are forensically the more interesting half — they're the prompt-injection canary.
@@ -199,7 +203,50 @@ A failed rule throws `POLICY_DENIED` (-32001) back to the agent with the human-r
 
 **EIP-712 allowlists** (strict mode, with `allow_typed_data = true`): `typed_data_verifying_contracts` and `typed_data_primary_types` each restrict one axis when non-empty, and the domain must carry a `chainId` that names one of `chain_ids` (strict mode refuses chain-less domains, since they can't be checked). A typed-data signature can move funds (Permit, Permit2, exchange orders), so it gets the same treatment as a transaction's destination.
 
-Still deferred (in [#3](https://github.com/cdrn/sigil/issues/3)): decoded-calldata argument checks.
+Still deferred (in [#3](https://github.com/cdrn/sigil/issues/3)): decoded-calldata argument *checks* ("allow `transfer` only when `amount ≤ 100e18`"). Decoded-calldata *display* has shipped — see [Transaction preview](#transaction-preview) — along with two policy gates driven by simulation (`require_simulation`, `sign_on_revert`).
+
+## Transaction preview
+
+"Show me what I'm signing." Every EVM transaction sigil signs — through the MCP tool or the JSON-RPC proxy — is first decoded to English and, when a node is configured for its chain, dry-run. An ERC-20 `approve(spender, MAX)` no longer reaches your phone as `0 ETH → 0xa0b8…`:
+
+```text
+call: approve(spender=0x1111…1111, amount=UNLIMITED) on 0xa0b8…eb48 (USDC)
+value: 0 ETH   chain: 1
+simulation: ok, 46,201 gas
+  approvals: USDC → 0x1111…1111 UNLIMITED
+  balance changes for 0x2278…931c: none
+warnings:
+  - UNLIMITED approval
+```
+
+That text goes to three places: it is returned to the agent (`preview` alongside `signed`), it is written into the hash-chained audit entry for the request (allow *and* deny), and a one-line headline — `approve UNLIMITED USDC → 0x1111…1111 | sim ok | ⚠ UNLIMITED approval` — plus up to three warnings is appended to the out-of-band confirm push under the policy's own summary.
+
+**Decoding** needs no network. Built in: ERC-20 `transfer`/`approve`/`transferFrom`/`increaseAllowance`/`decreaseAllowance`; ERC-721 and ERC-1155 transfers and `setApprovalForAll`; WETH `deposit`/`withdraw`; Permit2 `approve`; Uniswap V2 router swaps, V3 `exactInputSingle`/`exactInput`/`exactOutputSingle`; Universal Router `execute`; and `multicall` (inner calls decoded one level). Warnings flag unlimited approvals, `setApprovalForAll(…, true)`, transfers/approvals to the zero address, swaps whose output goes to someone other than the portal, swaps with a zero minimum output, unknown selectors, and ETH sent with calldata sigil can't decode. For your own contracts, drop ABI files in `~/.sigil/abi/` — a bare ABI array or a Foundry/Hardhat artifact (`{"abi": [...]}`) — and calls to them render with argument names (`setFee(feeBps=30)`). Files are read once when `sigil-mcp` starts; a malformed one is skipped and named at the bottom of every preview, never fatal.
+
+**Simulation** is opt-in. Point sigil at a node per chain in `~/.sigil/config.toml`:
+
+```toml
+[simulate]
+# timeout_ms = 15000                 # per RPC call; a preview never waits more than ~2×
+
+[simulate.rpc]
+1        = "https://eth.example/v3/KEY"
+11155111 = "https://sepolia.example"
+```
+
+If the `[rpc]` proxy is configured, its `upstream` also serves simulation for the one chain it reports (asked via `eth_chainId` on first use). sigil calls `eth_simulateV1` with `traceTransfers` — one request that returns status, gas, revert data and every log, including native ETH movements — and derives the portal's net ETH and token balance changes, NFTs in and out, and approvals it grants; token symbols/decimals come from `symbol()`/`decimals()`. Nodes without `eth_simulateV1` get an `eth_call` + `eth_estimateGas` fallback (status and gas only; balance changes shown as unknown). Reverts are decoded (`Error("…")`, `Panic(0x11: arithmetic overflow/underflow)`, or `custom error 0x…`). Without a node for the chain the preview says `simulation: skipped`; a node that's down or slow is `unavailable` — a warning, not a failure, unless your policy says otherwise:
+
+```toml
+# in ~/.sigil/policy/<handle>.toml — both mode-independent, both default false
+require_simulation = true   # deny any tx that couldn't be simulated (no RPC, node down, timeout)
+sign_on_revert     = false  # default: a tx whose simulation reverts is denied with the reason
+```
+
+With the defaults, a portal with no simulation node configured behaves exactly as before (plus the decoded text); once a node is configured, a tx that simulates to a revert is denied with the decoded reason unless you set `sign_on_revert = true`. A strict policy's static checks still run first — a tx they deny never reaches the node.
+
+**`sigil_eth_preview_transaction`** takes the same `{portal, tx}` as `sigil_eth_sign_transaction` and returns the preview without signing: no policy check, no audit entry. Its description tells the agent to call it before signing anything non-trivial and to show you the result.
+
+What the preview is *not*: proof. Event logs and token symbols are chosen by the contracts being simulated — a scam token can emit a `Transfer` it never made and call itself `USDC` — and the simulation is whatever your node says about the latest block. Each transaction is simulated against current state on its own, so a second tx that depends on an unbroadcast first one (approve, then swap) will simulate as a revert: broadcast the first, then sign the second. Gas is not counted in balance changes. The simulation node sees the transaction before it is signed; it is the node you chose, and the one you'd broadcast through anyway.
 
 ## Out-of-band confirm
 
