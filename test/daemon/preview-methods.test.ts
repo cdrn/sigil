@@ -551,13 +551,13 @@ test('default policy denies a revert even when token metadata arrives late', asy
         .blockStateCalls[0]!.calls[0]!;
       return 'maxFeePerGas' in c
         ? later(
-            70,
+            700,
             new UpstreamRpcError(-32003, 'Insufficient funds for gas * price + value'),
           ).then((e) => Promise.reject(e))
-        : later(70, simResult({ status: '0x0', returnData: ERROR_STF }));
+        : later(700, simResult({ status: '0x0', returnData: ERROR_STF }));
     })
-    .on('eth_call', () => later(95, '0x'));
-  const h = harness({ preview: { ...withNode(node), timeoutMs: 100 } });
+    .on('eth_call', () => later(950, '0x'));
+  const h = harness({ preview: { ...withNode(node), timeoutMs: 1000 } });
   try {
     const err = await denied(dispatch('sigil_eth_sign_transaction', txParams(), h.ctx));
     equal(err.code, RPC_POLICY_DENIED);

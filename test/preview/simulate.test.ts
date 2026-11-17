@@ -640,19 +640,19 @@ const later = <T>(ms: number, v: T): Promise<T> => new Promise((r) => setTimeout
 const laterErr = (ms: number, e: Error): Promise<never> =>
   new Promise((_, rej) => setTimeout(() => rej(e), ms));
 
-/** Repro timings at timeoutMs = 100: fee refusal 70 ms, retry 70 ms, metadata 95 ms. */
+/** Repro ratios (scaled ×10 for loaded CI): timeoutMs 1000, fee refusal 700, retry 700, metadata 950. */
 function slowRevertNode(): FakeNode {
   const node = new FakeNode()
     .on('eth_simulateV1', (params: readonly unknown[]) => {
       const c = (params[0] as { blockStateCalls: { calls: Record<string, unknown>[] }[] })
         .blockStateCalls[0]!.calls[0]!;
       return 'maxFeePerGas' in c
-        ? laterErr(70, new UpstreamRpcError(-32003, 'Insufficient funds for gas * price + value'))
-        : later(70, simResult({ status: '0x0', returnData: ERROR_STF }));
+        ? laterErr(700, new UpstreamRpcError(-32003, 'Insufficient funds for gas * price + value'))
+        : later(700, simResult({ status: '0x0', returnData: ERROR_STF }));
     })
     .on('eth_call', (params: readonly unknown[]) =>
       later(
-        95,
+        950,
         (params[0] as { data: string }).data === '0x313ce567' ? '0x' + w(6) : encString('USDC'),
       ),
     );
@@ -661,7 +661,7 @@ function slowRevertNode(): FakeNode {
 
 test('a known revert survives slow token metadata (execution and metadata have separate budgets)', async () => {
   const sim = await simulateTransaction(tx(), PORTAL, slowRevertNode(), {
-    timeoutMs: 100,
+    timeoutMs: 1000,
     extraTokens: [USDC],
   });
   equal(sim.status, 'reverted');
