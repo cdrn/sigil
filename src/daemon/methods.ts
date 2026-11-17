@@ -410,6 +410,15 @@ function asTx(obj: Record<string, unknown>): SignableTx {
       if (!Number.isInteger(v) || v < 0) {
         throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} must be a non-negative integer`);
       }
+      // A JSON number above 2^53 has already lost precision (1e100 is an
+      // "integer" to JS but not the value anyone typed) and would skip the
+      // uint256 bound the string path enforces.
+      if (!Number.isSafeInteger(v)) {
+        throw new RpcMethodError(
+          RPC_INVALID_PARAMS,
+          `tx: ${key} is not a safe integer — use a decimal string for values above 2^53`,
+        );
+      }
       return BigInt(v);
     }
     throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} must be number or decimal string`);

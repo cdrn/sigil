@@ -450,3 +450,29 @@ test('require_simulation denies a gasLimit 0 tx (it cannot be simulated as signe
     h.cleanup();
   }
 });
+
+test('JSON-number tx fields above 2^53 are INVALID_PARAMS (no 1e100 nonce gets signed)', async () => {
+  const h = harness();
+  try {
+    for (const key of ['nonce', 'value', 'gasLimit']) {
+      for (const v of [1e100, 2 ** 53, Number.MAX_VALUE]) {
+        await rejects(
+          dispatch('sigil_eth_sign_transaction', txParams({ [key]: v, data: '0x' }), h.ctx),
+          (e: RpcMethodError) =>
+            e.code === RPC_INVALID_PARAMS &&
+            /use a decimal string for values above 2\^53/.test(e.message),
+          `${key}=${v}`,
+        );
+      }
+    }
+    equal(entries(h.auditPath).length, 0);
+    // The largest safe integer still works as a number.
+    await dispatch(
+      'sigil_eth_preview_transaction',
+      txParams({ nonce: Number.MAX_SAFE_INTEGER, data: '0x' }),
+      h.ctx,
+    );
+  } finally {
+    h.cleanup();
+  }
+});
