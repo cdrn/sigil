@@ -227,7 +227,7 @@ That text goes to three places: it is returned to the agent (`preview` alongside
 
 ```toml
 [simulate]
-# timeout_ms = 15000                 # per RPC call; a preview never waits more than ~2×
+# timeout_ms = 15000                 # per RPC call; a preview never waits more than ~3×
 
 [simulate.rpc]
 1        = "https://eth.example/v3/KEY"

@@ -107,7 +107,7 @@ export interface PreviewContext {
    * chain is looked up on first use); must not reject.
    */
   simulatorFor(chainId: bigint): JsonRpcUpstream | undefined | Promise<JsonRpcUpstream | undefined>;
-  /** Per-RPC-call timeout; the preview as a whole is bounded at ~2×. */
+  /** Per-RPC-call timeout; execution is bounded at 2× this, token metadata at 1× on top (~3× in all). */
   timeoutMs?: number;
 }
 
