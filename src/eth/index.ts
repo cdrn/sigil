@@ -34,3 +34,15 @@ export {
   typedDataDigest,
   signTypedData,
 } from './sign-typed.js';
+export {
+  type AbiType,
+  AbiDecodeError,
+  parseAbiType,
+  parseSignature,
+  canonicalType,
+  isDynamic,
+  decodeAbiParameters,
+  decodeAbiTypes,
+  functionSelector,
+  eventTopic,
+} from './abi.js';
