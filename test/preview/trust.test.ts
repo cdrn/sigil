@@ -419,8 +419,8 @@ test('multicall: a met inner swap claim gives no warning; output kept by the rou
     good.warnings.join('|'),
   );
 
-  // recipient = address(2): the router holds the WETH for a later step
-  // (e.g. unwrap) — net zero for the router, but the swap step delivered.
+  // recipient = address(2): the router holds the WETH for a later unwrap and
+  // sends the portal ETH — judged by the portal's net, which is ≥ min in ETH.
   const ADDRESS_THIS = '0x0000000000000000000000000000000000000002';
   const viaRouter = await multicallPreview(
     [
@@ -430,6 +430,11 @@ test('multicall: a met inner swap claim gives no warning; output kept by the rou
         data: '0x' + w(10n ** 18n),
       },
       { address: WETH, topics: [TOPIC.Withdrawal, t(ROUTER)], data: '0x' + w(10n ** 18n) },
+      {
+        address: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        topics: [TOPIC.Transfer, t(ROUTER), t(PORTAL)],
+        data: '0x' + w(10n ** 18n),
+      },
     ],
     10n ** 18n,
     ADDRESS_THIS,
@@ -446,4 +451,37 @@ test('multicall: a met inner swap claim gives no warning; output kept by the rou
     ADDRESS_THIS,
   );
   ok(fakeRouter.warnings.some((x) => x.startsWith('swap output below the declared minimum')));
+});
+
+test('multicall: router-recipient swap with output pushed in and pulled back out does not pass', async () => {
+  const ADDRESS_THIS = '0x0000000000000000000000000000000000000002';
+  const inAndOut = await multicallPreview(
+    [
+      {
+        address: WETH,
+        topics: [TOPIC.Transfer, t(ATTACKER), t(ROUTER)],
+        data: '0x' + w(10n ** 18n),
+      },
+      {
+        address: WETH,
+        topics: [TOPIC.Transfer, t(ROUTER), t(ATTACKER)],
+        data: '0x' + w(10n ** 18n),
+      },
+    ],
+    10n ** 18n,
+    ADDRESS_THIS,
+  );
+  ok(
+    inAndOut.warnings.includes(
+      'swap output below the declared minimum (got 0 WETH, declared ≥ 1 WETH)',
+    ),
+    inAndOut.warnings.join('|'),
+  );
+  // Same for a non-portal recipient inside a multicall that never pays the portal.
+  const elsewhere = await multicallPreview(
+    [inflow(WETH, 10n ** 18n, SPENDER)],
+    10n ** 18n,
+    SPENDER,
+  );
+  ok(elsewhere.warnings.some((x) => x.startsWith('swap output below the declared minimum')));
 });

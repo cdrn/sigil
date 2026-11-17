@@ -199,13 +199,13 @@ export function checkBehaviour(
   if (SWAPS.has(sel)) {
     const out = decoded.swapOut;
     if (!out) return { matches: false, warning: 'swap output is not the declared token' };
-    const w = checkSwap(out, sim, tx.from, to, meta);
+    const w = checkSwap(out, sim, tx.from, to, meta, false);
     return w === null ? { matches: true } : { matches: false, warning: w };
   }
   if (MULTICALLS.has(sel)) {
     // Every inner swap claim is held to the same standard as a direct call.
     const failures = (decoded.innerSwaps ?? [])
-      .map(({ out }) => checkSwap(out, sim, tx.from, to, meta))
+      .map(({ out }) => checkSwap(out, sim, tx.from, to, meta, true))
       .filter((w): w is string => w !== null);
     if (failures.length === 0) return { matches: true };
     const [warning, ...more] = [...new Set(failures)];
@@ -225,6 +225,7 @@ function checkSwap(
   portal: string,
   router: string,
   meta: TokenMetaLookup,
+  inMulticall: boolean,
 ): string | null {
   const min = BigInt(out.min);
   // Router sentinels: address(1) = msg.sender (the portal), address(2) =
@@ -235,29 +236,26 @@ function checkSwap(
       : out.recipient === SENTINEL_THIS
         ? router
         : out.recipient;
-  // When the router keeps the output for a later step of the same
-  // multicall (unwrap, sweep), its net change ends at zero by design; what
-  // the swap step must show is the output arriving there from elsewhere.
-  const got =
-    recipient === router && recipient !== portal
-      ? grossInflow(sim, recipient, out.token)
-      : received(sim, recipient, out.token, portal);
   const label = (v: bigint): string =>
     out.token === null ? formatEth(v) : headAmount(v, out.token, meta);
+  // Inside a multicall, output sent to the router (address(2)) or to any
+  // other non-portal address is an intermediate step (unwrap, sweep) whose
+  // per-address balances prove nothing — a contract can push tokens to the
+  // router and pull them back in the same tx. The claim is judged by where
+  // value ends up: over the whole tx the PORTAL must be up at least the
+  // minimum, in the declared token or in native ETH (a later unwrap).
+  if (inMulticall && recipient !== portal) {
+    const tokenNet = received(sim, portal, out.token, portal);
+    const ethNet = received(sim, portal, null, portal);
+    if ((tokenNet > 0n && tokenNet >= min) || (ethNet > 0n && ethNet >= min)) return null;
+    return `swap output below the declared minimum (got ${label(tokenNet)}, declared ≥ ${label(min)})`;
+  }
+  const got = received(sim, recipient, out.token, portal);
   if (got > 0n && got >= min) return null;
   if (got === 0n && otherInflow(sim, recipient, out.token, portal)) {
     return 'swap output is not the declared token';
   }
   return `swap output below the declared minimum (got ${label(got)}, declared ≥ ${label(min)})`;
-}
-
-/** Inflows of `token` to `addr` from anyone else (self-transfers excluded). */
-function grossInflow(sim: RanSim, addr: string, token: string | null): bigint {
-  let sum = 0n;
-  for (const t of sim.allTransfers ?? []) {
-    if (isOf(t, token) && t.to === addr && t.from !== addr) sum += t.amount;
-  }
-  return sum;
 }
 
 const SENTINEL_SENDER = '0x0000000000000000000000000000000000000001';
