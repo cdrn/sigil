@@ -32,6 +32,16 @@ mode = "permissive"
 # Same for native SOL transfers, in lamports (1 SOL = 1000000000):
 # svm_max_lamports_per_hour = "100000000"
 # svm_max_lamports_per_day  = "1000000000"
+
+# Transaction preview gates (see "Transaction preview" in the README). Both act
+# on the dry-run, which needs a [simulate.rpc] entry for the chain (or the [rpc]
+# proxy upstream serving it) in ~/.sigil/config.toml.
+# require_simulation: deny any EVM tx that could not be simulated (no RPC for
+#   its chain, node down, timeout).
+# sign_on_revert: by default a tx whose simulation reverts is denied with the
+#   revert reason; set true to sign it anyway.
+# require_simulation = false
+# sign_on_revert     = false
 `;
 
 export const STRICT_TEMPLATE = `# sigil policy file — strict mode
@@ -106,6 +116,16 @@ typed_data_primary_types = []
 # ~/.sigil/config.toml; without one, sigil-mcp refuses to start.
 # Example: confirm anything above 0.01 ETH.
 # require_confirm_above_wei = "10000000000000000"
+
+# Transaction preview gates (see "Transaction preview" in the README). Both act
+# on the dry-run, which needs a [simulate.rpc] entry for the chain (or the [rpc]
+# proxy upstream serving it) in ~/.sigil/config.toml.
+# require_simulation: deny any EVM tx that could not be simulated (no RPC for
+#   its chain, node down, timeout).
+# sign_on_revert: by default a tx whose simulation reverts is denied with the
+#   revert reason; set true to sign it anyway.
+# require_simulation = false
+# sign_on_revert     = false
 
 # --- Solana (SVM) ----------------------------------------------------------
 # The same key also controls a Solana (ed25519) address — see its base58 in

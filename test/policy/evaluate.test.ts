@@ -42,6 +42,8 @@ function strict(over: Partial<Omit<Policy, 'mode'>> = {}): Policy {
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
     ...over,
   };
 }
@@ -83,6 +85,8 @@ test('permissive mode allows transactions, messages, typed data', () => {
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
   };
   ok(isAllow(evaluate(txReq(tx()), p)));
   ok(isAllow(evaluate({ kind: 'message', messageBytes: Buffer.from('hi') }, p)));
@@ -356,6 +360,8 @@ test('confirm: permissive mode honours the confirm threshold', () => {
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
     requireConfirmAboveWei: 500n,
   };
   const r = evaluate(txReq(tx({ value: 1_000n })), p);
@@ -377,6 +383,8 @@ test('confirm: permissive mode without threshold → allow', () => {
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
   };
   ok(isAllow(evaluate(txReq(tx({ value: 999_999n })), p)));
 });
@@ -396,6 +404,8 @@ test('confirm: contract creation summary names "contract creation"', () => {
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ to: null, value: 1n, data: '0x6080604052' })), p);
@@ -419,6 +429,8 @@ test('confirm: message/typed_data do not trigger confirm gate (deferred)', () =>
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
     requireConfirmAboveWei: 0n,
   };
   ok(isAllow(evaluate({ kind: 'message', messageBytes: Buffer.from('hi') }, p)));
@@ -440,6 +452,8 @@ test('confirm: summary renders 0.5 ETH cleanly', () => {
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ value: 500_000_000_000_000_000n })), p);
@@ -461,6 +475,8 @@ test('confirm: summary renders whole-ETH amounts without a decimal', () => {
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
     requireConfirmAboveWei: 0n,
   };
   const r = evaluate(txReq(tx({ value: 1_000_000_000_000_000_000n })), p);

@@ -413,3 +413,38 @@ test('parsePolicy: typed-data verifying contracts are validated and lowercased',
     /must be an array/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Transaction-preview gates (mode-independent)
+// ---------------------------------------------------------------------------
+
+test('parsePolicy: require_simulation / sign_on_revert default false in both modes', () => {
+  for (const src of ['mode = "permissive"', 'mode = "strict"\nchain_ids = [1]']) {
+    const p = parsePolicy(src);
+    equal(p.requireSimulation, false);
+    equal(p.signOnRevert, false);
+  }
+  const r = permissivePolicyResolver().resolve('evm:x');
+  equal(r.requireSimulation, false);
+  equal(r.signOnRevert, false);
+});
+
+test('parsePolicy: preview gates parse in permissive and strict mode', () => {
+  const p = parsePolicy('mode = "permissive"\nrequire_simulation = true\nsign_on_revert = true');
+  equal(p.requireSimulation, true);
+  equal(p.signOnRevert, true);
+  const s = parsePolicy('mode = "strict"\nchain_ids = [1]\nrequire_simulation = true');
+  equal(s.requireSimulation, true);
+  equal(s.signOnRevert, false);
+});
+
+test('parsePolicy: preview gates must be booleans', () => {
+  throws(
+    () => parsePolicy('mode = "permissive"\nrequire_simulation = "yes"'),
+    /policy\.require_simulation must be a boolean/,
+  );
+  throws(
+    () => parsePolicy('mode = "strict"\nchain_ids = [1]\nsign_on_revert = 1'),
+    /policy\.sign_on_revert must be a boolean/,
+  );
+});

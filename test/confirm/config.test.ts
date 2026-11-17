@@ -310,3 +310,56 @@ test('enforce: policy needs confirm + no transport → throws with steering mess
     rmSync(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// [simulate]
+// ---------------------------------------------------------------------------
+
+test('parseConfig: [simulate] with per-chain RPCs and a timeout', () => {
+  const c = parseConfig(`
+    [simulate]
+    timeout_ms = 5000
+    [simulate.rpc]
+    1        = "https://eth.example/v3/KEY"
+    11155111 = "http://127.0.0.1:8545"
+  `);
+  deepEqual(c.simulate, {
+    timeoutMs: 5000,
+    rpcByChain: new Map([
+      [1n, 'https://eth.example/v3/KEY'],
+      [11155111n, 'http://127.0.0.1:8545'],
+    ]),
+  });
+});
+
+test('parseConfig: [simulate] alone is valid; absent block leaves simulate undefined', () => {
+  deepEqual(parseConfig(`[simulate]\n`).simulate, { rpcByChain: new Map() });
+  equal(parseConfig(`[confirm.ntfy]\ntopic = "t"`).simulate, undefined);
+  // A [simulate] block coexists with [confirm] (whose parser returns early).
+  const c = parseConfig(`[confirm.ntfy]\ntopic = "t"\n[simulate.rpc]\n10 = "https://op.example"`);
+  equal(c.simulate?.rpcByChain.get(10n), 'https://op.example');
+  equal(c.confirm?.ntfy?.topic, 't');
+});
+
+test('parseConfig: [simulate] validation errors', () => {
+  throws(() => parseConfig(`simulate = 1`), /config\.simulate must be a table/);
+  throws(
+    () => parseConfig(`[simulate]\ntimeout_ms = 0`),
+    /config\.simulate\.timeout_ms must be a positive integer/,
+  );
+  throws(() => parseConfig(`[simulate]\nrpc = "x"`), /config\.simulate\.rpc must be a table/);
+  throws(
+    () => parseConfig(`[simulate.rpc]\nmainnet = "https://x"`),
+    /key "mainnet" must be a decimal chain id/,
+  );
+  throws(
+    () => parseConfig(`[simulate.rpc]\n1 = "https://a"\n01 = "https://b"`),
+    /lists chain 1 more than once/,
+  );
+  throws(
+    () => parseConfig(`[simulate.rpc]\n1 = 5`),
+    /config\.simulate\.rpc\.1 must be a JSON-RPC URL/,
+  );
+  throws(() => parseConfig(`[simulate.rpc]\n1 = "not a url"`), /is not a valid URL/);
+  throws(() => parseConfig(`[simulate.rpc]\n1 = "ws://node"`), /must be http\(s\), got ws/);
+});

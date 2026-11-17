@@ -48,6 +48,11 @@ export function parsePolicy(source: string): Policy {
   );
   // Rolling-window caps are mode-independent too.
   const windows = parseWindowCaps(raw);
+  // As are the transaction-preview gates.
+  const previewGates = {
+    requireSimulation: asBool(raw['require_simulation'], 'require_simulation', false),
+    signOnRevert: asBool(raw['sign_on_revert'], 'sign_on_revert', false),
+  };
 
   if (mode === 'permissive') {
     return {
@@ -64,6 +69,7 @@ export function parsePolicy(source: string): Policy {
       svmMaxLamports: 0n,
       typedDataVerifyingContracts: [],
       typedDataPrimaryTypes: [],
+      ...previewGates,
       ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
       ...(requireConfirmAboveLamports !== undefined ? { requireConfirmAboveLamports } : {}),
       ...windows,
@@ -190,6 +196,7 @@ export function parsePolicy(source: string): Policy {
     svmMaxLamports,
     typedDataVerifyingContracts,
     typedDataPrimaryTypes,
+    ...previewGates,
     ...(requireConfirmAboveWei !== undefined ? { requireConfirmAboveWei } : {}),
     ...(requireConfirmAboveLamports !== undefined ? { requireConfirmAboveLamports } : {}),
     ...windows,
@@ -249,6 +256,8 @@ export function permissivePolicyResolver(): PolicyResolver {
     svmMaxLamports: 0n,
     typedDataVerifyingContracts: [],
     typedDataPrimaryTypes: [],
+    requireSimulation: false,
+    signOnRevert: false,
   };
   return { resolve: () => policy };
 }
