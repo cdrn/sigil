@@ -5,7 +5,7 @@ import {
   functionSelector,
   parseAbiType,
 } from '../eth/abi.js';
-import type { DecodedCall, TokenMetaLookup } from './types.js';
+import type { DecodedCall, SwapOut, TokenMetaLookup } from './types.js';
 import {
   argAmount,
   formatEth,
@@ -53,6 +53,7 @@ export interface Description {
   warnings: string[];
   /** Token addresses whose metadata would sharpen the rendering. */
   tokens?: string[];
+  swapOut?: SwapOut;
 }
 
 export interface KnownFunction {
@@ -295,13 +296,16 @@ function pathText(path: string[], meta: TokenMetaLookup): string {
 function v2Swap(
   name: string,
   params: [string, string][],
-  render: (args: unknown[], ctx: DescribeCtx) => { short: string; minOut: bigint },
+  render: (
+    args: unknown[],
+    ctx: DescribeCtx,
+  ) => { short: string; minOut: bigint; outToken: string | null },
 ): KnownFunction {
   return fn(name, params, (args, ctx) => {
     const path = args[params.findIndex(([, nm]) => nm === 'path')] as string[];
     const recipient = a(args[params.findIndex(([, nm]) => nm === 'to')]);
     const deadline = n(args[params.length - 1]);
-    const { short, minOut } = render(args, ctx);
+    const { short, minOut, outToken } = render(args, ctx);
     const head = params
       .filter(([, nm]) => nm.startsWith('amount'))
       .map(([, nm]) => `${nm}=${n(args[params.findIndex(([, x]) => x === nm)])}`);
@@ -310,6 +314,7 @@ function v2Swap(
       short,
       warnings: [...recipientWarn(recipient, ctx), ...slippageWarn(minOut)],
       tokens: path,
+      swapOut: { token: outToken, min: minOut.toString(), recipient },
     };
   });
 }
@@ -329,6 +334,7 @@ const swapExactTokensForTokens = v2Swap(
   ([inAmt, minOut, path], ctx) => ({
     short: `swap ${headAmount(n(inAmt), first(path), ctx.meta)} → ≥${headAmount(n(minOut), last(path), ctx.meta)}`,
     minOut: n(minOut),
+    outToken: last(path),
   }),
 );
 
@@ -343,6 +349,7 @@ const swapExactETHForTokens = v2Swap(
   ([minOut, path], ctx) => ({
     short: `swap ${formatEth(ctx.value)} → ≥${headAmount(n(minOut), last(path), ctx.meta)}`,
     minOut: n(minOut),
+    outToken: last(path),
   }),
 );
 
@@ -358,6 +365,7 @@ const swapExactTokensForETH = v2Swap(
   ([inAmt, minOut, path], ctx) => ({
     short: `swap ${headAmount(n(inAmt), first(path), ctx.meta)} → ≥${formatEth(n(minOut))}`,
     minOut: n(minOut),
+    outToken: null,
   }),
 );
 
@@ -373,6 +381,7 @@ const swapTokensForExactTokens = v2Swap(
   ([out, inMax, path], ctx) => ({
     short: `swap ≤${headAmount(n(inMax), first(path), ctx.meta)} → ${headAmount(n(out), last(path), ctx.meta)}`,
     minOut: n(out),
+    outToken: last(path),
   }),
 );
 
@@ -425,6 +434,12 @@ function v3Single(
         ...(kind === 'exactInputSingle' ? slippageWarn(amtB) : []),
       ],
       tokens: [tokenIn, tokenOut],
+      swapOut: {
+        token: tokenOut,
+        // exactInput*: at least amountOutMinimum; exactOutput*: exactly amountOut.
+        min: (kind === 'exactInputSingle' ? amtB : amtA).toString(),
+        recipient,
+      },
     };
   });
 }
@@ -467,6 +482,7 @@ const exactInput = fn(
         ...slippageWarn(minOut),
       ],
       ...(tokens ? { tokens } : {}),
+      ...(tokenOut ? { swapOut: { token: tokenOut, min: minOut.toString(), recipient } } : {}),
     };
   },
 );

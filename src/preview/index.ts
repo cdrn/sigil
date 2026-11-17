@@ -77,7 +77,7 @@ export async function buildTxPreview(input: BuildTxPreviewInput): Promise<TxPrev
   let decoded = Object.keys(metaTable).length > 0 ? decodeCalldata(data, registry, meta, ctx) : pre;
 
   // A friendly verb is only kept when the contract behaved like it.
-  const verdict = checkBehaviour(decoded, simulation, { from, to });
+  const verdict = checkBehaviour(decoded, simulation, { from, to }, meta);
   const trustWarnings: string[] = [];
   if (verdict && !verdict.matches) {
     const raw = rawCallText(decoded);

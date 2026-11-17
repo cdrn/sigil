@@ -49,4 +49,17 @@ export interface DecodedCall {
    * metadata for these alongside the tokens the simulation touched.
    */
   tokens?: string[];
+  /**
+   * For swaps: what the call itself promises to deliver — the output token
+   * (null = native ETH), the minimum (decimal string, so the decoded call
+   * stays JSON-plain) and the recipient. The behaviour check compares the
+   * simulation against it before the friendly "swap" wording is kept.
+   */
+  swapOut?: SwapOut;
+}
+
+export interface SwapOut {
+  token: string | null;
+  min: string;
+  recipient: string;
 }

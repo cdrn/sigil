@@ -1,6 +1,6 @@
 import type { PreviewSimulation } from './format.js';
-import type { DecodedCall, TokenMeta } from './types.js';
-import { shortAddr } from './units.js';
+import { type DecodedCall, NO_META, type TokenMeta, type TokenMetaLookup } from './types.js';
+import { formatEth, headAmount, shortAddr } from './units.js';
 
 /**
  * Everything a simulated contract says about itself — its symbol(), the
@@ -154,6 +154,7 @@ export function checkBehaviour(
   decoded: DecodedCall,
   sim: PreviewSimulation,
   tx: { from: string; to: string | null },
+  meta: TokenMetaLookup = NO_META,
 ): BehaviourVerdict | null {
   if (decoded.source !== 'builtin' || decoded.selector === null || tx.to === null) return null;
   if (sim.status !== 'ok' || sim.changes === null || sim.wraps === null) return null;
@@ -180,15 +181,79 @@ export function checkBehaviour(
         };
   }
   if (SWAPS.has(sel)) {
-    const ok = sim.changes.erc20.some((e) => e.delta > 0n) || sim.changes.native > 0n;
-    return ok
-      ? { matches: true }
-      : {
-          matches: false,
-          warning: `selector matches a Uniswap ${decoded.name ?? 'swap'} but no swap output reached the portal`,
-        };
+    const out = decoded.swapOut;
+    if (!out) {
+      return { matches: false, warning: 'swap output is not the declared token' };
+    }
+    const min = BigInt(out.min);
+    // Router sentinels: address(1) = msg.sender (the portal), address(2) =
+    // the router itself (a multicall continues with the funds).
+    const recipient =
+      out.recipient === SENTINEL_SENDER
+        ? tx.from
+        : out.recipient === SENTINEL_THIS
+          ? to
+          : out.recipient;
+    const got = received(sim, recipient, out.token, tx.from);
+    const label = (v: bigint): string =>
+      out.token === null ? formatEth(v) : headAmount(v, out.token, meta);
+    if (got > 0n && got >= min) return { matches: true };
+    if (got === 0n && otherInflow(sim, recipient, out.token, tx.from)) {
+      return { matches: false, warning: 'swap output is not the declared token' };
+    }
+    return {
+      matches: false,
+      warning: `swap output below the declared minimum (got ${label(got)}, declared ≥ ${label(min)})`,
+    };
   }
   return null;
+}
+
+const SENTINEL_SENDER = '0x0000000000000000000000000000000000000001';
+const SENTINEL_THIS = '0x0000000000000000000000000000000000000002';
+
+type RanSim = Extract<PreviewSimulation, { status: 'ok' | 'reverted' }>;
+
+/**
+ * How much of `token` (null = native) the recipient gained. For the portal
+ * this is its net balance change; for anyone else, the sum of listed
+ * transfers to them (the listing is capped, so this can under-count — the
+ * check then fails loudly rather than vouching).
+ */
+function received(sim: RanSim, recipient: string, token: string | null, portal: string): bigint {
+  if (recipient === portal && sim.changes) {
+    if (token === null) return sim.changes.native > 0n ? sim.changes.native : 0n;
+    const d = sim.changes.erc20.find((e) => e.token === token)?.delta ?? 0n;
+    return d > 0n ? d : 0n;
+  }
+  let sum = 0n;
+  for (const t of sim.transfers ?? []) {
+    if (t.to !== recipient) continue;
+    if (token === null ? t.standard === 'native' : t.standard === 'erc20' && t.token === token) {
+      sum += t.amount;
+    }
+  }
+  return sum;
+}
+
+/** Did the recipient receive something other than the declared token? */
+function otherInflow(
+  sim: RanSim,
+  recipient: string,
+  token: string | null,
+  portal: string,
+): boolean {
+  if (recipient === portal && sim.changes) {
+    return (
+      (token !== null && sim.changes.native > 0n) ||
+      sim.changes.erc20.some((e) => e.delta > 0n && e.token !== token)
+    );
+  }
+  return (sim.transfers ?? []).some(
+    (t) =>
+      t.to === recipient &&
+      (t.standard === 'native' ? token !== null : t.standard === 'erc20' && t.token !== token),
+  );
 }
 
 /** The plain-signature rendering used when the friendly one isn't earned. */

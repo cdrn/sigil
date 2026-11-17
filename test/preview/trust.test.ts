@@ -201,8 +201,9 @@ test('a "swap" with no output to the portal and a "transfer" that moves nothing 
   ok(swap.headline.startsWith('exactInputSingle(params=('), swap.headline);
   ok(
     swap.warnings.includes(
-      'selector matches a Uniswap exactInputSingle but no swap output reached the portal',
+      'swap output below the declared minimum (got 0 of 0xc02a…6cc2, declared ≥ 1 of 0xc02a…6cc2)',
     ),
+    swap.warnings.join('|'),
   );
 
   const xfer = await buildTxPreview({
@@ -221,4 +222,102 @@ test('a "swap" with no output to the portal and a "transfer" that moves nothing 
     registry: EMPTY,
   });
   ok(nosim.headline.startsWith('transfer 1 of'), nosim.headline);
+});
+
+const inflow = (token: string, amount: bigint, to = PORTAL) => ({
+  address: token,
+  topics: [TOPIC.Transfer, t(ROUTER), t(to)],
+  data: '0x' + w(amount),
+});
+
+function swapCall(minOut: bigint, recipient = PORTAL): `0x${string}` {
+  return ('0x414bf389' +
+    w(USDC) +
+    w(WETH) +
+    w(500) +
+    w(recipient) +
+    w(1_700_000_000) +
+    w(1_000_000_000n) +
+    w(minOut) +
+    w(0)) as `0x${string}`;
+}
+
+async function swapPreview(logs: object[], minOut = 10n ** 18n, recipient = PORTAL) {
+  const node = new FakeNode()
+    .on('eth_simulateV1', simResult({ logs: [debit(USDC, 1_000_000_000n), ...logs] }))
+    .token(USDC, 'USDC', 6)
+    .token(WETH, 'WETH', 18);
+  return buildTxPreview({
+    tx: tx({ to: ROUTER, data: swapCall(minOut, recipient) }),
+    from: PORTAL,
+    registry: EMPTY,
+    simulator: node,
+  });
+}
+
+test('repro: a swap declaring ≥1 WETH that returns 1 wei loses its verb and warns', async () => {
+  const p = await swapPreview([inflow(WETH, 1n)]);
+  ok(!p.headline.startsWith('swap 1,000 USDC → ≥1 WETH'), p.headline);
+  ok(p.headline.startsWith('exactInputSingle(params=('), p.headline);
+  ok(
+    p.warnings.includes(
+      'swap output below the declared minimum (got 0.000000000000000001 WETH, declared ≥ 1 WETH)',
+    ),
+    p.warnings.join('|'),
+  );
+});
+
+test('swap verbs: kept at/above the minimum; wrong token and recipient variants', async () => {
+  const good = await swapPreview([inflow(WETH, 10n ** 18n)]);
+  ok(good.headline.startsWith('swap 1,000 USDC → ≥1 WETH'), good.headline);
+  equal(good.warnings.filter((x) => x.startsWith('swap output')).length, 0);
+
+  const wrong = await swapPreview([inflow(USDC.replace('a0', 'b0'), 10n ** 18n)]);
+  ok(wrong.warnings.includes('swap output is not the declared token'), wrong.warnings.join('|'));
+
+  // Output declared to another recipient counts when it arrives there.
+  const other = await swapPreview([inflow(WETH, 2n * 10n ** 18n, SPENDER)], 10n ** 18n, SPENDER);
+  ok(other.headline.startsWith('swap 1,000 USDC → ≥1 WETH'), other.headline);
+
+  // address(1) means msg.sender, i.e. the portal.
+  const sentinel = await swapPreview(
+    [inflow(WETH, 10n ** 18n)],
+    10n ** 18n,
+    '0x0000000000000000000000000000000000000001',
+  );
+  ok(sentinel.headline.startsWith('swap 1,000 USDC'), sentinel.headline);
+});
+
+test('V2 *ForETH swaps check the native output', async () => {
+  // swapExactTokensForETH(amountIn 1000 USDC, amountOutMin 0.5 ETH, [USDC, WETH], to=portal)
+  const data = ('0x18cbafe5' +
+    w(1_000_000_000n) +
+    w(5n * 10n ** 17n) +
+    w(0xa0) +
+    w(PORTAL) +
+    w(1_700_000_000) +
+    w(2) +
+    w(USDC) +
+    w(WETH)) as `0x${string}`;
+  const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const run = async (ethOut: bigint) =>
+    buildTxPreview({
+      tx: tx({ to: ROUTER, data }),
+      from: PORTAL,
+      registry: EMPTY,
+      simulator: new FakeNode()
+        .on(
+          'eth_simulateV1',
+          simResult({ logs: [debit(USDC, 1_000_000_000n), inflow(NATIVE, ethOut)] }),
+        )
+        .token(USDC, 'USDC', 6),
+    });
+  ok((await run(6n * 10n ** 17n)).headline.startsWith('swap 1,000 USDC → ≥0.5 ETH'));
+  const low = await run(1n);
+  ok(
+    low.warnings.includes(
+      'swap output below the declared minimum (got 0.000000000000000001 ETH, declared ≥ 0.5 ETH)',
+    ),
+    low.warnings.join('|'),
+  );
 });
