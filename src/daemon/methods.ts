@@ -631,6 +631,9 @@ function previewGateReason(policy: Policy, preview: TxPreview): string | null {
     if (sim.status === 'unavailable') {
       return `tx denied — require_simulation = true but the simulation was unavailable: ${sim.reason}`;
     }
+    if (!sim.faithful) {
+      return 'tx denied — require_simulation = true but the node could only simulate without the fee fields';
+    }
   }
   if (sim.status === 'reverted' && !policy.signOnRevert) {
     return (

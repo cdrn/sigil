@@ -123,6 +123,10 @@ export async function buildTxPreview(input: BuildTxPreviewInput): Promise<TxPrev
   };
 }
 
+/** The simulation ran without the signed fee fields (see simulate.ts). */
+export const UNFAITHFUL_WARNING =
+  'simulated without fee fields (node refused: insufficient funds) — the contract saw tx.gasprice = 0';
+
 function collectWarnings(
   decoded: DecodedCall,
   sim: PreviewSimulation,
@@ -131,6 +135,9 @@ function collectWarnings(
 ): string[] {
   // Impersonation / behaviour warnings first: they explain everything else.
   const out: string[] = [...trustWarnings, ...decoded.warnings];
+  if ((sim.status === 'ok' || sim.status === 'reverted') && !sim.faithful) {
+    out.push(UNFAITHFUL_WARNING);
+  }
   if (sim.status === 'reverted') out.push(`simulation reverted: ${sim.revertReason ?? 'unknown'}`);
   if (sim.status === 'unavailable') out.push(`simulation unavailable: ${sim.reason}`);
   if (decoded.source === 'unknown' && tx.value > 0n) {

@@ -25,7 +25,7 @@ import {
 import { addressFromPrivateKey } from '../../src/eth/index.js';
 import { parsePolicy, type PolicyResolver } from '../../src/policy/index.js';
 import { AbiRegistry } from '../../src/preview/index.js';
-import { UpstreamTransportError } from '../../src/rpc/index.js';
+import { UpstreamRpcError, UpstreamTransportError } from '../../src/rpc/index.js';
 import { FakeNode, MAX, simResult, SPENDER, t, TOPIC, USDC, w } from '../preview/_fixtures.js';
 
 const PRIV = Buffer.alloc(32);
@@ -474,5 +474,71 @@ test('JSON-number tx fields above 2^53 are INVALID_PARAMS (no 1e100 nonce gets s
     );
   } finally {
     h.cleanup();
+  }
+});
+
+/** anvil's answer for an unfunded sender once fee fields are present. */
+function feeRefusingNode(): FakeNode {
+  return new FakeNode()
+    .on('eth_simulateV1', (params: readonly unknown[]) => {
+      const c = (params[0] as { blockStateCalls: { calls: Record<string, unknown>[] }[] })
+        .blockStateCalls[0]!.calls[0]!;
+      return 'maxFeePerGas' in c
+        ? new UpstreamRpcError(-32003, 'Insufficient funds for gas * price + value')
+        : simResult({});
+    })
+    .token(USDC, 'USDC', 6);
+}
+
+test('fee-stripped simulation: warning on the confirm headline; require_simulation denies it', async () => {
+  const warn =
+    'simulated without fee fields (node refused: insufficient funds) — the contract saw tx.gasprice = 0';
+  const h = harness({ preview: withNode(feeRefusingNode()) });
+  try {
+    const p = (await dispatch('sigil_eth_preview_transaction', txParams(), h.ctx)) as {
+      headline: string;
+      warnings: string[];
+    };
+    ok(p.warnings.includes(warn), p.warnings.join('|'));
+    ok(p.headline.includes('⚠'), p.headline);
+    // Default policy signs, but the audit entry carries the warning.
+    await dispatch('sigil_eth_sign_transaction', txParams(), h.ctx);
+    ok(entries(h.auditPath)[0]!.preview!.warnings.includes(warn));
+  } finally {
+    h.cleanup();
+  }
+  const strict = harness({
+    policy: 'mode = "permissive"\nrequire_simulation = true',
+    preview: withNode(feeRefusingNode()),
+  });
+  try {
+    const err = await denied(dispatch('sigil_eth_sign_transaction', txParams(), strict.ctx));
+    equal(err.code, RPC_POLICY_DENIED);
+    equal(
+      err.message,
+      'tx denied — require_simulation = true but the node could only simulate without the fee fields',
+    );
+    equal(entries(strict.auditPath)[0]!.decision, 'deny');
+  } finally {
+    strict.cleanup();
+  }
+});
+
+test('the fee-stripped retry needs code -32003 AND an insufficient-funds message', async () => {
+  for (const err of [
+    new UpstreamRpcError(-32000, 'insufficient funds for gas * price + value'),
+    new UpstreamRpcError(-32003, 'transaction underpriced'),
+  ]) {
+    const node = new FakeNode().on('eth_simulateV1', err);
+    const h = harness({ preview: withNode(node) });
+    try {
+      const r = (await dispatch('sigil_eth_preview_transaction', txParams(), h.ctx)) as {
+        simulation: { status: string };
+      };
+      equal(r.simulation.status, 'unavailable', err.message);
+      equal(node.calls.filter((c) => c.method === 'eth_simulateV1').length, 1, 'no retry');
+    } finally {
+      h.cleanup();
+    }
   }
 });

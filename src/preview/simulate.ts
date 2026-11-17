@@ -122,6 +122,12 @@ export type Simulation =
        * the evidence that a `deposit()`/`withdraw()` really wrapped/unwrapped.
        */
       wraps: WrapEvent[] | null;
+      /**
+       * False when the node only accepted the call without the signed fee
+       * fields (the contract saw tx.gasprice = 0): it simulated a different
+       * transaction, so require_simulation does not accept it.
+       */
+      faithful: boolean;
       notes: string[];
       /** symbol/decimals per lowercase token address, where readable. */
       tokenMeta: Readonly<Record<string, TokenMeta>>;
@@ -219,6 +225,7 @@ async function run(
   let callObj: Record<string, unknown> = full;
 
   const notes: string[] = [];
+  let faithful = true;
   /**
    * Some nodes (anvil, verified) enforce balance ≥ gas × price + value even
    * with validation:false once fee fields are present; others (reth) don't.
@@ -236,6 +243,7 @@ async function run(
     } catch (e) {
       if (callObj !== full || !isInsufficientFunds(e)) throw e;
       callObj = base;
+      faithful = false;
       notes.push(
         `simulation: fee fields (${Object.keys(feeFields).join(', ')}) dropped — the node ` +
           `required the sender to fund gas × price; the contract saw tx.gasprice = 0`,
@@ -362,6 +370,7 @@ async function run(
     changes,
     approvals,
     wraps,
+    faithful,
     notes,
     tokenMeta,
   };
@@ -514,8 +523,19 @@ function cleanMessage(m: string): string {
   return t.length > 160 ? t.slice(0, 160) + '…' : t;
 }
 
+/**
+ * Exactly anvil's refusal (-32003 "Insufficient funds for gas * price +
+ * value"). Both the code and the message must match: the fee-stripped
+ * retry simulates a different tx, so it must not be reachable through any
+ * other error a node (or something in front of it) can produce.
+ */
 function isInsufficientFunds(e: unknown): boolean {
-  return e instanceof UpstreamRpcError && !isRevert(e) && /insufficient funds/i.test(e.message);
+  return (
+    e instanceof UpstreamRpcError &&
+    e.code === -32003 &&
+    !isRevert(e) &&
+    /insufficient funds/i.test(e.message)
+  );
 }
 
 function isRevert(e: UpstreamRpcError): boolean {
