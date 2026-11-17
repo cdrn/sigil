@@ -418,3 +418,15 @@ test('tx quantities wider than uint256 are INVALID_PARAMS before any preview wor
     h.cleanup();
   }
 });
+
+test('sign_on_revert = false still denies a revert whose logs are malformed', async () => {
+  const node = new FakeNode().on('eth_simulateV1', [{ calls: [{ status: '0x0', logs: 5 }] }]);
+  const h = harness({ preview: withNode(node) });
+  try {
+    const err = await denied(dispatch('sigil_eth_sign_transaction', txParams(), h.ctx));
+    equal(err.code, RPC_POLICY_DENIED);
+    ok(err.message.includes('simulation reverted'), err.message);
+  } finally {
+    h.cleanup();
+  }
+});

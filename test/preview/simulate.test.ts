@@ -312,13 +312,13 @@ test('transport failure → unavailable, never throws', async () => {
   });
 });
 
-test('a malformed eth_simulateV1 response → unavailable', async () => {
+test('a malformed eth_simulateV1 response (no usable status) → unavailable', async () => {
   for (const bad of [
     null,
     [],
     [{}],
     [{ calls: [{ status: '0x2' }] }],
-    [{ calls: [{ status: '0x1', logs: 5 }] }],
+    [{ calls: [{ logs: [] }] }], // no status at all
   ]) {
     const s = await simulateTransaction(tx(), PORTAL, new FakeNode().on('eth_simulateV1', bad));
     equal(s.status, 'unavailable', JSON.stringify(bad));
@@ -467,4 +467,50 @@ test('oversized quantities from the node never reach the formatters', async () =
   equal(fb.gasUsed, null);
   ok(fb.notes.includes('gas estimate unavailable'), fb.notes.join('|'));
   ok(Date.now() - start < 500, `${Date.now() - start} ms`);
+});
+
+test('a known revert is never downgraded to unavailable by malformed secondary fields', async () => {
+  for (const call of [
+    { status: '0x0', logs: 5 },
+    { status: '0x0', logs: 'x', gasUsed: 'nope', returnData: 12 },
+    { status: '0x0', gasUsed: '0x' + 'f'.repeat(100), error: 'not-an-object' },
+  ]) {
+    const sim = await simulateTransaction(
+      tx(),
+      PORTAL,
+      new FakeNode().on('eth_simulateV1', [{ calls: [call] }]),
+    );
+    equal(sim.status, 'reverted', JSON.stringify(call));
+  }
+  const s = ran(
+    await simulateTransaction(
+      tx(),
+      PORTAL,
+      new FakeNode().on('eth_simulateV1', [{ calls: [{ status: '0x0', logs: 5, gasUsed: 'x' }] }]),
+    ),
+  );
+  deepEqual(s.notes, ['gasUsed not understood', 'logs not understood']);
+  equal(s.transfers, null);
+  equal(s.changes, null);
+  // ok + malformed logs: still ok, balance changes unknown.
+  const okSim = ran(
+    await simulateTransaction(
+      tx(),
+      PORTAL,
+      new FakeNode().on('eth_simulateV1', [{ calls: [{ status: '0x1', logs: {} }] }]),
+    ),
+  );
+  equal(okSim.status, 'ok');
+  equal(okSim.changes, null);
+  // Only a missing/unparseable status is unavailable.
+  equal(
+    (
+      await simulateTransaction(
+        tx(),
+        PORTAL,
+        new FakeNode().on('eth_simulateV1', [{ calls: [{ logs: [] }] }]),
+      )
+    ).status,
+    'unavailable',
+  );
 });

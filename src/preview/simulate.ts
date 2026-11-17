@@ -186,6 +186,7 @@ async function run(
     status = parsed.ok ? 'ok' : 'reverted';
     gasUsed = parsed.gasUsed;
     logs = parsed.logs;
+    notes.push(...parsed.notes);
     if (!parsed.ok) {
       revertReason = parsed.revertReason;
       if (parsed.bareRevert) revertReason = outOfGasReason(gasUsed, gas) ?? revertReason;
@@ -291,13 +292,22 @@ class SimShapeError extends Error {
   }
 }
 
+/**
+ * Status is read first and is the only field whose absence makes the
+ * result unusable. Once the node has said "reverted", nothing else in the
+ * response may downgrade that to "unavailable" — a malformed `logs` or
+ * `gasUsed` next to a known revert would otherwise slip a reverting tx past
+ * sign_on_revert = false. Malformed secondary fields become notes, with
+ * logs null (balance changes unknown).
+ */
 function parseSimulateV1(res: unknown): {
   ok: boolean;
   gasUsed: bigint | null;
   revertReason?: string;
   /** Reverted with no revert data at all (out-of-gas looks like this). */
   bareRevert?: boolean;
-  logs: RawLog[];
+  logs: RawLog[] | null;
+  notes: string[];
 } {
   if (!Array.isArray(res) || res.length === 0) throw new SimShapeError('no blocks');
   const block = res[0] as Record<string, unknown>;
@@ -311,17 +321,23 @@ function parseSimulateV1(res: unknown): {
     throw new SimShapeError(`status ${JSON.stringify(st)}`);
   }
   const ok = st === '0x1' || st === '0x01';
+  const notes: string[] = [];
   const gasUsed = hexQuantity(c['gasUsed']);
+  if (gasUsed === null && c['gasUsed'] !== undefined) notes.push('gasUsed not understood');
   const rawLogs = c['logs'] ?? [];
-  if (!Array.isArray(rawLogs)) throw new SimShapeError('logs is not an array');
-  const logs: RawLog[] = rawLogs.filter(isObj).map((l) => ({
-    address: typeof l['address'] === 'string' ? l['address'].toLowerCase() : '',
-    topics: Array.isArray(l['topics'])
-      ? l['topics'].map((t) => (typeof t === 'string' ? t.toLowerCase() : ''))
-      : [],
-    data: typeof l['data'] === 'string' ? l['data'].toLowerCase() : '',
-  }));
-  if (ok) return { ok, gasUsed, logs };
+  let logs: RawLog[] | null = null;
+  if (Array.isArray(rawLogs)) {
+    logs = rawLogs.filter(isObj).map((l) => ({
+      address: typeof l['address'] === 'string' ? l['address'].toLowerCase() : '',
+      topics: Array.isArray(l['topics'])
+        ? l['topics'].map((t) => (typeof t === 'string' ? t.toLowerCase() : ''))
+        : [],
+      data: typeof l['data'] === 'string' ? l['data'].toLowerCase() : '',
+    }));
+  } else {
+    notes.push('logs not understood');
+  }
+  if (ok) return { ok, gasUsed, logs, notes };
   const err = isObj(c['error']) ? c['error'] : undefined;
   const errData = typeof err?.['data'] === 'string' ? err['data'] : undefined;
   const ret = typeof c['returnData'] === 'string' ? c['returnData'] : undefined;
@@ -337,7 +353,7 @@ function parseSimulateV1(res: unknown): {
         ? cleanMessage(err['message'])
         : 'execution reverted (no reason)';
   }
-  return { ok, gasUsed, revertReason, bareRevert, logs };
+  return { ok, gasUsed, revertReason, bareRevert, logs, notes };
 }
 
 // ---------------------------------------------------------------------------
