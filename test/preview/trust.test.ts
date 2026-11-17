@@ -485,3 +485,72 @@ test('multicall: router-recipient swap with output pushed in and pulled back out
   );
   ok(elsewhere.warnings.some((x) => x.startsWith('swap output below the declared minimum')));
 });
+
+const NATIVE_LOG = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+
+test('multicall: native ETH only stands in for canonical WETH, wei for wei', async () => {
+  const ADDRESS_THIS = '0x0000000000000000000000000000000000000002';
+  const ethTo = (amount: bigint) => ({
+    address: NATIVE_LOG,
+    topics: [TOPIC.Transfer, t(ROUTER), t(PORTAL)],
+    data: '0x' + w(amount),
+  });
+  // Repro: declared ≥ 1,000 USDC out, the portal gets 1 gwei ETH.
+  const usdcOut = (
+    '0x414bf389' +
+    w(WETH) +
+    w(USDC) +
+    w(500) +
+    w(ADDRESS_THIS) +
+    w(1_700_000_000) +
+    w(10n ** 18n) +
+    w(1_000_000_000n) +
+    w(0)
+  ).slice(2);
+  const node = new FakeNode()
+    .on('eth_simulateV1', simResult({ logs: [debit(WETH, 10n ** 18n), ethTo(1_000_000_000n)] }))
+    .token(USDC, 'USDC', 6)
+    .token(WETH, 'WETH', 18);
+  const dust = await buildTxPreview({
+    tx: tx({ to: ROUTER, data: multicallOf(usdcOut) }),
+    from: PORTAL,
+    registry: EMPTY,
+    simulator: node,
+  });
+  ok(
+    dust.warnings.includes(
+      'swap output below the declared minimum (got 0 USDC, declared ≥ 1,000 USDC)',
+    ),
+    dust.warnings.join('|'),
+  );
+
+  // Legit: WETH out to the router, unwrapped, portal +1 ETH → passes on chain 1…
+  const unwrap = [
+    { address: WETH, topics: [TOPIC.Transfer, t(SPENDER), t(ROUTER)], data: '0x' + w(10n ** 18n) },
+    { address: WETH, topics: [TOPIC.Withdrawal, t(ROUTER)], data: '0x' + w(10n ** 18n) },
+    ethTo(10n ** 18n),
+  ];
+  const legit = await multicallPreview(unwrap, 10n ** 18n, ADDRESS_THIS);
+  equal(
+    legit.warnings.filter((x) => x.startsWith('swap output')).length,
+    0,
+    legit.warnings.join('|'),
+  );
+  // …but not when ETH falls short of the minimum in wei…
+  const short = await multicallPreview(unwrap, 2n * 10n ** 18n, ADDRESS_THIS);
+  ok(short.warnings.some((x) => x.startsWith('swap output below the declared minimum')));
+  // …and not on a chain where that address isn't the canonical WETH.
+  const otherChain = await buildTxPreview({
+    tx: tx({
+      chainId: 8453n,
+      to: ROUTER,
+      data: multicallOf(swapCall(10n ** 18n, ADDRESS_THIS).slice(2)),
+    }),
+    from: PORTAL,
+    registry: EMPTY,
+    simulator: new FakeNode()
+      .on('eth_simulateV1', simResult({ logs: [debit(USDC, 1_000_000_000n), ...unwrap] }))
+      .token(WETH, 'WETH', 18),
+  });
+  ok(otherChain.warnings.some((x) => x.startsWith('swap output below the declared minimum')));
+});

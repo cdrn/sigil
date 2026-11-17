@@ -169,7 +169,7 @@ const MULTICALLS = new Set(['0xac9650d8', '0x5ae401dc']);
 export function checkBehaviour(
   decoded: DecodedCall,
   sim: PreviewSimulation,
-  tx: { from: string; to: string | null },
+  tx: { from: string; to: string | null; chainId?: bigint },
   meta: TokenMetaLookup = NO_META,
 ): BehaviourVerdict | null {
   if (decoded.source !== 'builtin' || decoded.selector === null || tx.to === null) return null;
@@ -199,13 +199,13 @@ export function checkBehaviour(
   if (SWAPS.has(sel)) {
     const out = decoded.swapOut;
     if (!out) return { matches: false, warning: 'swap output is not the declared token' };
-    const w = checkSwap(out, sim, tx.from, to, meta, false);
+    const w = checkSwap(out, sim, tx.from, to, meta, false, tx.chainId);
     return w === null ? { matches: true } : { matches: false, warning: w };
   }
   if (MULTICALLS.has(sel)) {
     // Every inner swap claim is held to the same standard as a direct call.
     const failures = (decoded.innerSwaps ?? [])
-      .map(({ out }) => checkSwap(out, sim, tx.from, to, meta, true))
+      .map(({ out }) => checkSwap(out, sim, tx.from, to, meta, true, tx.chainId))
       .filter((w): w is string => w !== null);
     if (failures.length === 0) return { matches: true };
     const [warning, ...more] = [...new Set(failures)];
@@ -226,6 +226,7 @@ function checkSwap(
   router: string,
   meta: TokenMetaLookup,
   inMulticall: boolean,
+  chainId?: bigint,
 ): string | null {
   const min = BigInt(out.min);
   // Router sentinels: address(1) = msg.sender (the portal), address(2) =
@@ -246,8 +247,15 @@ function checkSwap(
   // minimum, in the declared token or in native ETH (a later unwrap).
   if (inMulticall && recipient !== portal) {
     const tokenNet = received(sim, portal, out.token, portal);
-    const ethNet = received(sim, portal, null, portal);
-    if ((tokenNet > 0n && tokenNet >= min) || (ethNet > 0n && ethNet >= min)) return null;
+    if (tokenNet > 0n && tokenNet >= min) return null;
+    // Native ETH stands in only for the chain's canonical WETH (a later
+    // unwrap), compared wei-for-wei (both 18 decimals). Any other declared
+    // token must arrive as itself; an unknown chain gets no substitution.
+    const weth = chainId === undefined ? undefined : canonicalToken(chainId, 'WETH');
+    if (weth !== undefined && out.token === weth) {
+      const ethNet = received(sim, portal, null, portal);
+      if (ethNet > 0n && ethNet >= min) return null;
+    }
     return `swap output below the declared minimum (got ${label(tokenNet)}, declared ≥ ${label(min)})`;
   }
   const got = received(sim, recipient, out.token, portal);
