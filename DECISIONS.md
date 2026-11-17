@@ -6,6 +6,59 @@ first.
 
 ---
 
+## 2026-11-17 — Transaction preview: security-review fixes
+
+**What.** Seven findings from the review of `feat/tx-preview`, one commit
+each, each with a regression test:
+
+1. The simulation now carries the exact signed parameters — nonce, gas,
+   access list and the fee fields (`maxFeePerGas`/`maxPriorityFeePerGas`
+   or `gasPrice`) — in `eth_simulateV1` and the `eth_call`/
+   `eth_estimateGas` fallback. A `gasLimit` below 21000 (incl. 0, which
+   let the node pick its own gas) is `unavailable`, so
+   `require_simulation` denies it.
+2. The `eth_call` fallback only succeeds on whole-byte hex return data;
+   a revert from `eth_estimateGas` is a revert.
+3. Headline lists debits (outflows, NFTs out, approvals granted) before
+   credits and never truncates them; symbols that collide or impersonate
+   USDC/USDT/DAI/WETH/WBTC/ETH off their canonical address render as
+   `"USDC"? (0x…)` with a warning; friendly verbs (wrap/unwrap/transfer/
+   swap) need matching simulated behaviour; a debit with inflows from
+   unverified tokens warns.
+4. Every node quantity is ≤ uint256 (64 hex digits) or rejected; tx
+   fields > uint256 are INVALID_PARAMS; number formatting is linear.
+5. A known revert can't be downgraded to `unavailable` by malformed logs.
+6. ABI names must be identifiers; control characters are stripped at the
+   render boundary.
+7. Array suffixes count toward the ABI type nesting limit; type strings
+   are capped at 4096 chars.
+
+**Why — choices worth recording.**
+
+- **Fee fields vs unfunded senders.** Checked live with `validation:false`
+  from the unfunded `0x2278…931c`: Sepolia reth (publicnode) accepts nonce
+  and fee fields; anvil accepts any nonce but refuses fee fields when the
+  sender can't pay gas × price (-32003). On exactly that error sigil
+  retries once without the fee fields and records which were dropped in
+  the simulation notes ("the contract saw tx.gasprice = 0"); if the retry
+  is refused too, the error stands.
+- **Behaviour checks only contradict, never vouch.** With no simulation
+  logs (skipped, unavailable, eth_call fallback) the friendly verb stays —
+  there is no evidence against it — and the debit-first headline is the
+  backstop.
+- **Canonical-token table is tiny on purpose** and comes from memory of
+  the published addresses; a name with no entry on a chain (and any
+  unknown chain) is treated as unverifiable, so it is quoted.
+
+**Status.** Built on `feat/tx-preview`; all tests green.
+
+**Unverified.** The canonical addresses for Base/Arbitrum/Optimism/Base
+Sepolia were not re-checked against an explorer in this session (mainnet
+and Sepolia USDC were exercised live). The headline can exceed 220 chars
+when the debits alone are longer — by design.
+
+---
+
 ## 2026-11-16 — Transaction preview: decode + simulate in the sign path
 
 **What.** Every EVM transaction sigil signs (MCP tool or JSON-RPC proxy) is
@@ -147,3 +200,7 @@ After the fix: approve says out of gas, transfer says
   does not know the `preview` field, fails the entry's hash check and
   quarantines the log. The README already requires restarting every
   `sigil-mcp` after an upgrade; this feature makes that requirement bite.
+  Accepted as a known limitation after the 2026-11-17 security review, not
+  fixed: the mitigation is the README rule "After upgrading sigil, restart
+  every Claude window's `sigil-mcp`", and the moved-aside log is renamed,
+  never deleted.
