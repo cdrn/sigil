@@ -5,8 +5,9 @@ import { decodeCalldata } from './decode.js';
 import { type PreviewSimulation, renderHeadline, renderText, simulationSummary } from './format.js';
 import { operatorWarning } from './known.js';
 import { simulateTransaction } from './simulate.js';
-import { type DecodedCall, NO_META, type TokenMeta, type TokenMetaLookup } from './types.js';
-import { clean, isUnlimited } from './units.js';
+import { type DecodedCall, NO_META, type TokenMetaLookup } from './types.js';
+import { assessTokens, checkBehaviour, rawCallText } from './trust.js';
+import { clean, isUnlimited, shortAddr } from './units.js';
 
 /**
  * "Show me what I'm signing": decode an EVM transaction to English and, when
@@ -65,14 +66,43 @@ export async function buildTxPreview(input: BuildTxPreviewInput): Promise<TxPrev
     });
   }
 
-  const metaTable: Readonly<Record<string, TokenMeta>> =
-    simulation.status === 'ok' || simulation.status === 'reverted' ? simulation.tokenMeta : {};
+  // Contract-reported symbols are vetted before anything renders them.
+  const trust = assessTokens(
+    simulation.status === 'ok' || simulation.status === 'reverted' ? simulation.tokenMeta : {},
+    chainId,
+  );
+  const metaTable = trust.meta;
   const meta: TokenMetaLookup = (addr) =>
     Object.prototype.hasOwnProperty.call(metaTable, addr) ? metaTable[addr] : undefined;
-  const decoded =
-    Object.keys(metaTable).length > 0 ? decodeCalldata(data, registry, meta, ctx) : pre;
+  let decoded = Object.keys(metaTable).length > 0 ? decodeCalldata(data, registry, meta, ctx) : pre;
 
-  const warnings = collectWarnings(decoded, simulation, { from, to, value });
+  // A friendly verb is only kept when the contract behaved like it.
+  const verdict = checkBehaviour(decoded, simulation, { from, to });
+  const trustWarnings: string[] = [];
+  if (verdict && !verdict.matches) {
+    const raw = rawCallText(decoded);
+    const { short: _dropped, ...rest } = decoded;
+    decoded = { ...rest, text: raw, short: `${raw} on ${shortAddr(to ?? '')}` };
+    if (verdict.warning) trustWarnings.push(verdict.warning);
+  }
+  if (simulation.status === 'ok' && simulation.changes) {
+    const c = simulation.changes;
+    const debit =
+      c.native < 0n ||
+      c.erc20.some((e) => e.delta < 0n) ||
+      c.nftOut.length > 0 ||
+      c.erc1155.some((e) => e.delta < 0n);
+    const shadyInflow = c.erc20.some(
+      (e) => e.delta > 0n && (trust.unverified.has(e.token) || !metaTable[e.token]?.symbol),
+    );
+    if (debit && shadyInflow)
+      trustWarnings.push('inflows from unverified tokens — check the debit');
+  }
+
+  // Most actionable first: behaviour mismatch and unverified inflows, then
+  // the per-token impersonation details.
+  trustWarnings.push(...trust.warnings);
+  const warnings = collectWarnings(decoded, simulation, { from, to, value }, trustWarnings);
   const render = {
     decoded,
     simulation,
@@ -97,8 +127,10 @@ function collectWarnings(
   decoded: DecodedCall,
   sim: PreviewSimulation,
   tx: { from: string; to: string | null; value: bigint },
+  trustWarnings: readonly string[],
 ): string[] {
-  const out: string[] = [...decoded.warnings];
+  // Impersonation / behaviour warnings first: they explain everything else.
+  const out: string[] = [...trustWarnings, ...decoded.warnings];
   if (sim.status === 'reverted') out.push(`simulation reverted: ${sim.revertReason ?? 'unknown'}`);
   if (sim.status === 'unavailable') out.push(`simulation unavailable: ${sim.reason}`);
   if (decoded.source === 'unknown' && tx.value > 0n) {

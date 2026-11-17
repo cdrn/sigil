@@ -76,33 +76,77 @@ export function renderText(r: RenderInput): string {
   return lines.map(clean).join('\n');
 }
 
+/** Debits beyond this many are summarized (loudly) rather than listed. */
+const MAX_HEADLINE_DEBITS = 40;
+/** The call description's share of the headline; the rest is for effects. */
+const HEADLINE_CALL_MAX = 90;
+
+/**
+ * The phone headline. What leaves the portal is the decision, so the
+ * simulation part lists every debit — native and token outflows, NFTs out,
+ * approvals granted — BEFORE any credit, and debits are never cut to fit:
+ * a run of attacker-emitted "+1 USDC" credits must not push a real drain
+ * off the screen. Only the call description (clipped), the credits
+ * (`+N more in`) and the warnings (down to `⚠ N warnings`) give way to
+ * HEADLINE_MAX; a headline is longer than that only when the debits are.
+ */
 export function renderHeadline(r: RenderInput): string {
-  const parts: string[] = [headlineCall(r)];
+  const call = clip(headlineCall(r), HEADLINE_CALL_MAX);
   const sim = r.simulation;
+  let simPart: string;
+  let credits: string[] = [];
   switch (sim.status) {
     case 'ok': {
-      const deltas = sim.changes ? deltaTexts(sim, r.meta) : [];
-      const shown = deltas.slice(0, 3).join(' ');
-      const tail = deltas.length > 3 ? ` +${deltas.length - 3} more` : '';
-      parts.push(`sim ok${shown ? ` ${shown}${tail}` : ''}`);
+      const f = flows(sim, r.meta);
+      const debits =
+        f.debits.length > MAX_HEADLINE_DEBITS
+          ? [
+              ...f.debits.slice(0, MAX_HEADLINE_DEBITS),
+              `!! ${f.debits.length - MAX_HEADLINE_DEBITS} MORE DEBITS — read the preview`,
+            ]
+          : f.debits;
+      simPart = ['sim ok', ...debits].join(' ');
+      credits = f.credits;
       break;
     }
     case 'reverted':
-      parts.push(`sim REVERTED: ${sim.revertReason ?? 'unknown reason'}`);
+      simPart = `sim REVERTED: ${clip(sim.revertReason ?? 'unknown reason', 80)}`;
       break;
     case 'unavailable':
-      parts.push('sim unavailable');
+      simPart = 'sim unavailable';
       break;
     case 'skipped':
-      parts.push('no sim');
+      simPart = 'no sim';
       break;
   }
-  if (r.warnings.length > 0) {
-    const more = r.warnings.length > 1 ? ` (+${r.warnings.length - 1} more)` : '';
-    parts.push(`⚠ ${r.warnings[0]}${more}`);
+
+  let line = `${call} | ${simPart}`;
+  const n = r.warnings.length;
+  const minWarn = n > 0 ? ` | ⚠ ${n} warning${n === 1 ? '' : 's'}` : '';
+  // Credits: as many as fit while leaving room for at least the warning count.
+  for (let i = 0; i < credits.length; i++) {
+    const rest = credits.length - i - 1;
+    const tail = rest > 0 ? ` +${rest} more in` : '';
+    if (line.length + 1 + credits[i]!.length + tail.length + minWarn.length > HEADLINE_MAX) {
+      line += ` +${credits.length - i} more in`;
+      break;
+    }
+    line += ` ${credits[i]}`;
   }
-  const line = clean(parts.join(' | '));
-  return line.length > HEADLINE_MAX ? line.slice(0, HEADLINE_MAX - 1) + '…' : line;
+  if (n > 0) {
+    const more = n > 1 ? ` (+${n - 1} more)` : '';
+    const full = ` | ⚠ ${r.warnings[0]}${more}`;
+    const room = HEADLINE_MAX - line.length;
+    if (full.length <= room) line += full;
+    else if (room > minWarn.length + 12)
+      line += clip(` | ⚠ ${r.warnings[0]}`, room - more.length) + more;
+    else line += minWarn;
+  }
+  return clean(line);
+}
+
+function clip(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
 /** One-line simulation status, also what the audit entry records. */
@@ -148,21 +192,48 @@ function signed(delta: bigint, render: (abs: bigint) => string): string {
   return `${delta < 0n ? '-' : '+'}${render(delta < 0n ? -delta : delta)}`;
 }
 
+/**
+ * Split the portal's balance changes into debits (incl. approvals it
+ * grants) and credits, debits first in a stable order.
+ */
+function flows(
+  sim: Extract<Simulation, { status: 'ok' | 'reverted' }>,
+  meta: TokenMetaLookup,
+  withApprovals = true,
+): { debits: string[]; credits: string[] } {
+  const debits: string[] = [];
+  const credits: string[] = [];
+  const c = sim.changes;
+  if (c) {
+    if (c.native < 0n) debits.push(signed(c.native, formatEth));
+    if (c.native > 0n) credits.push(signed(c.native, formatEth));
+    for (const e of c.erc20) {
+      (e.delta < 0n ? debits : credits).push(signed(e.delta, (v) => headAmount(v, e.token, meta)));
+    }
+    for (const nft of c.nftOut) debits.push(`-NFT ${shortAddr(nft.token)} #${nft.tokenId}`);
+    for (const nft of c.nftIn) credits.push(`+NFT ${shortAddr(nft.token)} #${nft.tokenId}`);
+    for (const e of c.erc1155) {
+      (e.delta < 0n ? debits : credits).push(
+        signed(e.delta, (v) => `${v} × id ${e.tokenId} of ${shortAddr(e.token)}`),
+      );
+    }
+  }
+  for (const a of withApprovals ? (sim.approvals ?? []) : []) {
+    const revoke =
+      (a.standard === 'erc20' && (a.amount ?? 0n) === 0n) ||
+      (a.standard === 'operator' && !a.approved);
+    if (!revoke) debits.push(`grants ${approvalText(a, meta)}`);
+  }
+  return { debits, credits };
+}
+
+/** Balance changes for the long-form text: debits first, then credits. */
 function deltaTexts(
   sim: Extract<Simulation, { status: 'ok' | 'reverted' }>,
   meta: TokenMetaLookup,
 ): string[] {
-  const c = sim.changes;
-  if (!c) return [];
-  const out: string[] = [];
-  if (c.native !== 0n) out.push(signed(c.native, formatEth));
-  for (const e of c.erc20) out.push(signed(e.delta, (v) => headAmount(v, e.token, meta)));
-  for (const n of c.nftIn) out.push(`+NFT ${shortAddr(n.token)} #${n.tokenId}`);
-  for (const n of c.nftOut) out.push(`-NFT ${shortAddr(n.token)} #${n.tokenId}`);
-  for (const e of c.erc1155) {
-    out.push(signed(e.delta, (v) => `${v} × id ${e.tokenId} of ${shortAddr(e.token)}`));
-  }
-  return out;
+  const f = flows(sim, meta, false);
+  return [...f.debits, ...f.credits];
 }
 
 function approvalText(a: SimApproval, meta: TokenMetaLookup): string {

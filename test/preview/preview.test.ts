@@ -59,7 +59,10 @@ test('approve UNLIMITED: text and headline (pinned)', async () => {
       '  - UNLIMITED approval',
     ].join('\n'),
   );
-  equal(p.headline, 'approve UNLIMITED USDC → 0x1111…1111 | sim ok | ⚠ UNLIMITED approval');
+  equal(
+    p.headline,
+    'approve UNLIMITED USDC → 0x1111…1111 | sim ok grants USDC → 0x1111…1111 UNLIMITED | ⚠ UNLIMITED approval',
+  );
   deepEqual(p.warnings, ['UNLIMITED approval']);
   equal(p.decoded.source, 'builtin');
 });

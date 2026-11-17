@@ -360,7 +360,10 @@ test('preview_transaction: returns the preview, signs nothing, writes no audit e
     >;
     deepEqual(Object.keys(r).sort(), ['decoded', 'headline', 'preview', 'simulation', 'warnings']);
     ok((r['preview'] as string).includes('UNLIMITED'));
-    equal(r['headline'], 'approve UNLIMITED USDC → 0x1111…1111 | sim ok | ⚠ UNLIMITED approval');
+    equal(
+      r['headline'],
+      'approve UNLIMITED USDC → 0x1111…1111 | sim ok grants USDC → 0x1111…1111 UNLIMITED | ⚠ UNLIMITED approval',
+    );
     deepEqual(r['warnings'], ['UNLIMITED approval']);
     equal((r['simulation'] as { gasUsed: string }).gasUsed, '46201');
     // JSON-serializable for the MCP wire.

@@ -77,6 +77,13 @@ export interface SimTransfer {
   tokenId?: bigint;
 }
 
+export interface WrapEvent {
+  token: string;
+  who: string;
+  kind: 'deposit' | 'withdrawal';
+  amount: bigint;
+}
+
 export interface SimApproval {
   standard: 'erc20' | 'erc721' | 'operator';
   token: string;
@@ -110,6 +117,11 @@ export type Simulation =
       transfersOmitted: number;
       changes: BalanceChanges | null;
       approvals: SimApproval[] | null;
+      /**
+       * WETH9-style Deposit/Withdrawal events (all of them, never truncated):
+       * the evidence that a `deposit()`/`withdraw()` really wrapped/unwrapped.
+       */
+      wraps: WrapEvent[] | null;
       notes: string[];
       /** symbol/decimals per lowercase token address, where readable. */
       tokenMeta: Readonly<Record<string, TokenMeta>>;
@@ -306,6 +318,7 @@ async function run(
 
   let transfers: SimTransfer[] | null = null;
   let approvals: SimApproval[] | null = null;
+  let wraps: WrapEvent[] | null = null;
   let changes: BalanceChanges | null = null;
   let omitted = 0;
   if (logs !== null) {
@@ -316,6 +329,7 @@ async function run(
     omitted = Math.max(0, analysis.transfers.length - MAX_TRANSFERS);
     transfers = analysis.transfers.slice(0, MAX_TRANSFERS);
     approvals = analysis.approvals;
+    wraps = analysis.wraps;
     changes = analysis.changes;
   }
 
@@ -347,6 +361,7 @@ async function run(
     transfersOmitted: omitted,
     changes,
     approvals,
+    wraps,
     notes,
     tokenMeta,
   };
@@ -535,15 +550,17 @@ export function analyzeLogs(
 ): {
   transfers: SimTransfer[];
   approvals: SimApproval[];
+  wraps: WrapEvent[];
   changes: BalanceChanges;
   malformed: number;
 } {
   const transfers: SimTransfer[] = [];
   const approvals: SimApproval[] = [];
+  const wraps: WrapEvent[] = [];
   let malformed = 0;
   for (const log of logs) {
     try {
-      classify(log, portal, transfers, approvals);
+      classify(log, portal, transfers, approvals, wraps);
     } catch {
       malformed++;
     }
@@ -587,6 +604,7 @@ export function analyzeLogs(
   return {
     transfers,
     approvals,
+    wraps,
     changes: {
       native,
       erc20: [...erc20].filter(([, d]) => d !== 0n).map(([token, delta]) => ({ token, delta })),
@@ -603,6 +621,7 @@ function classify(
   portal: string,
   transfers: SimTransfer[],
   approvals: SimApproval[],
+  wraps: WrapEvent[],
 ): void {
   if (!ADDR_RE.test(log.address) || !HEX_RE.test(log.data)) throw new Error('bad log');
   for (const t of log.topics) if (!TOPIC_RE.test(t)) throw new Error('bad topic');
@@ -712,6 +731,7 @@ function classify(
       const who = topicAddr(log.topics[1]!);
       // WETH9 mints/burns without a Transfer event; model it as one.
       const deposit = topic0 === EVENT_TOPICS.Deposit;
+      wraps.push({ token, who, kind: deposit ? 'deposit' : 'withdrawal', amount: wad });
       transfers.push({
         standard: 'erc20',
         token,
