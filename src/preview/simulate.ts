@@ -172,7 +172,7 @@ async function run(
 
   const notes: string[] = [];
   let method: 'eth_simulateV1' | 'eth_call' = 'eth_simulateV1';
-  let status: 'ok' | 'reverted';
+  let status: 'ok' | 'reverted' | undefined;
   let gasUsed: bigint | null = null;
   let revertReason: string | undefined;
   let logs: RawLog[] | null = null;
@@ -203,19 +203,34 @@ async function run(
           ? 'simulation: eth_call only (node cannot simulate a contract creation with eth_simulateV1)'
           : 'simulation: eth_call only (node lacks eth_simulateV1)',
       );
+      // Only a well-formed answer counts as success: an eth_call result is
+      // return data (hex bytes); null, a number or odd-length hex means we
+      // don't know what happened.
+      let callOk = false;
       try {
-        await call('eth_call', [callObj, 'latest']);
-        status = 'ok';
+        const ret = await call('eth_call', [callObj, 'latest']);
+        if (typeof ret !== 'string' || !RETURN_DATA_RE.test(ret)) {
+          throw new Error('malformed eth_call result', { cause: err });
+        }
+        callOk = true;
       } catch (e) {
         if (!(e instanceof UpstreamRpcError) || !isRevert(e)) throw e;
         status = 'reverted';
         revertReason = revertFromRpcError(e);
       }
-      if (status === 'ok') {
+      if (callOk) {
+        status = 'ok';
+        // eth_estimateGas re-executes the call; if it reverts there, the tx
+        // reverts — that is a result, not a missing gas figure.
         try {
           gasUsed = parseQty(await call('eth_estimateGas', [callObj]), 'eth_estimateGas');
-        } catch {
-          notes.push('gas estimate unavailable');
+        } catch (e) {
+          if (e instanceof UpstreamRpcError && isRevert(e)) {
+            status = 'reverted';
+            revertReason = revertFromRpcError(e);
+          } else {
+            notes.push('gas estimate unavailable');
+          }
         }
       }
     } else if (err instanceof UpstreamRpcError && isRevert(err)) {
@@ -261,6 +276,7 @@ async function run(
     if (m.symbol !== undefined || m.decimals !== undefined) tokenMeta[t] = m;
   }
 
+  if (status === undefined) throw new Error('internal: simulation status unset');
   return {
     status,
     method,
@@ -437,6 +453,8 @@ function isUnsupported(e: UpstreamRpcError): boolean {
 // ---------------------------------------------------------------------------
 
 const HEX_RE = /^0x[0-9a-fA-F]*$/;
+/** Return data: whole bytes of hex. */
+const RETURN_DATA_RE = /^0x(?:[0-9a-fA-F]{2})*$/;
 const TOPIC_RE = /^0x[0-9a-f]{64}$/;
 const ADDR_RE = /^0x[0-9a-f]{40}$/;
 

@@ -514,3 +514,30 @@ test('a known revert is never downgraded to unavailable by malformed secondary f
     'unavailable',
   );
 });
+
+test('fallback: a malformed eth_call result is unavailable, never ok', async () => {
+  for (const bad of [null, 5, '0x1', 'deadbeef', { result: '0x' }]) {
+    const node = new FakeNode().on('eth_call', () => bad).on('eth_estimateGas', '0x5208');
+    deepEqual(await simulateTransaction(tx(), PORTAL, node), {
+      status: 'unavailable',
+      reason: 'malformed eth_call result',
+    });
+  }
+});
+
+test('fallback: eth_estimateGas reverting makes the simulation reverted', async () => {
+  const node = new FakeNode()
+    .on('eth_call', '0x')
+    .on('eth_estimateGas', new UpstreamRpcError(3, 'execution reverted', ERROR_STF));
+  const sim = ran(await simulateTransaction(tx(), PORTAL, node));
+  equal(sim.status, 'reverted');
+  equal(sim.method, 'eth_call');
+  equal(sim.revertReason, 'Error("STF")');
+  // Any other estimate failure only loses the gas figure.
+  const n2 = new FakeNode()
+    .on('eth_call', '0x00')
+    .on('eth_estimateGas', new UpstreamRpcError(-32000, 'rate limited'));
+  const s2 = ran(await simulateTransaction(tx(), PORTAL, n2));
+  equal(s2.status, 'ok');
+  ok(s2.notes.includes('gas estimate unavailable'));
+});
