@@ -32,6 +32,8 @@ export const DEFAULT_SIM_TIMEOUT_MS = 15_000;
 const MAX_META_TOKENS = 10;
 /** Transfers kept for the long-form listing. */
 const MAX_TRANSFERS = 32;
+/** Intrinsic gas of the cheapest possible transaction. */
+const MIN_GAS = 21_000n;
 
 /**
  * Addresses traceTransfers uses for synthetic native-ETH Transfer logs.
@@ -128,6 +130,19 @@ export async function simulateTransaction(
   opts: SimulateOpts = {},
 ): Promise<Simulation> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_SIM_TIMEOUT_MS;
+  // A gas limit below the intrinsic 21000 can never be included; and with
+  // 0 the node would substitute its own limit, simulating a different tx
+  // than the one being signed. Unavailable, so require_simulation denies.
+  const gas = BigInt(tx.gasLimit);
+  if (gas < MIN_GAS) {
+    return {
+      status: 'unavailable',
+      reason:
+        gas === 0n
+          ? 'gasLimit 0 cannot be simulated or sent'
+          : `gasLimit ${gas} is below the 21000 intrinsic minimum and cannot be simulated or sent`,
+    };
+  }
   const running = run(tx, from.toLowerCase(), upstream, timeoutMs, opts.extraTokens ?? []);
   running.catch(() => {
     /* settled below or abandoned after the overall timeout */
@@ -162,15 +177,61 @@ async function run(
   const dataHex =
     typeof tx.data === 'string' ? tx.data.toLowerCase() : '0x' + tx.data.toString('hex');
   const gas = BigInt(tx.gasLimit);
-  const callObj: Record<string, string> = {
+  // Simulate exactly the parameters that will be signed. A contract can
+  // branch on tx.gasprice, gasleft() or the nonce, so a call built from
+  // from/to/value/data alone is a different transaction.
+  const base: Record<string, unknown> = {
     from,
     ...(to !== null ? { to } : {}),
     value: qtyHex(value),
     data: dataHex,
-    ...(gas > 0n ? { gas: qtyHex(gas) } : {}),
+    gas: qtyHex(gas),
+    nonce: qtyHex(BigInt(tx.nonce)),
+    ...(tx.type === 'eip1559'
+      ? {
+          accessList: (tx.accessList ?? []).map((a) => ({
+            address: a.address.toLowerCase(),
+            storageKeys: a.storageKeys.map((k) => k.toLowerCase()),
+          })),
+        }
+      : {}),
   };
+  const feeFields: Record<string, string> =
+    tx.type === 'eip1559'
+      ? {
+          maxFeePerGas: qtyHex(BigInt(tx.maxFeePerGas)),
+          maxPriorityFeePerGas: qtyHex(BigInt(tx.maxPriorityFeePerGas)),
+        }
+      : { gasPrice: qtyHex(BigInt(tx.gasPrice)) };
+  const full = { ...base, ...feeFields };
+  let callObj: Record<string, unknown> = full;
 
   const notes: string[] = [];
+  /**
+   * Some nodes (anvil, verified) enforce balance ≥ gas × price + value even
+   * with validation:false once fee fields are present; others (reth) don't.
+   * When the node refuses for insufficient funds, retry ONCE without the
+   * fee fields and say so — the simulation then saw tx.gasprice = 0. If the
+   * retry is refused too, the sender can't even cover the value: that error
+   * stands.
+   */
+  const viaNode = async (
+    method: string,
+    params: (obj: Record<string, unknown>) => unknown[],
+  ): Promise<unknown> => {
+    try {
+      return await call(method, params(callObj));
+    } catch (e) {
+      if (callObj !== full || !isInsufficientFunds(e)) throw e;
+      callObj = base;
+      notes.push(
+        `simulation: fee fields (${Object.keys(feeFields).join(', ')}) dropped — the node ` +
+          `required the sender to fund gas × price; the contract saw tx.gasprice = 0`,
+      );
+      return await call(method, params(callObj));
+    }
+  };
+
   let method: 'eth_simulateV1' | 'eth_call' = 'eth_simulateV1';
   let status: 'ok' | 'reverted' | undefined;
   let gasUsed: bigint | null = null;
@@ -178,8 +239,8 @@ async function run(
   let logs: RawLog[] | null = null;
 
   try {
-    const res = await call('eth_simulateV1', [
-      { blockStateCalls: [{ calls: [callObj] }], traceTransfers: true, validation: false },
+    const res = await viaNode('eth_simulateV1', (obj) => [
+      { blockStateCalls: [{ calls: [obj] }], traceTransfers: true, validation: false },
       'latest',
     ]);
     const parsed = parseSimulateV1(res);
@@ -208,7 +269,7 @@ async function run(
       // don't know what happened.
       let callOk = false;
       try {
-        const ret = await call('eth_call', [callObj, 'latest']);
+        const ret = await viaNode('eth_call', (obj) => [obj, 'latest']);
         if (typeof ret !== 'string' || !RETURN_DATA_RE.test(ret)) {
           throw new Error('malformed eth_call result', { cause: err });
         }
@@ -223,7 +284,7 @@ async function run(
         // eth_estimateGas re-executes the call; if it reverts there, the tx
         // reverts — that is a result, not a missing gas figure.
         try {
-          gasUsed = parseQty(await call('eth_estimateGas', [callObj]), 'eth_estimateGas');
+          gasUsed = parseQty(await viaNode('eth_estimateGas', (obj) => [obj]), 'eth_estimateGas');
         } catch (e) {
           if (e instanceof UpstreamRpcError && isRevert(e)) {
             status = 'reverted';
@@ -436,6 +497,10 @@ function cleanMessage(m: string): string {
     .join('')
     .trim();
   return t.length > 160 ? t.slice(0, 160) + '…' : t;
+}
+
+function isInsufficientFunds(e: unknown): boolean {
+  return e instanceof UpstreamRpcError && !isRevert(e) && /insufficient funds/i.test(e.message);
 }
 
 function isRevert(e: UpstreamRpcError): boolean {

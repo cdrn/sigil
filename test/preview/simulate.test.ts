@@ -93,6 +93,10 @@ test('eth_simulateV1 swap: request shape, deltas, transfers, token metadata', as
                 value: '0x2386f26fc10000',
                 data: '0xabcdef01',
                 gas: '0x30d40',
+                nonce: '0x0',
+                accessList: [],
+                maxFeePerGas: '0x6fc23ac00',
+                maxPriorityFeePerGas: '0x3b9aca00',
               },
             ],
           },
@@ -540,4 +544,94 @@ test('fallback: eth_estimateGas reverting makes the simulation reverted', async 
   const s2 = ran(await simulateTransaction(tx(), PORTAL, n2));
   equal(s2.status, 'ok');
   ok(s2.notes.includes('gas estimate unavailable'));
+});
+
+function simCall(node: FakeNode, i = 0): Record<string, unknown> {
+  const p = node.calls.filter((c) => c.method === 'eth_simulateV1')[i]!.params[0] as {
+    blockStateCalls: { calls: Record<string, unknown>[] }[];
+  };
+  return p.blockStateCalls[0]!.calls[0]!;
+}
+
+test('the simulated call carries nonce, fees, gas and access list exactly as signed', async () => {
+  const node = new FakeNode().on('eth_simulateV1', simResult({}));
+  const al = [{ address: USDC, storageKeys: ['0x' + '01'.padStart(64, '0')] }] as never;
+  await simulateTransaction(tx({ nonce: 7n, accessList: al, gasLimit: 50_000n }), PORTAL, node);
+  const c = simCall(node);
+  equal(c['nonce'], '0x7');
+  equal(c['gas'], '0xc350');
+  equal(c['maxFeePerGas'], '0x6fc23ac00');
+  equal(c['maxPriorityFeePerGas'], '0x3b9aca00');
+  deepEqual(c['accessList'], [{ address: USDC, storageKeys: ['0x' + '01'.padStart(64, '0')] }]);
+  equal('gasPrice' in c, false);
+
+  const legacy = new FakeNode().on('eth_estimateGas', '0x5208').on('eth_call', '0x');
+  await simulateTransaction(
+    {
+      type: 'legacy',
+      chainId: 1n,
+      nonce: 3n,
+      gasPrice: 5n,
+      gasLimit: 21_000n,
+      to: SPENDER as `0x${string}`,
+      value: 1n,
+      data: '0x',
+    },
+    PORTAL,
+    legacy,
+  );
+  // Same parameters reach the eth_call/eth_estimateGas fallback.
+  for (const m of ['eth_simulateV1', 'eth_call', 'eth_estimateGas']) {
+    const c2 = legacy.calls.find((x) => x.method === m)!;
+    const obj = (
+      m === 'eth_simulateV1'
+        ? (c2.params[0] as { blockStateCalls: { calls: Record<string, unknown>[] }[] })
+            .blockStateCalls[0]!.calls[0]!
+        : c2.params[0]
+    ) as Record<string, unknown>;
+    equal(obj['gasPrice'], '0x5', m);
+    equal(obj['nonce'], '0x3', m);
+    equal(obj['gas'], '0x5208', m);
+    equal('maxFeePerGas' in obj, false, m);
+    equal('accessList' in obj, false, m);
+  }
+});
+
+test('gasLimit below 21000 is unavailable without asking the node', async () => {
+  const node = new FakeNode().on('eth_simulateV1', simResult({}));
+  deepEqual(await simulateTransaction(tx({ gasLimit: 0n }), PORTAL, node), {
+    status: 'unavailable',
+    reason: 'gasLimit 0 cannot be simulated or sent',
+  });
+  const s = await simulateTransaction(tx({ gasLimit: 20_999n }), PORTAL, node);
+  equal(s.status, 'unavailable');
+  ok((s as { reason: string }).reason.includes('below the 21000 intrinsic minimum'));
+  deepEqual(node.calls, []);
+});
+
+test('insufficient funds with fee fields: one retry without them, noted', async () => {
+  // anvil's behaviour for an unfunded sender once fee fields are present.
+  const node = new FakeNode().on('eth_simulateV1', (params: readonly unknown[]) => {
+    const c = (params[0] as { blockStateCalls: { calls: Record<string, unknown>[] }[] })
+      .blockStateCalls[0]!.calls[0]!;
+    return 'maxFeePerGas' in c
+      ? new UpstreamRpcError(-32003, 'Insufficient funds for gas * price + value')
+      : simResult({});
+  });
+  const sim = ran(await simulateTransaction(tx(), PORTAL, node));
+  equal(sim.status, 'ok');
+  deepEqual(sim.notes, [
+    'simulation: fee fields (maxFeePerGas, maxPriorityFeePerGas) dropped — the node required the sender to fund gas × price; the contract saw tx.gasprice = 0',
+  ]);
+  const retried = simCall(node, 1);
+  equal(retried['nonce'], '0x0');
+  equal(retried['gas'], '0x30d40');
+  // If even the value can't be covered, the error stands (no second retry).
+  const broke = new FakeNode().on(
+    'eth_simulateV1',
+    new UpstreamRpcError(-32003, 'Insufficient funds for gas * price + value'),
+  );
+  const s2 = await simulateTransaction(tx(), PORTAL, broke);
+  equal(s2.status, 'unavailable');
+  equal(broke.calls.filter((c) => c.method === 'eth_simulateV1').length, 2);
 });

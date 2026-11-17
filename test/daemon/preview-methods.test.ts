@@ -430,3 +430,20 @@ test('sign_on_revert = false still denies a revert whose logs are malformed', as
     h.cleanup();
   }
 });
+
+test('require_simulation denies a gasLimit 0 tx (it cannot be simulated as signed)', async () => {
+  const node = approveNode();
+  const h = harness({
+    policy: 'mode = "permissive"\nrequire_simulation = true',
+    preview: withNode(node),
+  });
+  try {
+    const err = await denied(
+      dispatch('sigil_eth_sign_transaction', txParams({ gasLimit: '0' }), h.ctx),
+    );
+    ok(err.message.includes('gasLimit 0 cannot be simulated or sent'), err.message);
+    deepEqual(node.calls, []);
+  } finally {
+    h.cleanup();
+  }
+});
