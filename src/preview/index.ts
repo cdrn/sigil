@@ -1,0 +1,172 @@
+import type { SignableTx } from '../eth/index.js';
+import type { JsonRpcUpstream } from '../rpc/upstream.js';
+import { AbiRegistry } from './abi-dir.js';
+import { decodeCalldata } from './decode.js';
+import { type PreviewSimulation, renderHeadline, renderText, simulationSummary } from './format.js';
+import { operatorWarning } from './known.js';
+import { simulateTransaction } from './simulate.js';
+import { type DecodedCall, NO_META, type TokenMeta, type TokenMetaLookup } from './types.js';
+import { isUnlimited } from './units.js';
+
+/**
+ * "Show me what I'm signing": decode an EVM transaction to English and, when
+ * an RPC node is configured for its chain, dry-run it. The result feeds
+ * three readers — the human (confirm push headline), the agent (returned
+ * text) and the audit log — and two opt-in policy gates (deny on revert,
+ * require simulation) that the sign path applies.
+ */
+
+export interface TxPreview {
+  decoded: DecodedCall;
+  simulation: PreviewSimulation;
+  warnings: string[];
+  /** Multi-line, for the agent and the audit log. */
+  text: string;
+  /** One line, for the confirm push. */
+  headline: string;
+}
+
+export interface BuildTxPreviewInput {
+  tx: SignableTx;
+  /** The signing portal's address. */
+  from: string;
+  registry: AbiRegistry;
+  /** RPC node for this tx's chain; undefined = no simulation (skipped). */
+  simulator?: JsonRpcUpstream;
+  /** Why there is no simulator, when the caller knows better than the default. */
+  skippedReason?: string;
+  timeoutMs?: number;
+}
+
+export async function buildTxPreview(input: BuildTxPreviewInput): Promise<TxPreview> {
+  const { tx, registry } = input;
+  const from = input.from.toLowerCase();
+  const to = tx.to === null ? null : tx.to.toLowerCase();
+  const value = BigInt(tx.value);
+  const chainId = BigInt(tx.chainId);
+  const data =
+    typeof tx.data === 'string' ? Buffer.from(tx.data.slice(2), 'hex') : Buffer.from(tx.data);
+  const ctx = { to, value, from };
+
+  // First pass with no metadata: learns which tokens the call names, so the
+  // simulator can fetch their symbol/decimals alongside the ones it touches.
+  const pre = decodeCalldata(data, registry, NO_META, ctx);
+
+  let simulation: PreviewSimulation;
+  if (input.simulator === undefined) {
+    simulation = {
+      status: 'skipped',
+      reason: input.skippedReason ?? `no simulation RPC configured for chain ${chainId}`,
+    };
+  } else {
+    simulation = await simulateTransaction(tx, from, input.simulator, {
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      extraTokens: pre.tokens ?? [],
+    });
+  }
+
+  const metaTable: Readonly<Record<string, TokenMeta>> =
+    simulation.status === 'ok' || simulation.status === 'reverted' ? simulation.tokenMeta : {};
+  const meta: TokenMetaLookup = (addr) =>
+    Object.prototype.hasOwnProperty.call(metaTable, addr) ? metaTable[addr] : undefined;
+  const decoded =
+    Object.keys(metaTable).length > 0 ? decodeCalldata(data, registry, meta, ctx) : pre;
+
+  const warnings = collectWarnings(decoded, simulation, { from, to, value });
+  const render = {
+    decoded,
+    simulation,
+    warnings,
+    from,
+    to,
+    value,
+    chainId,
+    meta,
+    footer: registry.loadWarnings,
+  };
+  return {
+    decoded,
+    simulation,
+    warnings,
+    text: renderText(render),
+    headline: renderHeadline(render),
+  };
+}
+
+function collectWarnings(
+  decoded: DecodedCall,
+  sim: PreviewSimulation,
+  tx: { from: string; to: string | null; value: bigint },
+): string[] {
+  const out: string[] = [...decoded.warnings];
+  if (sim.status === 'reverted') out.push(`simulation reverted: ${sim.revertReason ?? 'unknown'}`);
+  if (sim.status === 'unavailable') out.push(`simulation unavailable: ${sim.reason}`);
+  if (decoded.source === 'unknown' && tx.value > 0n) {
+    out.push('calldata to unknown function with ETH value');
+  }
+  if (tx.to !== null && tx.to === tx.from) out.push("destination is the portal's own address");
+  if (sim.status === 'ok') {
+    for (const a of sim.approvals ?? []) {
+      if (a.standard === 'erc20' && a.amount !== undefined && isUnlimited(a.amount)) {
+        out.push('UNLIMITED approval');
+      }
+      if (a.standard === 'operator' && a.approved) out.push(operatorWarning(a.spender, a.token));
+    }
+  }
+  return [...new Set(out)];
+}
+
+/** The compact form written into the audit entry. */
+export function auditPreview(p: TxPreview): {
+  text: string;
+  decoded: string;
+  simulation: string;
+  warnings: string[];
+} {
+  return {
+    text: p.text,
+    decoded: p.decoded.text,
+    simulation: simulationSummary(p.simulation),
+    warnings: p.warnings,
+  };
+}
+
+/** Deep-convert bigints to decimal strings so the value can be JSON-serialized. */
+export function jsonSafe(v: unknown): unknown {
+  if (typeof v === 'bigint') return v.toString();
+  if (Array.isArray(v)) return v.map(jsonSafe);
+  if (typeof v === 'object' && v !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) out[k] = jsonSafe(x);
+    return out;
+  }
+  return v;
+}
+
+export { AbiRegistry, type AbiFunction, type AbiInput } from './abi-dir.js';
+export { decodeCalldata, type DecodeCtx } from './decode.js';
+export {
+  simulateTransaction,
+  analyzeLogs,
+  decodeRevert,
+  fetchTokenMeta,
+  parseSymbol,
+  parseDecimals,
+  DEFAULT_SIM_TIMEOUT_MS,
+  type Simulation,
+  type SimTransfer,
+  type SimApproval,
+  type BalanceChanges,
+  type RawLog,
+  type SimulateOpts,
+} from './simulate.js';
+export {
+  renderText,
+  renderHeadline,
+  simulationSummary,
+  HEADLINE_MAX,
+  type PreviewSimulation,
+} from './format.js';
+export { KNOWN_FUNCTIONS, EVENT_TOPICS, decodeV3Path, type KnownFunction } from './known.js';
+export type { DecodedCall, DecodedArg, TokenMeta, TokenMetaLookup } from './types.js';
+export { formatUnits, shortAddr, sanitizeSymbol } from './units.js';
