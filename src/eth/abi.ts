@@ -41,8 +41,20 @@ export class AbiDecodeError extends Error {
 /** Fixed-array lengths above this are refused at parse time: no real ABI
  *  uses them, and the head size would overflow any calldata anyway. */
 const MAX_FIXED_ARRAY = 1 << 16;
-/** Nesting depth cap for type strings (tuples within arrays within …). */
+/**
+ * Nesting depth cap for type strings. Tuple levels AND array suffixes both
+ * count: `uint256[1][1]…` nests just as deeply as `((…))`, and every helper
+ * that walks a type (isDynamic, headSize, canonicalType, the decoder)
+ * recurses once per level.
+ */
 const MAX_TYPE_DEPTH = 32;
+/** Longest type string accepted at all — real signatures are far shorter. */
+const MAX_TYPE_LENGTH = 4096;
+
+/** A type string for an error message, clipped so a huge input stays small. */
+function show(s: string): string {
+  return s.length > 80 ? `${s.slice(0, 80)}…(${s.length} chars)` : s;
+}
 
 /**
  * Parse a canonical Solidity type string: `uint256`, `int8`, `address`,
@@ -51,6 +63,9 @@ const MAX_TYPE_DEPTH = 32;
  * forms. Whitespace is not allowed (canonical signatures have none).
  */
 export function parseAbiType(t: string): AbiType {
+  if (t.length > MAX_TYPE_LENGTH) {
+    throw new AbiDecodeError(`ABI type longer than ${MAX_TYPE_LENGTH} chars: "${show(t)}"`);
+  }
   const p = { s: t, i: 0 };
   const type = parseTypeAt(p, 0);
   if (p.i !== t.length) {
@@ -94,7 +109,9 @@ export function canonicalType(t: AbiType): string {
 }
 
 function parseTypeAt(p: { s: string; i: number }, depth: number): AbiType {
-  if (depth > MAX_TYPE_DEPTH) throw new AbiDecodeError(`ABI type nested too deeply: "${p.s}"`);
+  if (depth > MAX_TYPE_DEPTH) {
+    throw new AbiDecodeError(`ABI type nested too deeply: "${show(p.s)}"`);
+  }
   let base: AbiType;
   if (p.s[p.i] === '(') {
     p.i++;
@@ -132,6 +149,9 @@ function parseTypeAt(p: { s: string; i: number }, depth: number): AbiType {
     }
     base = { kind: 'array', inner: base, length };
     p.i = close + 1;
+    if (++depth > MAX_TYPE_DEPTH) {
+      throw new AbiDecodeError(`ABI type nested too deeply: "${show(p.s)}"`);
+    }
   }
   return base;
 }

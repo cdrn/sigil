@@ -255,3 +255,23 @@ test('aliased offsets cannot amplify a small payload past the budget', () => {
   const data = buf(w(0x20), w(n), ...heads, w(blobLen), r('ab'.repeat(blobLen)));
   throws(() => decodeAbiParameters(['bytes[]'], data), /budget/);
 });
+
+test('array suffixes count toward the nesting limit; huge type strings are refused', () => {
+  // Used to recurse once per suffix and die with a raw RangeError.
+  throws(() => parseAbiType('uint256' + '[1]'.repeat(20000)), AbiDecodeError);
+  throws(() => parseAbiType('uint256' + '[]'.repeat(40)), /nested too deeply/);
+  throws(() => parseAbiType('(' + 'uint8,'.repeat(1000) + 'uint8)'), /longer than 4096/);
+  // Mixed tuple + array nesting shares one budget.
+  throws(
+    () => parseAbiType('('.repeat(20) + 'uint8' + '[]'.repeat(20) + ')'.repeat(20)),
+    AbiDecodeError,
+  );
+  // Realistic depths still parse.
+  equal(canonicalType(parseAbiType('uint256' + '[]'.repeat(10))), 'uint256' + '[]'.repeat(10));
+  // Error messages stay short even for long inputs.
+  try {
+    parseAbiType('uint256' + '[1]'.repeat(1000));
+  } catch (e) {
+    equal((e as Error).message.length < 200, true);
+  }
+});
