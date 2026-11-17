@@ -130,6 +130,7 @@ export function decodeCalldata(
       warnings: desc.warnings,
       ...(desc.tokens && desc.tokens.length > 0 ? { tokens: dedupe(desc.tokens) } : {}),
       ...(desc.swapOut ? { swapOut: desc.swapOut } : {}),
+      ...(desc.innerSwaps ? { innerSwaps: desc.innerSwaps } : {}),
     };
   }
   return { ...base, args, text: genericText(def.name, args, values, def.inputs), warnings: [] };

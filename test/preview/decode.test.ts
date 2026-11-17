@@ -325,15 +325,22 @@ test('multicall decodes inner calls one level deep and prefixes their warnings',
       pad(inner2),
   );
   const d = decodeCalldata(data, EMPTY, META, { to: USDC });
-  equal(d.short, 'multicall: transfer 5 USDC → 0x1111…1111 + approve UNLIMITED USDC → 0x1111…1111');
+  // Inner calls never get friendly verbs; they are shown by raw signature.
+  equal(d.short, 'multicall (2 calls)');
   deepEqual(d.warnings, ['multicall[1]: UNLIMITED approval']);
-  ok(d.text.startsWith('multicall(2 calls: transfer('));
+  ok(
+    d.text.startsWith(
+      'multicall(2 calls: transfer(to=0x1111…1111, amount=5000000) on 0xa0b8…eb48; approve(spender=0x1111…1111, amount=',
+    ),
+    d.text,
+  );
+  ok(!/transfer 5 USDC|approve UNLIMITED/.test(d.text), d.text);
 
   // A multicall nested inside a multicall is not decoded further.
   const nested = 'ac9650d8' + w(0x20) + w(0);
   const outer = hex('ac9650d8' + w(0x20) + w(1) + w(0x20) + w(nested.length / 2) + pad(nested));
   const o = decodeCalldata(outer, EMPTY, META, { to: USDC });
-  equal(o.text, 'multicall(1 call: multicall(0 calls: ))');
+  equal(o.text, 'multicall(1 call: multicall(data=[]) on 0xa0b8…eb48)');
 });
 
 test('calldata that does not match its selector warns instead of throwing', () => {

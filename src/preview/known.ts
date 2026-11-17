@@ -5,6 +5,7 @@ import {
   functionSelector,
   parseAbiType,
 } from '../eth/abi.js';
+import { rawCallText } from './trust.js';
 import type { DecodedCall, SwapOut, TokenMetaLookup } from './types.js';
 import {
   argAmount,
@@ -54,6 +55,7 @@ export interface Description {
   /** Token addresses whose metadata would sharpen the rendering. */
   tokens?: string[];
   swapOut?: SwapOut;
+  innerSwaps?: { index: number; out: SwapOut }[];
 }
 
 export interface KnownFunction {
@@ -518,23 +520,37 @@ function multicall(withDeadline: boolean): KnownFunction {
     const inner = calls.map((hex) =>
       ctx.decodeInner ? ctx.decodeInner(Buffer.from(hex.slice(2), 'hex')) : undefined,
     );
+    // Inner calls are only behaviour-checked through their swap claims
+    // (innerSwaps), so they never earn a friendly verb: each is shown by
+    // its raw signature and decoded args.
+    const on = ` on ${shortAddr(ctx.to ?? ZERO_ADDRESS)}`;
     const MAX = 8;
-    const texts = inner.slice(0, MAX).map((d, i) => d?.text ?? `call ${i}`);
+    const texts = inner
+      .slice(0, MAX)
+      .map((d, i) =>
+        d === undefined
+          ? `call ${i}`
+          : d.source === 'builtin' || d.source === 'abi'
+            ? rawCallText(d) + on
+            : d.text,
+      );
     if (inner.length > MAX) texts.push(`…+${inner.length - MAX} more`);
-    const shorts = inner.slice(0, 3).map((d) => d?.short ?? d?.text ?? '?');
-    if (inner.length > 3) shorts.push(`+${inner.length - 3} more`);
     const warnings: string[] = [];
     const tokens: string[] = [];
+    const innerSwaps: { index: number; out: SwapOut }[] = [];
     inner.forEach((d, i) => {
       for (const w of d?.warnings ?? []) warnings.push(`multicall[${i}]: ${w}`);
       tokens.push(...(d?.tokens ?? []));
+      if (d?.swapOut) innerSwaps.push({ index: i, out: d.swapOut });
     });
     const dl = withDeadline ? `, deadline=${formatTimestamp(n(args[0]))}` : '';
+    const count = `${calls.length} call${calls.length === 1 ? '' : 's'}`;
     return {
-      text: `multicall(${calls.length} call${calls.length === 1 ? '' : 's'}: ${texts.join('; ')}${dl})`,
-      short: `multicall: ${shorts.join(' + ')}`,
+      text: `multicall(${count}: ${texts.join('; ')}${dl})`,
+      short: `multicall (${count})`,
       warnings,
       tokens,
+      ...(innerSwaps.length > 0 ? { innerSwaps } : {}),
     };
   });
 }

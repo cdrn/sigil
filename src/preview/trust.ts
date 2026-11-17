@@ -1,6 +1,12 @@
 import type { PreviewSimulation } from './format.js';
 import type { SimTransfer } from './simulate.js';
-import { type DecodedCall, NO_META, type TokenMeta, type TokenMetaLookup } from './types.js';
+import {
+  type DecodedCall,
+  NO_META,
+  type SwapOut,
+  type TokenMeta,
+  type TokenMetaLookup,
+} from './types.js';
 import { formatEth, headAmount, shortAddr } from './units.js';
 
 /**
@@ -143,7 +149,16 @@ export interface BehaviourVerdict {
   /** false = the simulation contradicts the friendly description. */
   matches: boolean;
   warning?: string;
+  /** Further warnings (multicall: one per failing inner swap). */
+  more?: string[];
+  /**
+   * False when the call's own text is already verb-free (multicall) and
+   * only the warning is needed.
+   */
+  rewrite?: boolean;
 }
+
+const MULTICALLS = new Set(['0xac9650d8', '0x5ae401dc']);
 
 /**
  * Does the simulation show `to` doing what the built-in description says?
@@ -183,31 +198,66 @@ export function checkBehaviour(
   }
   if (SWAPS.has(sel)) {
     const out = decoded.swapOut;
-    if (!out) {
-      return { matches: false, warning: 'swap output is not the declared token' };
-    }
-    const min = BigInt(out.min);
-    // Router sentinels: address(1) = msg.sender (the portal), address(2) =
-    // the router itself (a multicall continues with the funds).
-    const recipient =
-      out.recipient === SENTINEL_SENDER
-        ? tx.from
-        : out.recipient === SENTINEL_THIS
-          ? to
-          : out.recipient;
-    const got = received(sim, recipient, out.token, tx.from);
-    const label = (v: bigint): string =>
-      out.token === null ? formatEth(v) : headAmount(v, out.token, meta);
-    if (got > 0n && got >= min) return { matches: true };
-    if (got === 0n && otherInflow(sim, recipient, out.token, tx.from)) {
-      return { matches: false, warning: 'swap output is not the declared token' };
-    }
-    return {
-      matches: false,
-      warning: `swap output below the declared minimum (got ${label(got)}, declared ≥ ${label(min)})`,
-    };
+    if (!out) return { matches: false, warning: 'swap output is not the declared token' };
+    const w = checkSwap(out, sim, tx.from, to, meta);
+    return w === null ? { matches: true } : { matches: false, warning: w };
+  }
+  if (MULTICALLS.has(sel)) {
+    // Every inner swap claim is held to the same standard as a direct call.
+    const failures = (decoded.innerSwaps ?? [])
+      .map(({ out }) => checkSwap(out, sim, tx.from, to, meta))
+      .filter((w): w is string => w !== null);
+    if (failures.length === 0) return { matches: true };
+    const [warning, ...more] = [...new Set(failures)];
+    return { matches: false, warning: warning!, more, rewrite: false };
   }
   return null;
+}
+
+/**
+ * One swap claim against the simulation. Returns a warning, or null when
+ * the recipient really gained at least the declared minimum of the
+ * declared output token.
+ */
+function checkSwap(
+  out: SwapOut,
+  sim: RanSim,
+  portal: string,
+  router: string,
+  meta: TokenMetaLookup,
+): string | null {
+  const min = BigInt(out.min);
+  // Router sentinels: address(1) = msg.sender (the portal), address(2) =
+  // the router itself (a multicall continues with the funds).
+  const recipient =
+    out.recipient === SENTINEL_SENDER
+      ? portal
+      : out.recipient === SENTINEL_THIS
+        ? router
+        : out.recipient;
+  // When the router keeps the output for a later step of the same
+  // multicall (unwrap, sweep), its net change ends at zero by design; what
+  // the swap step must show is the output arriving there from elsewhere.
+  const got =
+    recipient === router && recipient !== portal
+      ? grossInflow(sim, recipient, out.token)
+      : received(sim, recipient, out.token, portal);
+  const label = (v: bigint): string =>
+    out.token === null ? formatEth(v) : headAmount(v, out.token, meta);
+  if (got > 0n && got >= min) return null;
+  if (got === 0n && otherInflow(sim, recipient, out.token, portal)) {
+    return 'swap output is not the declared token';
+  }
+  return `swap output below the declared minimum (got ${label(got)}, declared ≥ ${label(min)})`;
+}
+
+/** Inflows of `token` to `addr` from anyone else (self-transfers excluded). */
+function grossInflow(sim: RanSim, addr: string, token: string | null): bigint {
+  let sum = 0n;
+  for (const t of sim.allTransfers ?? []) {
+    if (isOf(t, token) && t.to === addr && t.from !== addr) sum += t.amount;
+  }
+  return sum;
 }
 
 const SENTINEL_SENDER = '0x0000000000000000000000000000000000000001';

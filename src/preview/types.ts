@@ -56,6 +56,12 @@ export interface DecodedCall {
    * simulation against it before the friendly "swap" wording is kept.
    */
   swapOut?: SwapOut;
+  /**
+   * For multicall: the swap claims of its inner calls (by position). The
+   * behaviour check verifies each one, since inner calls are rendered by
+   * raw signature and never get a friendly verb of their own.
+   */
+  innerSwaps?: { index: number; out: SwapOut }[];
 }
 
 export interface SwapOut {

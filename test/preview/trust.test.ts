@@ -362,3 +362,88 @@ test('the recipient check sees transfers beyond the 32-entry listing', async () 
   const p = await swapPreview([...noise, inflow(WETH, 10n ** 18n, SPENDER)], 10n ** 18n, SPENDER);
   ok(p.headline.startsWith('swap 1,000 USDC → ≥1 WETH'), p.headline);
 });
+
+/** Wrap calldata (no 0x) in multicall(bytes[]). */
+function multicallOf(...inner: string[]): `0x${string}` {
+  const pad = (h: string): string => h.padEnd(Math.ceil(h.length / 64) * 64, '0');
+  let offset = inner.length * 32;
+  const heads: string[] = [];
+  const bodies: string[] = [];
+  for (const c of inner) {
+    heads.push(w(offset));
+    const body = w(c.length / 2) + pad(c);
+    bodies.push(body);
+    offset += body.length / 2;
+  }
+  return ('0xac9650d8' +
+    w(0x20) +
+    w(inner.length) +
+    heads.join('') +
+    bodies.join('')) as `0x${string}`;
+}
+
+async function multicallPreview(logs: object[], minOut: bigint, recipient = PORTAL) {
+  const inner = swapCall(minOut, recipient).slice(2);
+  const node = new FakeNode()
+    .on('eth_simulateV1', simResult({ logs: [debit(USDC, 1_000_000_000n), ...logs] }))
+    .token(USDC, 'USDC', 6)
+    .token(WETH, 'WETH', 18);
+  return buildTxPreview({
+    tx: tx({ to: ROUTER, data: multicallOf(inner) }),
+    from: PORTAL,
+    registry: EMPTY,
+    simulator: node,
+  });
+}
+
+test('repro: a dust-output swap wrapped in multicall warns; no inner verb reaches the headline', async () => {
+  const p = await multicallPreview([inflow(WETH, 1n)], 10n ** 18n);
+  ok(p.headline.startsWith('multicall (1 call) | sim ok -1,000 USDC'), p.headline);
+  ok(!p.headline.includes('swap 1,000'), p.headline);
+  ok(!p.text.includes('swap 1,000'), p.text);
+  ok(p.text.includes('exactInputSingle(params=('), p.text);
+  ok(
+    p.warnings.includes(
+      'swap output below the declared minimum (got 0.000000000000000001 WETH, declared ≥ 1 WETH)',
+    ),
+    p.warnings.join('|'),
+  );
+});
+
+test('multicall: a met inner swap claim gives no warning; output kept by the router counts its inflow', async () => {
+  const good = await multicallPreview([inflow(WETH, 10n ** 18n)], 10n ** 18n);
+  ok(good.headline.startsWith('multicall (1 call) | sim ok -1,000 USDC +1 WETH'), good.headline);
+  equal(
+    good.warnings.filter((x) => x.startsWith('swap output')).length,
+    0,
+    good.warnings.join('|'),
+  );
+
+  // recipient = address(2): the router holds the WETH for a later step
+  // (e.g. unwrap) — net zero for the router, but the swap step delivered.
+  const ADDRESS_THIS = '0x0000000000000000000000000000000000000002';
+  const viaRouter = await multicallPreview(
+    [
+      {
+        address: WETH,
+        topics: [TOPIC.Transfer, t(SPENDER), t(ROUTER)],
+        data: '0x' + w(10n ** 18n),
+      },
+      { address: WETH, topics: [TOPIC.Withdrawal, t(ROUTER)], data: '0x' + w(10n ** 18n) },
+    ],
+    10n ** 18n,
+    ADDRESS_THIS,
+  );
+  equal(
+    viaRouter.warnings.filter((x) => x.startsWith('swap output')).length,
+    0,
+    viaRouter.warnings.join('|'),
+  );
+  // …but a router self-transfer is not an inflow.
+  const fakeRouter = await multicallPreview(
+    [{ address: WETH, topics: [TOPIC.Transfer, t(ROUTER), t(ROUTER)], data: '0x' + w(10n ** 18n) }],
+    10n ** 18n,
+    ADDRESS_THIS,
+  );
+  ok(fakeRouter.warnings.some((x) => x.startsWith('swap output below the declared minimum')));
+});

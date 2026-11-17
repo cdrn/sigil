@@ -79,11 +79,14 @@ export async function buildTxPreview(input: BuildTxPreviewInput): Promise<TxPrev
   // A friendly verb is only kept when the contract behaved like it.
   const verdict = checkBehaviour(decoded, simulation, { from, to }, meta);
   const trustWarnings: string[] = [];
-  if (verdict && !verdict.matches) {
+  if (verdict && !verdict.matches && verdict.rewrite !== false) {
     const raw = rawCallText(decoded);
     const { short: _dropped, ...rest } = decoded;
     decoded = { ...rest, text: raw, short: `${raw} on ${shortAddr(to ?? '')}` };
+  }
+  if (verdict && !verdict.matches) {
     if (verdict.warning) trustWarnings.push(verdict.warning);
+    trustWarnings.push(...(verdict.more ?? []));
   }
   if (simulation.status === 'ok' && simulation.changes) {
     const c = simulation.changes;
