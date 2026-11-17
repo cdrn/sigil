@@ -566,3 +566,16 @@ test('default policy denies a revert even when token metadata arrives late', asy
     h.cleanup();
   }
 });
+
+test('preview_transaction output omits the internal uncapped transfer list', async () => {
+  const h = harness({ preview: withNode(approveNode()) });
+  try {
+    const r = (await dispatch('sigil_eth_preview_transaction', txParams(), h.ctx)) as {
+      simulation: Record<string, unknown>;
+    };
+    equal('allTransfers' in r.simulation, false);
+    ok('transfers' in r.simulation);
+  } finally {
+    h.cleanup();
+  }
+});

@@ -115,6 +115,12 @@ export type Simulation =
       transfers: SimTransfer[] | null;
       /** Transfers beyond MAX_TRANSFERS that were not listed. */
       transfersOmitted: number;
+      /**
+       * Every transfer, uncapped — for checks that need exact net changes
+       * of an address other than the portal (swap recipients). Internal:
+       * not rendered, and stripped from the preview tool's output.
+       */
+      allTransfers: SimTransfer[] | null;
       changes: BalanceChanges | null;
       approvals: SimApproval[] | null;
       /**
@@ -362,6 +368,7 @@ async function execute(
   }
 
   let transfers: SimTransfer[] | null = null;
+  let allTransfers: SimTransfer[] | null = null;
   let approvals: SimApproval[] | null = null;
   let wraps: WrapEvent[] | null = null;
   let changes: BalanceChanges | null = null;
@@ -373,6 +380,7 @@ async function execute(
     }
     omitted = Math.max(0, analysis.transfers.length - MAX_TRANSFERS);
     transfers = analysis.transfers.slice(0, MAX_TRANSFERS);
+    allTransfers = analysis.transfers;
     approvals = analysis.approvals;
     wraps = analysis.wraps;
     changes = analysis.changes;
@@ -386,6 +394,7 @@ async function execute(
     ...(revertReason !== undefined ? { revertReason } : {}),
     transfers,
     transfersOmitted: omitted,
+    allTransfers,
     changes,
     approvals,
     wraps,

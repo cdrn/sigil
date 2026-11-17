@@ -1,4 +1,5 @@
 import type { PreviewSimulation } from './format.js';
+import type { SimTransfer } from './simulate.js';
 import { type DecodedCall, NO_META, type TokenMeta, type TokenMetaLookup } from './types.js';
 import { formatEth, headAmount, shortAddr } from './units.js';
 
@@ -214,26 +215,43 @@ const SENTINEL_THIS = '0x0000000000000000000000000000000000000002';
 
 type RanSim = Extract<PreviewSimulation, { status: 'ok' | 'reverted' }>;
 
+/** Is this transfer a movement of `token` (null = native ETH)? */
+function isOf(t: SimTransfer, token: string | null): boolean {
+  return token === null ? t.standard === 'native' : t.standard === 'erc20' && t.token === token;
+}
+
 /**
- * How much of `token` (null = native) the recipient gained. For the portal
- * this is its net balance change; for anyone else, the sum of listed
- * transfers to them (the listing is capped, so this can under-count — the
- * check then fails loudly rather than vouching).
+ * Net change of `token` (null = native) for `addr`, over EVERY transfer in
+ * the simulation (not the capped listing): inflows minus outflows, with
+ * self-transfers (addr → addr) ignored entirely — a contract sending
+ * itself 1 WETH has gained nothing.
+ */
+export function netChange(sim: RanSim, addr: string, token: string | null): bigint {
+  let net = 0n;
+  for (const t of sim.allTransfers ?? []) {
+    if (!isOf(t, token) || t.from === t.to) continue;
+    if (t.to === addr) net += t.amount;
+    if (t.from === addr) net -= t.amount;
+  }
+  return net;
+}
+
+/**
+ * How much of the declared output the recipient gained: its NET change in
+ * that token only (never other tokens). For the portal this is its balance
+ * delta; for anyone else it is computed from the full transfer set.
  */
 function received(sim: RanSim, recipient: string, token: string | null, portal: string): bigint {
+  let d: bigint;
   if (recipient === portal && sim.changes) {
-    if (token === null) return sim.changes.native > 0n ? sim.changes.native : 0n;
-    const d = sim.changes.erc20.find((e) => e.token === token)?.delta ?? 0n;
-    return d > 0n ? d : 0n;
+    d =
+      token === null
+        ? sim.changes.native
+        : (sim.changes.erc20.find((e) => e.token === token)?.delta ?? 0n);
+  } else {
+    d = netChange(sim, recipient, token);
   }
-  let sum = 0n;
-  for (const t of sim.transfers ?? []) {
-    if (t.to !== recipient) continue;
-    if (token === null ? t.standard === 'native' : t.standard === 'erc20' && t.token === token) {
-      sum += t.amount;
-    }
-  }
-  return sum;
+  return d > 0n ? d : 0n;
 }
 
 /** Did the recipient receive something other than the declared token? */
@@ -249,11 +267,13 @@ function otherInflow(
       sim.changes.erc20.some((e) => e.delta > 0n && e.token !== token)
     );
   }
-  return (sim.transfers ?? []).some(
-    (t) =>
-      t.to === recipient &&
-      (t.standard === 'native' ? token !== null : t.standard === 'erc20' && t.token !== token),
-  );
+  const others = new Set<string | null>();
+  for (const t of sim.allTransfers ?? []) {
+    if (t.to !== recipient || t.from === t.to) continue;
+    if (t.standard === 'native' && token !== null) others.add(null);
+    if (t.standard === 'erc20' && t.token !== token) others.add(t.token);
+  }
+  return [...others].some((o) => netChange(sim, recipient, o) > 0n);
 }
 
 /** The plain-signature rendering used when the friendly one isn't earned. */

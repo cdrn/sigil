@@ -576,9 +576,16 @@ const sigil_eth_preview_transaction: MethodHandler = async (params, ctx) => {
     headline: p.headline,
     warnings: p.warnings,
     decoded: p.decoded,
-    simulation: jsonSafe(p.simulation),
+    simulation: jsonSafe(publicSimulation(p.simulation)),
   };
 };
+
+/** The simulation as the agent sees it: without the internal uncapped transfer list. */
+function publicSimulation(sim: TxPreview['simulation']): unknown {
+  if (sim.status !== 'ok' && sim.status !== 'reverted') return sim;
+  const { allTransfers: _internal, ...rest } = sim;
+  return rest;
+}
 
 /**
  * Build the preview for a parsed tx. Never throws for presentation

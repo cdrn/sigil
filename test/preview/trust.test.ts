@@ -321,3 +321,44 @@ test('V2 *ForETH swaps check the native output', async () => {
     low.warnings.join('|'),
   );
 });
+
+test('a recipient self-transfer does not satisfy the declared minimum; a real inflow does', async () => {
+  // Output declared to SPENDER. SPENDER → SPENDER moves 1 WETH but gains nothing.
+  const selfXfer = {
+    address: WETH,
+    topics: [TOPIC.Transfer, t(SPENDER), t(SPENDER)],
+    data: '0x' + w(10n ** 18n),
+  };
+  const fake = await swapPreview([selfXfer], 10n ** 18n, SPENDER);
+  ok(fake.headline.startsWith('exactInputSingle(params=('), fake.headline);
+  ok(
+    fake.warnings.includes(
+      'swap output below the declared minimum (got 0 WETH, declared ≥ 1 WETH)',
+    ),
+    fake.warnings.join('|'),
+  );
+
+  // Inflow then immediate outflow nets to zero as well.
+  const passthrough = await swapPreview(
+    [
+      inflow(WETH, 10n ** 18n, SPENDER),
+      {
+        address: WETH,
+        topics: [TOPIC.Transfer, t(SPENDER), t(ROUTER)],
+        data: '0x' + w(10n ** 18n),
+      },
+    ],
+    10n ** 18n,
+    SPENDER,
+  );
+  ok(passthrough.warnings.some((x) => x.startsWith('swap output below the declared minimum')));
+
+  const real = await swapPreview([inflow(WETH, 10n ** 18n, SPENDER)], 10n ** 18n, SPENDER);
+  ok(real.headline.startsWith('swap 1,000 USDC → ≥1 WETH'), real.headline);
+});
+
+test('the recipient check sees transfers beyond the 32-entry listing', async () => {
+  const noise = Array.from({ length: 40 }, () => inflow(USDC.replace('a0', 'c0'), 1n, ROUTER));
+  const p = await swapPreview([...noise, inflow(WETH, 10n ** 18n, SPENDER)], 10n ** 18n, SPENDER);
+  ok(p.headline.startsWith('swap 1,000 USDC → ≥1 WETH'), p.headline);
+});
