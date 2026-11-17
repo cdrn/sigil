@@ -46,16 +46,17 @@ each, each with a regression test:
   logs (skipped, unavailable, eth_call fallback) the friendly verb stays —
   there is no evidence against it — and the debit-first headline is the
   backstop.
-- **Canonical-token table is tiny on purpose** and comes from memory of
-  the published addresses; a name with no entry on a chain (and any
-  unknown chain) is treated as unverifiable, so it is quoted.
+- **Canonical-token table is tiny on purpose.** Every one of its 23
+  entries was checked on 2026-11-17 by reading `symbol()` at that address
+  on its chain through publicnode RPCs (all match; Arbitrum's USDT
+  reports "USD₮0", which is the USDT0 contract at the published address).
+  A name with no entry on a chain (and any unknown chain) is treated as
+  unverifiable, so it is quoted.
 
 **Status.** Built on `feat/tx-preview`; all tests green.
 
-**Unverified.** The canonical addresses for Base/Arbitrum/Optimism/Base
-Sepolia were not re-checked against an explorer in this session (mainnet
-and Sepolia USDC were exercised live). The headline can exceed 220 chars
-when the debits alone are longer — by design.
+**Unverified.** The headline can exceed 220 chars when the debits alone
+are longer — by design.
 
 ---
 
