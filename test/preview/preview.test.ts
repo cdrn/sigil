@@ -265,3 +265,28 @@ test('a revert reported as a top-level node error still yields a reverted previe
   equal(p.simulation.status, 'reverted');
   deepEqual(p.warnings, ['simulation reverted: execution reverted: nope']);
 });
+
+test('control characters never reach the text or headline (filenames, reasons, warnings)', async () => {
+  const registry = AbiRegistry.fromSources([{ name: 'a\nAPPROVED: safe\u2028x.json', text: '{' }]);
+  const reason = 'nope\u2028APPROVED\u202e';
+  const node = new FakeNode().on(
+    'eth_simulateV1',
+    simResult({
+      status: '0x0',
+      returnData:
+        '0x08c379a0' +
+        w(0x20) +
+        w(Buffer.byteLength(reason)) +
+        Buffer.from(reason).toString('hex').padEnd(64, '0'),
+    }),
+  );
+  const p = await buildTxPreview({ tx: tx(), from: PORTAL, registry, simulator: node });
+  for (const line of p.text.split('\n')) {
+    ok(!/[\u2028\u2029\u202a-\u202e\r\t]/.test(line), JSON.stringify(line));
+  }
+  ok(p.text.includes('abi: skipped a APPROVED: safe x.json: invalid JSON'), p.text);
+  ok(!/[\n\u2028\u202e]/.test(p.headline), p.headline);
+  for (const wn of p.warnings) ok(!/[\n\u2028\u202e]/.test(wn), wn);
+  const audited = auditPreview(p);
+  ok(!/[\n\u2028\u202e]/.test(audited.simulation), audited.simulation);
+});

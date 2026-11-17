@@ -196,6 +196,32 @@ export function splitTopLevel(s: string): string[] {
 }
 
 /**
+ * Strip characters that could break or forge lines in what a human reads:
+ * C0/C1 controls (incl. \n, \r, \t), DEL, U+2028/2029 line/paragraph
+ * separators and the bidi overrides/isolates. Applied at the render
+ * boundary to every line of preview text, the headline and the warnings —
+ * defence in depth behind the per-source checks (identifier-only ABI names,
+ * quoted revert strings, allowlisted symbols).
+ */
+export function clean(s: string): string {
+  let out = '';
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!;
+    const bad =
+      c < 0x20 ||
+      (c >= 0x7f && c <= 0x9f) ||
+      c === 0x2028 ||
+      c === 0x2029 ||
+      (c >= 0x202a && c <= 0x202e) ||
+      (c >= 0x2066 && c <= 0x2069) ||
+      c === 0x200e ||
+      c === 0x200f;
+    out += bad ? ' ' : ch;
+  }
+  return out;
+}
+
+/**
  * Sanitize a token symbol read from a contract. The symbol is chosen by
  * whoever deployed the token, and it lands on the user's phone and in the
  * agent's context: allow a conservative printable set and a short length,

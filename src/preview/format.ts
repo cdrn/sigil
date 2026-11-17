@@ -1,6 +1,7 @@
 import type { SimApproval, SimTransfer, Simulation } from './simulate.js';
 import type { DecodedCall, TokenMetaLookup } from './types.js';
 import {
+  clean,
   formatEth,
   groupThousands,
   headAmount,
@@ -71,7 +72,8 @@ export function renderText(r: RenderInput): string {
     for (const w of r.warnings) lines.push(`  - ${w}`);
   }
   for (const f of r.footer ?? []) lines.push(f);
-  return lines.join('\n');
+  // The one place lines are joined: nothing inside a line may start a new one.
+  return lines.map(clean).join('\n');
 }
 
 export function renderHeadline(r: RenderInput): string {
@@ -99,7 +101,7 @@ export function renderHeadline(r: RenderInput): string {
     const more = r.warnings.length > 1 ? ` (+${r.warnings.length - 1} more)` : '';
     parts.push(`⚠ ${r.warnings[0]}${more}`);
   }
-  const line = parts.join(' | ');
+  const line = clean(parts.join(' | '));
   return line.length > HEADLINE_MAX ? line.slice(0, HEADLINE_MAX - 1) + '…' : line;
 }
 

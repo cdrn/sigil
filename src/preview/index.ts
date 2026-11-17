@@ -6,7 +6,7 @@ import { type PreviewSimulation, renderHeadline, renderText, simulationSummary }
 import { operatorWarning } from './known.js';
 import { simulateTransaction } from './simulate.js';
 import { type DecodedCall, NO_META, type TokenMeta, type TokenMetaLookup } from './types.js';
-import { isUnlimited } from './units.js';
+import { clean, isUnlimited } from './units.js';
 
 /**
  * "Show me what I'm signing": decode an EVM transaction to English and, when
@@ -113,7 +113,7 @@ function collectWarnings(
       if (a.standard === 'operator' && a.approved) out.push(operatorWarning(a.spender, a.token));
     }
   }
-  return [...new Set(out)];
+  return [...new Set(out.map(clean))];
 }
 
 /**
@@ -148,8 +148,8 @@ export function auditPreview(p: TxPreview): {
 } {
   return {
     text: p.text,
-    decoded: p.decoded.text,
-    simulation: simulationSummary(p.simulation),
+    decoded: clean(p.decoded.text),
+    simulation: clean(simulationSummary(p.simulation)),
     warnings: p.warnings,
   };
 }

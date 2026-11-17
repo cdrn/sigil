@@ -115,19 +115,29 @@ export class AbiRegistry {
         continue;
       }
       let unsupported = 0;
+      let badName: string | undefined;
+      const fns: Omit<AbiFunction, 'source'>[] = [];
       for (const item of abi) {
         if (!isObject(item)) continue;
         // `type` defaults to "function" per the Solidity JSON ABI spec.
         if (item['type'] !== undefined && item['type'] !== 'function') continue;
-        let f: Omit<AbiFunction, 'source'>;
         try {
-          f = parseFunction(item);
-        } catch {
+          fns.push(parseFunction(item));
+        } catch (err) {
+          if (err instanceof AbiNameError) {
+            badName = err.message;
+            break;
+          }
           unsupported++;
-          continue;
         }
-        if (!map.has(f.selector)) map.set(f.selector, { ...f, source: name });
       }
+      // Names are rendered into the preview the human reads; a file that
+      // smuggles anything but identifiers in them is refused whole.
+      if (badName !== undefined) {
+        warnings.push(`abi: skipped ${name}: ${badName}`);
+        continue;
+      }
+      for (const f of fns) if (!map.has(f.selector)) map.set(f.selector, { ...f, source: name });
       if (unsupported > 0) {
         warnings.push(
           `abi: ${name}: skipped ${unsupported} function${unsupported === 1 ? '' : 's'} with unsupported or malformed types`,
@@ -146,15 +156,34 @@ export class AbiRegistry {
   }
 }
 
+/** Solidity identifier, bounded. Anything else is refused, not rendered. */
+const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+
+class AbiNameError extends Error {}
+
+/** An optional parameter/component name: empty or an identifier. */
+function checkParamName(v: unknown, where: string): void {
+  if (v === undefined || v === '') return;
+  if (typeof v !== 'string' || !IDENT_RE.test(v)) {
+    throw new AbiNameError(`invalid identifier ${clip(v)} in ${where}`);
+  }
+}
+
+function clip(v: unknown): string {
+  const s = JSON.stringify(typeof v === 'string' ? v : String(v)) ?? '';
+  return s.length > 40 ? s.slice(0, 40) + '…' : s;
+}
+
 function parseFunction(item: Record<string, unknown>): Omit<AbiFunction, 'source'> {
   const name = item['name'];
-  if (typeof name !== 'string' || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
-    throw new AbiDecodeError('function name');
+  if (typeof name !== 'string' || !IDENT_RE.test(name)) {
+    throw new AbiNameError(`invalid function name ${clip(name)}`);
   }
   const rawInputs = item['inputs'] ?? [];
   if (!Array.isArray(rawInputs)) throw new AbiDecodeError('inputs');
   const inputs: AbiInput[] = rawInputs.map((inp, i) => {
     if (!isObject(inp)) throw new AbiDecodeError('input');
+    checkParamName(inp['name'], `${name}()`);
     const type = jsonType(inp, 0);
     const abiType = parseAbiType(type);
     const nm = typeof inp['name'] === 'string' && inp['name'] !== '' ? inp['name'] : `arg${i}`;
@@ -174,6 +203,7 @@ function jsonType(p: Record<string, unknown>, depth: number): string {
   if (!Array.isArray(comps)) throw new AbiDecodeError('components');
   const inner = comps.map((c) => {
     if (!isObject(c)) throw new AbiDecodeError('component');
+    checkParamName(c['name'], 'a tuple component');
     return jsonType(c, depth + 1);
   });
   return `(${inner.join(',')})${t.slice('tuple'.length)}`;

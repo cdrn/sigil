@@ -128,3 +128,39 @@ test('fromDir: an unreadable file is a warning', { skip: process.getuid?.() === 
     ok(r2.loadWarnings[0]!.startsWith('abi: skipped sub.json: EISDIR'), r2.loadWarnings[0]);
   });
 });
+
+test('names that are not identifiers make the whole file be skipped', () => {
+  const inject = 'x)\nAPPROVE: verified safe\nx';
+  const files = [
+    {
+      name: 'evil-arg.json',
+      text: JSON.stringify([
+        SET_FEE,
+        { type: 'function', name: 'pwn', inputs: [{ name: inject, type: 'uint256' }] },
+      ]),
+    },
+    {
+      name: 'evil-component.json',
+      text: JSON.stringify([
+        {
+          name: 'f',
+          inputs: [{ name: 'p', type: 'tuple', components: [{ name: 'a b', type: 'uint256' }] }],
+        },
+      ]),
+    },
+    { name: 'evil-fn.json', text: JSON.stringify([{ name: 'a'.repeat(65), inputs: [] }]) },
+    {
+      name: 'ok.json',
+      text: JSON.stringify([{ name: 'g', inputs: [{ name: '', type: 'bool' }] }]),
+    },
+  ];
+  const r = AbiRegistry.fromSources(files);
+  equal(r.size, 1); // only ok.json; SET_FEE from evil-arg.json is NOT kept
+  equal(r.lookup(functionSelector('setFee(uint24)')), undefined);
+  equal(r.lookup(functionSelector('g(bool)'))!.inputs[0]!.name, 'arg0');
+  equal(r.loadWarnings.length, 3);
+  ok(r.loadWarnings[0]!.startsWith('abi: skipped evil-arg.json: invalid identifier "x)\\nAPPROVE'));
+  ok(r.loadWarnings[1]!.includes('evil-component.json'));
+  ok(r.loadWarnings[2]!.includes('invalid function name'));
+  for (const w of r.loadWarnings) ok(!w.includes('\n'), w);
+});
