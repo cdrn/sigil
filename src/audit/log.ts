@@ -14,6 +14,20 @@ import { type AcquireLockOptions, withFileLock, writeAllSync } from '../fs/lock.
 
 export type AuditDecision = 'allow' | 'deny' | 'confirm_required';
 
+/**
+ * What the transaction preview showed for this request (EVM transactions
+ * only): the full text the agent got, the one-line decoded call, the
+ * simulation status line, and the aggregated warnings. Recorded on allows
+ * AND denies so a post-incident read of the log shows what the human was
+ * told at the time, not a re-derivation against today's chain state.
+ */
+export interface AuditPreview {
+  text: string;
+  decoded: string;
+  simulation: string;
+  warnings: string[];
+}
+
 export interface AuditEntry {
   seq: number;
   ts: number; // ms since epoch
@@ -24,6 +38,7 @@ export interface AuditEntry {
   decision: AuditDecision;
   reason?: string; // populated for deny / confirm_required
   sig?: string; // hex-encoded signature for an allowed sign decision
+  preview?: AuditPreview; // transaction preview, for eth_sign_transaction
 }
 
 export interface StoredAuditEntry extends AuditEntry {
@@ -137,6 +152,7 @@ export function parseLine(line: string): StoredAuditEntry {
     decision: obj['decision'] as AuditDecision,
     ...(obj['reason'] !== undefined ? { reason: obj['reason'] as string } : {}),
     ...(obj['sig'] !== undefined ? { sig: obj['sig'] as string } : {}),
+    ...(obj['preview'] !== undefined ? { preview: obj['preview'] as AuditPreview } : {}),
   };
   const expected = hashEntry(rest);
   if (hash !== expected) {
@@ -340,6 +356,7 @@ export class AuditWriter {
     decision: AuditDecision;
     reason?: string;
     sig?: string;
+    preview?: AuditPreview;
   }): StoredAuditEntry {
     if (this.#closed) throw new Error('AuditWriter is closed');
     return withFileLock(
@@ -360,6 +377,7 @@ export class AuditWriter {
           decision: input.decision,
           ...(input.reason !== undefined ? { reason: input.reason } : {}),
           ...(input.sig !== undefined ? { sig: input.sig } : {}),
+          ...(input.preview !== undefined ? { preview: input.preview } : {}),
         };
         const stored = sealEntry(entry);
         const line = serializeEntry(stored);

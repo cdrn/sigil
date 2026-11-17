@@ -92,6 +92,7 @@ test('handleLine: tools/list returns all tools with input schemas', async () => 
     const r = JSON.parse(resp!) as { result: { tools: { name: string; inputSchema: object }[] } };
     const names = r.result.tools.map((t) => t.name).sort();
     deepEqual(names, [
+      'sigil_eth_preview_transaction',
       'sigil_eth_sign_message',
       'sigil_eth_sign_transaction',
       'sigil_eth_sign_typed_data',
@@ -341,7 +342,7 @@ test('runMcpStdio: full handshake + tools/list + tools/call via in-memory stream
     equal(init.result.protocolVersion, PROTOCOL_VERSION);
     const list = JSON.parse(lines[1]!) as { id: number; result: { tools: unknown[] } };
     equal(list.id, 2);
-    equal(list.result.tools.length, 6);
+    equal(list.result.tools.length, 7);
     const call = JSON.parse(lines[2]!) as {
       id: number;
       result: { structuredContent: { signature: string } };

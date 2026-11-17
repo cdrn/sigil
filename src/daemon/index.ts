@@ -2,6 +2,7 @@ export { type PortalInfo, HandleLoadError, HandleTable } from './handles.js';
 export {
   type MethodContext,
   type MethodHandler,
+  type PreviewContext,
   RpcMethodError,
   RPC_INVALID_PARAMS,
   RPC_METHOD_NOT_FOUND,

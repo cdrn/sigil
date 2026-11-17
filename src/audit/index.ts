@@ -1,6 +1,7 @@
 export {
   type AuditDecision,
   type AuditEntry,
+  type AuditPreview,
   type StoredAuditEntry,
   type ChainHead,
   ZERO_HASH,

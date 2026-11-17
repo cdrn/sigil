@@ -12,7 +12,8 @@ import {
   type ConfirmTransport,
 } from '../../src/confirm/index.js';
 import { SecretBuffer } from '../../src/crypto/index.js';
-import { HandleTable, type MethodContext } from '../../src/daemon/index.js';
+import { HandleTable, type MethodContext, type PreviewContext } from '../../src/daemon/index.js';
+import { AbiRegistry } from '../../src/preview/index.js';
 import {
   addressFromPrivateKey,
   addressFromPublicKey,
@@ -91,6 +92,8 @@ async function makeHarness(
     policy?: PolicyResolver;
     locked?: boolean;
     confirm?: boolean;
+    /** Builds a preview context around the harness's own upstream. */
+    preview?: (upstream: FakeUpstream) => PreviewContext;
   } = {},
 ): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'sigil-rpc-'));
@@ -109,6 +112,7 @@ async function makeHarness(
     ...(ack ? { confirm: new ConfirmGate({ transport, ackServer: ack, timeoutMs: 2000 }) } : {}),
   };
   const upstream = scriptedUpstream();
+  if (opts.preview) ctx.preview = opts.preview(upstream);
   const server = await startRpcServer({
     config: { portal: 'evm:bot', upstream: 'http://unused.invalid', token: TOKEN },
     ctx,
@@ -638,6 +642,53 @@ test('rpc: confirm-required deploy with no transport configured fails closed', a
       h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'),
       false,
     );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// transaction preview — inherited through dispatch
+// ---------------------------------------------------------------------------
+
+test('rpc: eth_sendTransaction with a preview context simulates, signs, broadcasts, audits the preview', async () => {
+  const h = await makeHarness({
+    preview: (up) => ({ registry: AbiRegistry.empty(), simulatorFor: () => up }),
+  });
+  try {
+    h.upstream.responses.set('eth_simulateV1', [
+      { calls: [{ status: '0x1', gasUsed: '0x5208', returnData: '0x', logs: [] }] },
+    ]);
+    const res = await rpc(h.server, 'eth_sendTransaction', [
+      { from: ADDR, to: DEST, value: '0x64' },
+    ]);
+    equal(res.result, TX_HASH);
+    const methods = h.upstream.calls.map((c) => c.method);
+    ok(methods.indexOf('eth_simulateV1') < methods.indexOf('eth_sendRawTransaction'));
+    h.ctx.audit.close();
+    const [entry] = verifyChain(readFileSync(h.auditPath));
+    equal(entry!.decision, 'allow');
+    equal(entry!.preview!.decoded, 'plain ETH transfer');
+    equal(entry!.preview!.simulation, 'ok, 21,000 gas');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('rpc: a simulated revert is -32001 and nothing is broadcast', async () => {
+  const h = await makeHarness({
+    preview: (up) => ({ registry: AbiRegistry.empty(), simulatorFor: () => up }),
+  });
+  try {
+    h.upstream.responses.set('eth_simulateV1', [
+      { calls: [{ status: '0x0', gasUsed: '0x5208', returnData: '0x', logs: [] }] },
+    ]);
+    const res = await rpc(h.server, 'eth_sendTransaction', [
+      { from: ADDR, to: DEST, value: '0x64' },
+    ]);
+    equal(res.error?.code, -32001);
+    ok(res.error!.message.includes('simulation reverted'), res.error!.message);
+    ok(!h.upstream.calls.some((c) => c.method === 'eth_sendRawTransaction'));
   } finally {
     await h.cleanup();
   }

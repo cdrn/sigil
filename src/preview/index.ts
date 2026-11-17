@@ -116,6 +116,29 @@ function collectWarnings(
   return [...new Set(out)];
 }
 
+/**
+ * Stand-in when building the preview itself failed (a bug, not a node
+ * problem — those are already 'unavailable'). Presentation fails open but
+ * loud: the sign path proceeds with this warning unless the policy demands
+ * a simulation, in which case the 'unavailable' status denies (fail closed).
+ */
+export function previewFailure(message: string): TxPreview {
+  const reason = `preview failed: ${message}`;
+  const decoded: DecodedCall = {
+    selector: null,
+    text: reason,
+    warnings: [reason],
+    source: 'unknown',
+  };
+  return {
+    decoded,
+    simulation: { status: 'unavailable', reason },
+    warnings: [reason],
+    text: `call: ${reason}\nwarnings:\n  - ${reason}`,
+    headline: `⚠ ${reason}`.slice(0, 220),
+  };
+}
+
 /** The compact form written into the audit entry. */
 export function auditPreview(p: TxPreview): {
   text: string;
@@ -144,6 +167,7 @@ export function jsonSafe(v: unknown): unknown {
 }
 
 export { AbiRegistry, type AbiFunction, type AbiInput } from './abi-dir.js';
+export { SimulatorResolver, type SimulatorResolverOpts } from './simulators.js';
 export { decodeCalldata, type DecodeCtx } from './decode.js';
 export {
   simulateTransaction,

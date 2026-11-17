@@ -1221,3 +1221,39 @@ test('AuditWriter: a release failure after a committed append does not fail the 
     rmSync(dir, { recursive: true });
   }
 });
+
+// ============================================================================
+// preview field (transaction preview, optional)
+// ============================================================================
+
+test('an entry with a preview round-trips through parseLine and verifyChain', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sigil-audit-preview-'));
+  try {
+    const path = join(dir, 'audit.log');
+    const w = new AuditWriter(path);
+    const preview = {
+      text: 'call: approve(spender=0x1111…1111, amount=UNLIMITED)\nwarnings:\n  - UNLIMITED approval',
+      decoded: 'approve(spender=0x1111…1111, amount=UNLIMITED)',
+      simulation: 'ok, 46,201 gas',
+      warnings: ['UNLIMITED approval'],
+    };
+    w.append({
+      kind: 'eth_sign_transaction',
+      portal: 'evm:bot',
+      payload: {},
+      decision: 'allow',
+      preview,
+    });
+    w.append({ kind: 'eth_sign_message', portal: 'evm:bot', payload: {}, decision: 'allow' });
+    w.close();
+    const entries = verifyChain(readFileSync(path));
+    deepEqual(entries[0]!.preview, preview);
+    equal(entries[1]!.preview, undefined);
+    // The preview is covered by the hash: editing it breaks the chain.
+    const lines = readFileSync(path, 'utf8').split('\n');
+    lines[0] = lines[0]!.replace('46,201', '1');
+    throws(() => verifyChain(lines.join('\n')), /hash mismatch/);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});

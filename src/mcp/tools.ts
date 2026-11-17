@@ -46,7 +46,7 @@ const ethSignTransaction: Tool = {
   definition: {
     name: 'sigil_eth_sign_transaction',
     description:
-      'Sign an Ethereum transaction (legacy or EIP-1559) with the named portal. Returns the signed transaction as 0x-prefixed hex, ready for eth_sendRawTransaction.',
+      'Sign an Ethereum transaction (legacy or EIP-1559) with the named portal. Returns `signed` (the signed transaction as 0x-prefixed hex, ready for eth_sendRawTransaction) and `preview`: what sigil decoded the call to and, when a simulation RPC is configured, what the dry-run did (balance changes, approvals, revert reason, warnings). Show the user the preview, and treat any warning in it as a reason to stop and check. A policy may deny a tx whose simulation reverts or that cannot be simulated; the error says why.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -62,6 +62,28 @@ const ethSignTransaction: Tool = {
     },
   },
   handler: (args, ctx) => callMethod('sigil_eth_sign_transaction', args, ctx),
+};
+
+const ethPreviewTransaction: Tool = {
+  definition: {
+    name: 'sigil_eth_preview_transaction',
+    description:
+      'Preview an Ethereum transaction WITHOUT signing it: sigil decodes the calldata to English (ERC-20/721/1155 transfers and approvals, Permit2, Uniswap swaps, multicall, plus any user ABIs) and, when a simulation RPC is configured for the chain, dry-runs it from the portal address to report status, gas, revert reason, net balance changes and approvals granted. Takes the same {portal, tx} as sigil_eth_sign_transaction. Call this before signing anything non-trivial (any calldata, approvals, swaps, or sizeable value) and show the user the `preview` text, especially its warnings, before you sign. Nothing is signed or written to the audit log. Returns {preview, headline, warnings, decoded, simulation}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        portal: { type: 'string', description: 'Portal handle.' },
+        tx: {
+          type: 'object',
+          description:
+            'Transaction fields. type="legacy" requires {chainId, nonce, gasPrice, gasLimit, to, value, data}. type="eip1559" requires {chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList?}. To deploy a contract, set to=null (explicit JSON null, not omitted) and put the creation bytecode in data. Numbers may be supplied as JSON numbers or decimal strings.',
+        },
+      },
+      required: ['portal', 'tx'],
+      additionalProperties: false,
+    },
+  },
+  handler: (args, ctx) => callMethod('sigil_eth_preview_transaction', args, ctx),
 };
 
 const ethSignTypedData: Tool = {
@@ -128,6 +150,7 @@ export const TOOLS: readonly Tool[] = Object.freeze([
   listPortals,
   ethSignMessage,
   ethSignTransaction,
+  ethPreviewTransaction,
   ethSignTypedData,
   svmSignMessage,
   svmSignTransaction,

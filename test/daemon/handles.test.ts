@@ -308,3 +308,16 @@ test('markUnlocked / lock / loadFromDir / addEntry throw after dispose', () => {
   throws(() => t.loadFromDir('/tmp', Buffer.from('p')), /disposed/);
   throws(() => t.addEntry('evm:x', new SecretBuffer(priv(1))), /disposed/);
 });
+
+test('info returns a copy of the portal info, undefined for unknown handles', () => {
+  const t = new HandleTable();
+  t.addEntry('evm:a', new SecretBuffer(priv(1)));
+  const info = t.info('evm:a')!;
+  equal(info.address, addressFromPrivateKey(priv(1)));
+  equal(info.handle, 'evm:a');
+  info.address = '0xmutated';
+  equal(t.info('evm:a')!.address, addressFromPrivateKey(priv(1)));
+  equal(t.info('evm:missing'), undefined);
+  t.dispose();
+  throws(() => t.info('evm:a'), /disposed/);
+});
