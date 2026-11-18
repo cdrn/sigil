@@ -7,6 +7,7 @@ export {
   type ConfirmConfig,
   type NtfyConfigToml,
   type RpcConfigToml,
+  type SimulateConfig,
   RPC_TOKEN_MIN_LENGTH,
   SigilConfigError,
   parseConfig,

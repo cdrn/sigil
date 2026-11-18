@@ -18,6 +18,8 @@ export interface SigilPaths {
   readonly policyDir: string;
   /** Per-portal spend ledgers backing the rolling-window value caps. */
   readonly stateDir: string;
+  /** User ABIs (*.json) the transaction preview decodes calldata with. */
+  readonly abiDir: string;
   readonly controlDir: string;
   readonly auditLog: string;
   readonly configFile: string;
@@ -30,6 +32,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): SigilPaths {
     keysDir: join(home, 'keys'),
     policyDir: join(home, 'policy'),
     stateDir: join(home, 'state'),
+    abiDir: join(home, 'abi'),
     controlDir: env['SIGIL_CONTROL_DIR'] ?? join(home, 'control'),
     auditLog: join(home, 'audit.log'),
     configFile: join(home, 'config.toml'),

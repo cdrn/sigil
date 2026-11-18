@@ -17,6 +17,12 @@ import { parsePolicy, PolicyLoadError } from '../policy/index.js';
  *   token    = "an-unguessable-string-16+chars"
  *   port     = 8547              # optional
  *
+ *   [simulate]
+ *   timeout_ms = 15000           # optional, per RPC call
+ *   [simulate.rpc]
+ *   1        = "https://eth.example/v3/KEY"
+ *   11155111 = "https://sepolia.example"
+ *
  * Missing file → SigilConfig with no transport configured. That's fine on
  * its own; we only fail closed at startup if some policy actually depends
  * on a transport (see `enforceConfirmTransportPresence`).
@@ -24,6 +30,20 @@ import { parsePolicy, PolicyLoadError } from '../policy/index.js';
 export interface SigilConfig {
   confirm?: ConfirmConfig;
   rpc?: RpcConfigToml;
+  simulate?: SimulateConfig;
+}
+
+/**
+ * Transaction preview simulation (`[simulate]` block): which JSON-RPC node
+ * dry-runs transactions for each chain. Optional — without it, previews
+ * still decode calldata but skip simulation. The URLs typically embed a
+ * provider API key; they are never echoed into tool output or logs.
+ */
+export interface SimulateConfig {
+  /** Chain id → http(s) JSON-RPC URL. */
+  rpcByChain: ReadonlyMap<bigint, string>;
+  /** Per-RPC-call timeout in ms; the whole preview is bounded at 2×. Default 15000. */
+  timeoutMs?: number;
 }
 
 /**
@@ -79,6 +99,8 @@ export function parseConfig(source: string): SigilConfig {
   const out: SigilConfig = {};
   const rpc = parseRpcBlock(raw['rpc']);
   if (rpc) out.rpc = rpc;
+  const simulate = parseSimulateBlock(raw['simulate']);
+  if (simulate) out.simulate = simulate;
   const confirmRaw = raw['confirm'];
   if (confirmRaw === undefined) return out;
   if (!isObject(confirmRaw)) {
@@ -111,6 +133,58 @@ export function parseConfig(source: string): SigilConfig {
   }
   if (confirm.timeoutMs !== undefined || confirm.ntfy !== undefined) {
     out.confirm = confirm;
+  }
+  return out;
+}
+
+function parseSimulateBlock(simRaw: unknown): SimulateConfig | undefined {
+  if (simRaw === undefined) return undefined;
+  if (!isObject(simRaw)) {
+    throw new SigilConfigError(`config.simulate must be a table`);
+  }
+  const out: { rpcByChain: Map<bigint, string>; timeoutMs?: number } = { rpcByChain: new Map() };
+  const timeoutMs = simRaw['timeout_ms'];
+  if (timeoutMs !== undefined) {
+    if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new SigilConfigError(
+        `config.simulate.timeout_ms must be a positive integer (got ${JSON.stringify(timeoutMs)})`,
+      );
+    }
+    out.timeoutMs = timeoutMs;
+  }
+  const rpcRaw = simRaw['rpc'];
+  if (rpcRaw !== undefined) {
+    if (!isObject(rpcRaw)) {
+      throw new SigilConfigError(
+        `config.simulate.rpc must be a table of chain id = "url" (e.g. 1 = "https://…")`,
+      );
+    }
+    for (const [key, url] of Object.entries(rpcRaw)) {
+      if (!/^[0-9]+$/.test(key)) {
+        throw new SigilConfigError(
+          `config.simulate.rpc key ${JSON.stringify(key)} must be a decimal chain id`,
+        );
+      }
+      const chainId = BigInt(key);
+      if (out.rpcByChain.has(chainId)) {
+        throw new SigilConfigError(`config.simulate.rpc lists chain ${chainId} more than once`);
+      }
+      if (typeof url !== 'string' || url.length === 0) {
+        throw new SigilConfigError(`config.simulate.rpc.${key} must be a JSON-RPC URL string`);
+      }
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw new SigilConfigError(`config.simulate.rpc.${key} is not a valid URL`);
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new SigilConfigError(
+          `config.simulate.rpc.${key} must be http(s), got ${parsed.protocol.replace(/:$/, '')}`,
+        );
+      }
+      out.rpcByChain.set(chainId, url);
+    }
   }
   return out;
 }

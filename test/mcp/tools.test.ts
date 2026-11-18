@@ -42,11 +42,12 @@ function tearDown(h: H): void {
 }
 
 test('TOOLS lists exactly the sigil tools', () => {
-  equal(TOOLS.length, 6);
+  equal(TOOLS.length, 7);
   const names = TOOLS.map((t) => t.definition.name).sort();
   equal(
     JSON.stringify(names),
     JSON.stringify([
+      'sigil_eth_preview_transaction',
       'sigil_eth_sign_message',
       'sigil_eth_sign_transaction',
       'sigil_eth_sign_typed_data',
@@ -135,6 +136,44 @@ test('handler surfaces method error code unchanged (PORTAL_NOT_FOUND → ToolErr
     }
     ok(caught instanceof ToolError);
     equal(caught!.code, -32000);
+  } finally {
+    tearDown(h);
+  }
+});
+
+test('sigil_eth_preview_transaction: same tx schema as sign, tells the model to preview first', async () => {
+  const preview = findTool('sigil_eth_preview_transaction')!;
+  const sign = findTool('sigil_eth_sign_transaction')!;
+  equal(
+    JSON.stringify(preview.definition.inputSchema.required?.sort()),
+    JSON.stringify(['portal', 'tx']),
+  );
+  ok(/before signing anything non-trivial/.test(preview.definition.description));
+  ok(/show the user/i.test(preview.definition.description));
+  ok(/`preview`/.test(sign.definition.description));
+
+  const h = setUp();
+  try {
+    const result = await preview.handler(
+      {
+        portal: 'evm:bot',
+        tx: {
+          type: 'legacy',
+          chainId: 1,
+          nonce: 0,
+          gasPrice: '1',
+          gasLimit: 21000,
+          to: '0x000000000000000000000000000000000000dead',
+          value: '5',
+          data: '0x',
+        },
+      },
+      h.ctx,
+    );
+    const payload = result.structuredContent as { preview: string; headline: string };
+    ok(payload.preview.startsWith('call: plain ETH transfer to 0x0000…dead'), payload.preview);
+    equal(payload.headline, 'send 0.000000000000000005 ETH → 0x0000…dead | no sim');
+    equal(JSON.parse((result.content[0] as { text: string }).text).headline, payload.headline);
   } finally {
     tearDown(h);
   }

@@ -166,6 +166,17 @@ export class HandleTable {
     return this.#entries.get(handle)?.secret;
   }
 
+  /**
+   * Public info (addresses) for one handle, or undefined if not loaded.
+   * Lets the sign path name the portal's own address — the simulation's
+   * `from` — without touching or re-deriving from the secret.
+   */
+  info(handle: string): PortalInfo | undefined {
+    if (this.#disposed) throw new Error('HandleTable is disposed');
+    const e = this.#entries.get(handle);
+    return e ? { ...e.info } : undefined;
+  }
+
   list(): PortalInfo[] {
     if (this.#disposed) throw new Error('HandleTable is disposed');
     return Array.from(this.#entries.values()).map((e) => ({ ...e.info }));

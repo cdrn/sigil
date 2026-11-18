@@ -16,6 +16,7 @@ import { HandleTable } from '../daemon/handles.js';
 import type { MethodContext } from '../daemon/index.js';
 import { runMcpStdio } from '../mcp/server.js';
 import { FileSpendLedger, FileSystemPolicyResolver } from '../policy/index.js';
+import { AbiRegistry, SimulatorResolver } from '../preview/index.js';
 import { startParentWatchdog } from '../mcp/parent-watchdog.js';
 import { DEFAULT_RPC_PORT, startRpcServer, type RpcProxyServer } from '../rpc/index.js';
 
@@ -24,7 +25,8 @@ import { DEFAULT_RPC_PORT, startRpcServer, type RpcProxyServer } from '../rpc/in
  * session via the .claude/settings.json mcpServers entry.
  *
  * Lifecycle:
- *   - On startup: ensures ~/.sigil/{,keys/,control/} exist (0o700), opens the
+ *   - On startup: ensures ~/.sigil/{,keys/,policy/,state/,abi/,control/}
+ *     exist (0o700), loads user ABIs for the tx preview, opens the
  *     audit log, constructs an EMPTY (locked) HandleTable, binds a per-session
  *     control socket at ~/.sigil/control/<pid>.sock (0o600).
  *   - During the session: runs the MCP wire loop on stdio. Sign methods
@@ -53,6 +55,7 @@ async function main(): Promise<void> {
   mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.policyDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.abiDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.controlDir, { recursive: true, mode: 0o700 });
   // mkdir's `mode` only applies to a freshly-created dir (and is masked by
   // umask), so re-assert 0o700 in case the dir pre-existed with looser perms.
@@ -100,11 +103,43 @@ async function main(): Promise<void> {
   // lock the audit log uses.
   const ledger = new FileSpendLedger(paths.stateDir);
 
+  // Transaction preview: user ABIs are read once here (a restart picks up
+  // new files); simulation nodes come from [simulate.rpc], with the [rpc]
+  // proxy's upstream as a fallback for the one chain it serves. None of it
+  // is required — without a node, previews decode but skip simulation.
+  const registry = AbiRegistry.fromDir(paths.abiDir);
+  const simTimeoutMs = config.simulate?.timeoutMs;
+  const simulators = new SimulatorResolver({
+    rpcByChain: config.simulate?.rpcByChain ?? new Map(),
+    ...(config.rpc ? { proxyUpstream: config.rpc.upstream } : {}),
+    ...(simTimeoutMs !== undefined ? { timeoutMs: simTimeoutMs } : {}),
+  });
+  {
+    const chains = simulators.configuredChains;
+    const sim =
+      chains.length > 0
+        ? `simulation on chain${chains.length === 1 ? '' : 's'} ${chains.join(', ')}` +
+          (simulators.hasProxyFallback ? ' + the [rpc] upstream chain' : '')
+        : simulators.hasProxyFallback
+          ? 'simulation via the [rpc] upstream (its chain is resolved on first use)'
+          : 'simulation off (no [simulate.rpc] in config.toml)';
+    process.stderr.write(
+      `sigil-mcp: tx preview ready — ${registry.size} user ABI function` +
+        `${registry.size === 1 ? '' : 's'} from ${paths.abiDir}; ${sim}\n`,
+    );
+    for (const w of registry.loadWarnings) process.stderr.write(`sigil-mcp: ${w}\n`);
+  }
+
   const context: MethodContext = {
     handles,
     audit,
     policy,
     ledger,
+    preview: {
+      registry,
+      simulatorFor: (chainId) => simulators.simulatorFor(chainId),
+      ...(simTimeoutMs !== undefined ? { timeoutMs: simTimeoutMs } : {}),
+    },
     ...(confirmGate ? { confirm: confirmGate } : {}),
   };
 

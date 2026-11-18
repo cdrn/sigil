@@ -67,3 +67,19 @@ test('PERMISSIVE_TEMPLATE: mentions the window caps (the one rule that applies t
   equal(q.svmMaxLamportsPerHour, 100_000_000n);
   equal(q.svmMaxLamportsPerDay, 1_000_000_000n);
 });
+
+test('both templates document the preview gates, commented out, and they parse when uncommented', () => {
+  for (const tpl of [PERMISSIVE_TEMPLATE, STRICT_TEMPLATE]) {
+    ok(/^# require_simulation = false$/m.test(tpl));
+    ok(/^# sign_on_revert {5}= false$/m.test(tpl));
+    const p = parsePolicy(tpl);
+    equal(p.requireSimulation, false);
+    equal(p.signOnRevert, false);
+    const on = tpl
+      .replace(/^# require_simulation = false$/m, 'require_simulation = true')
+      .replace(/^# sign_on_revert {5}= false$/m, 'sign_on_revert = true');
+    const q = parsePolicy(on);
+    equal(q.requireSimulation, true);
+    equal(q.signOnRevert, true);
+  }
+});

@@ -67,6 +67,22 @@ export interface Policy {
    */
   typedDataVerifyingContracts: readonly string[];
   typedDataPrimaryTypes: readonly string[];
+  /**
+   * Transaction-preview gates for EVM transactions. Mode-independent, like
+   * requireConfirmAboveWei, and both default false so a policy written
+   * before the preview existed behaves exactly as before.
+   *   - requireSimulation: deny unless the tx was actually simulated — a
+   *     chain with no simulation RPC configured, or a simulation that came
+   *     back unavailable (node down, timeout), is a deny. Fail closed.
+   *   - signOnRevert: when false, a tx whose simulation ran and reverted is
+   *     denied with the decoded revert reason (it would fail on-chain and
+   *     burn gas, or the agent built the wrong call). True signs anyway;
+   *     the warning stays in the preview and the audit entry.
+   * Simulation is advisory input from the user's own RPC node, not proof:
+   * these gates deny on what the node says, they never allow on it.
+   */
+  requireSimulation: boolean;
+  signOnRevert: boolean;
 
   // --- Solana (SVM) -------------------------------------------------------
   // The same secp256k1 secret also backs an ed25519 Solana key; these fields

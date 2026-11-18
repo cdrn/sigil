@@ -1,4 +1,4 @@
-import { type AuditWriter } from '../audit/index.js';
+import { type AuditPreview, type AuditWriter } from '../audit/index.js';
 import type { ConfirmGate } from '../confirm/index.js';
 import {
   type Eip1559Tx,
@@ -29,7 +29,20 @@ import {
   sign as svmSign,
 } from '../svm/index.js';
 import { SecretBufferDisposedError } from '../crypto/index.js';
+import {
+  AbiRegistry,
+  auditPreview,
+  buildTxPreview,
+  jsonSafe,
+  previewFailure,
+  type TxPreview,
+} from '../preview/index.js';
+import type { JsonRpcUpstream } from '../rpc/upstream.js';
 import { type HandleTable } from './handles.js';
+
+const MAX_UINT256 = (1n << 256n) - 1n;
+/** Decimal digits in 2^256−1; longer strings are rejected before BigInt parses them. */
+const MAX_UINT256_DIGITS = 78;
 
 // Error codes — these match JSON-RPC 2.0 standard error codes plus a
 // sigil-specific range (-32000..-32099). They flow through the MCP wire
@@ -76,6 +89,26 @@ export interface MethodContext {
    * fail closed, never silently uncapped.
    */
   ledger?: SpendLedger;
+  /**
+   * Transaction preview (decode + simulate) for EVM transactions. Optional:
+   * when undefined, sign_transaction still decodes calldata against the
+   * built-in registry (no RPC needed) and reports the simulation as
+   * skipped — so require_simulation in a policy denies, fail closed.
+   */
+  preview?: PreviewContext;
+}
+
+export interface PreviewContext {
+  /** User ABIs from ~/.sigil/abi, loaded once at boot. */
+  registry: AbiRegistry;
+  /**
+   * The node that dry-runs transactions for a chain, or undefined when none
+   * is configured. May resolve asynchronously (the [rpc] proxy upstream's
+   * chain is looked up on first use); must not reject.
+   */
+  simulatorFor(chainId: bigint): JsonRpcUpstream | undefined | Promise<JsonRpcUpstream | undefined>;
+  /** Per-RPC-call timeout; execution is bounded at 2× this, token metadata at 1× on top (~3× in all). */
+  timeoutMs?: number;
 }
 
 export type MethodHandler = (params: unknown, ctx: MethodContext) => unknown | Promise<unknown>;
@@ -242,6 +275,7 @@ function reserveSpend(
   payload: unknown,
   policy: Policy,
   spend: Spend,
+  preview?: AuditPreview,
 ): void {
   const caps = windowCapsFor(policy, spend.asset);
   if (caps.length === 0) return;
@@ -261,7 +295,14 @@ function reserveSpend(
     }
   }
   if (reason === null) return;
-  ctx.audit.append({ kind, portal: handle, payload, decision: 'deny', reason });
+  ctx.audit.append({
+    kind,
+    portal: handle,
+    payload,
+    decision: 'deny',
+    reason,
+    ...(preview ? { preview } : {}),
+  });
   throw new RpcMethodError(RPC_POLICY_DENIED, reason);
 }
 
@@ -344,6 +385,11 @@ function asTx(obj: Record<string, unknown>): SignableTx {
   const num = (key: string): bigint => {
     const v = obj[key];
     if (typeof v === 'string') {
+      // Bound the input before BigInt sees it: a 0x prefix plus 64 hex
+      // digits or 78 decimal digits covers every uint256.
+      if (v.length > MAX_UINT256_DIGITS + 2) {
+        throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} exceeds uint256`);
+      }
       let n: bigint;
       try {
         n = BigInt(v);
@@ -353,11 +399,25 @@ function asTx(obj: Record<string, unknown>): SignableTx {
       if (n < 0n) {
         throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} must be a non-negative integer`);
       }
+      // Every tx field is at most a uint256 on the wire; anything wider is
+      // garbage that would otherwise reach RLP encoding and the formatters.
+      if (n > MAX_UINT256) {
+        throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} exceeds uint256`);
+      }
       return n;
     }
     if (typeof v === 'number') {
       if (!Number.isInteger(v) || v < 0) {
         throw new RpcMethodError(RPC_INVALID_PARAMS, `tx: ${key} must be a non-negative integer`);
+      }
+      // A JSON number above 2^53 has already lost precision (1e100 is an
+      // "integer" to JS but not the value anyone typed) and would skip the
+      // uint256 bound the string path enforces.
+      if (!Number.isSafeInteger(v)) {
+        throw new RpcMethodError(
+          RPC_INVALID_PARAMS,
+          `tx: ${key} is not a safe integer — use a decimal string for values above 2^53`,
+        );
       }
       return BigInt(v);
     }
@@ -446,38 +506,150 @@ const sigil_eth_sign_transaction: MethodHandler = async (params, ctx) => {
   }
   const tx = asTx(txObj as Record<string, unknown>);
   requirePortal(ctx.handles, portal); // locked / unknown portal errors before policy
-  const gate = gatePolicy(
-    ctx,
-    portal,
-    'eth_sign_transaction',
-    { tx: txObj },
-    {
-      kind: 'transaction',
-      tx,
-    },
-  );
+  const kind = 'eth_sign_transaction';
+  const payload = { tx: txObj };
+  // Static policy first: a tx the policy denies outright never reaches the
+  // simulation node.
+  const gate = gatePolicy(ctx, portal, kind, payload, { kind: 'transaction', tx });
+
+  const preview = await previewFor(ctx, portal, tx);
+  const audited = auditPreview(preview);
+  const previewDeny = previewGateReason(gate.policy, preview);
+  if (previewDeny !== null) {
+    ctx.audit.append({
+      kind,
+      portal,
+      payload,
+      decision: 'deny',
+      reason: previewDeny,
+      preview: audited,
+    });
+    throw new RpcMethodError(RPC_POLICY_DENIED, previewDeny, { preview: preview.text });
+  }
+
   if (gate.proceed === 'confirm') {
-    await runConfirmGate(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.summary);
+    // The human sees the policy's one-liner, then what the tx actually does.
+    const summary = [
+      gate.summary,
+      preview.headline,
+      ...preview.warnings.slice(0, 3).map((w) => `⚠ ${w}`),
+    ].join('\n');
+    await runConfirmGate(ctx, portal, kind, payload, summary, audited);
   }
   // Re-acquire the key AFTER any confirm: the daemon may have locked or begun
   // shutting down (keys zeroized) while the human was deciding. A stale
   // buffer captured earlier would be all zeros by now. Nothing is reserved
   // or signed on a key that is no longer live.
   const priv = requirePortal(ctx.handles, portal);
-  reserveSpend(ctx, portal, 'eth_sign_transaction', { tx: txObj }, gate.policy, {
-    asset: 'wei',
-    amount: BigInt(tx.value),
-  });
-  const signed = signTransaction(tx, priv);
-  ctx.audit.append({
-    kind: 'eth_sign_transaction',
+  reserveSpend(
+    ctx,
     portal,
-    payload: { tx: txObj },
-    decision: 'allow',
-    sig: signed,
-  });
-  return { signed };
+    kind,
+    payload,
+    gate.policy,
+    { asset: 'wei', amount: BigInt(tx.value) },
+    audited,
+  );
+  const signed = signTransaction(tx, priv);
+  ctx.audit.append({ kind, portal, payload, decision: 'allow', sig: signed, preview: audited });
+  return { signed, preview: preview.text };
 };
+
+/**
+ * Read-only twin of sign_transaction: the same decode + simulation, with no
+ * policy gate, no confirm, no audit entry and no signature. Requires an
+ * unlocked portal only because the simulation runs *as* the portal's
+ * address (balances, allowances and msg.sender all depend on it).
+ */
+const sigil_eth_preview_transaction: MethodHandler = async (params, ctx) => {
+  const obj = asObject(params, 'eth_preview_transaction');
+  const portal = asString(obj, 'portal', 'eth_preview_transaction');
+  const txObj = obj['tx'];
+  if (typeof txObj !== 'object' || txObj === null || Array.isArray(txObj)) {
+    throw new RpcMethodError(RPC_INVALID_PARAMS, 'eth_preview_transaction: tx must be an object');
+  }
+  const tx = asTx(txObj as Record<string, unknown>);
+  requirePortal(ctx.handles, portal);
+  const p = await previewFor(ctx, portal, tx);
+  return {
+    preview: p.text,
+    headline: p.headline,
+    warnings: p.warnings,
+    decoded: p.decoded,
+    simulation: jsonSafe(publicSimulation(p.simulation)),
+  };
+};
+
+/** The simulation as the agent sees it: without the internal uncapped transfer list. */
+function publicSimulation(sim: TxPreview['simulation']): unknown {
+  if (sim.status !== 'ok' && sim.status !== 'reverted') return sim;
+  const { allTransfers: _internal, ...rest } = sim;
+  return rest;
+}
+
+/**
+ * Build the preview for a parsed tx. Never throws for presentation
+ * failures: a simulator that can't be resolved is "skipped", a node that
+ * fails is "unavailable" (inside buildTxPreview), and an unexpected bug in
+ * the preview code becomes previewFailure — loud, and denied by
+ * require_simulation, but not by itself a reason to refuse a sign.
+ */
+async function previewFor(ctx: MethodContext, portal: string, tx: SignableTx): Promise<TxPreview> {
+  const info = ctx.handles.info(portal);
+  if (!info) throw new RpcMethodError(RPC_PORTAL_NOT_FOUND, `portal "${portal}" not found`);
+  const p = ctx.preview;
+  const chainId = BigInt(tx.chainId);
+  let simulator: JsonRpcUpstream | undefined;
+  let skippedReason: string | undefined;
+  if (p) {
+    try {
+      simulator = await p.simulatorFor(chainId);
+    } catch (err) {
+      skippedReason = `simulation RPC for chain ${chainId} unavailable: ${(err as Error).message}`;
+    }
+  }
+  try {
+    return await buildTxPreview({
+      tx,
+      from: info.address,
+      registry: p?.registry ?? AbiRegistry.empty(),
+      ...(simulator ? { simulator } : {}),
+      ...(skippedReason !== undefined ? { skippedReason } : {}),
+      ...(p?.timeoutMs !== undefined ? { timeoutMs: p.timeoutMs } : {}),
+    });
+  } catch (err) {
+    return previewFailure((err as Error).message);
+  }
+}
+
+/**
+ * The two preview-driven policy rules. Returns a deny reason or null.
+ *   - require_simulation: a tx that was not simulated (no RPC for its
+ *     chain, node unavailable, preview failure) is denied — fail closed.
+ *   - sign_on_revert = false (default): a simulated revert is denied with
+ *     the revert reason. Only applies when a simulation actually ran.
+ */
+function previewGateReason(policy: Policy, preview: TxPreview): string | null {
+  const sim = preview.simulation;
+  if (policy.requireSimulation) {
+    if (sim.status === 'skipped') {
+      return `tx denied — require_simulation = true but the tx could not be simulated: ${sim.reason}`;
+    }
+    if (sim.status === 'unavailable') {
+      return `tx denied — require_simulation = true but the simulation was unavailable: ${sim.reason}`;
+    }
+    if (!sim.faithful) {
+      return 'tx denied — require_simulation = true but the node could only simulate without the fee fields';
+    }
+  }
+  if (sim.status === 'reverted' && !policy.signOnRevert) {
+    return (
+      `tx denied — simulation reverted: ${sim.revertReason ?? 'unknown reason'} ` +
+      `(set sign_on_revert = true in the policy to sign anyway)`
+    );
+  }
+  return null;
+}
 
 /**
  * The confirm half of the sign path. Pulled out so each sign method that
@@ -497,12 +669,14 @@ async function runConfirmGate(
   kind: string,
   payload: unknown,
   summary: string,
+  preview?: AuditPreview,
 ): Promise<void> {
+  const withPreview = preview ? { preview } : {};
   if (!ctx.confirm) {
     const reason =
       'policy requires out-of-band confirmation, but no confirm transport ' +
       'is configured — add a [confirm.ntfy] block to ~/.sigil/config.toml';
-    ctx.audit.append({ kind, portal, payload, decision: 'deny', reason });
+    ctx.audit.append({ kind, portal, payload, decision: 'deny', reason, ...withPreview });
     throw new RpcMethodError(RPC_POLICY_DENIED, reason);
   }
   const decision = await ctx.confirm.request({ portal, summary });
@@ -513,7 +687,7 @@ async function runConfirmGate(
       : decision.kind === 'timeout'
         ? `confirm timed out — no ack within window (transport=${ctx.confirm.transportName})`
         : `confirm transport error: ${decision.message}`;
-  ctx.audit.append({ kind, portal, payload, decision: 'deny', reason });
+  ctx.audit.append({ kind, portal, payload, decision: 'deny', reason, ...withPreview });
   throw new RpcMethodError(RPC_POLICY_DENIED, reason);
 }
 
@@ -670,6 +844,7 @@ export const METHODS: Readonly<Record<string, MethodHandler>> = Object.freeze({
   sigil_list_portals,
   sigil_eth_sign_message,
   sigil_eth_sign_transaction,
+  sigil_eth_preview_transaction,
   sigil_eth_sign_typed_data,
   sigil_svm_sign_message,
   sigil_svm_sign_transaction,
