@@ -4,7 +4,7 @@
 
 `sigil` is a local signing tool and Claude Code integration that lets agentic coding tools use private keys without ever putting key material in the model's context window.
 
-**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, policy engine (static checks), out-of-band confirmation via ntfy, Solana signing, and the JSON-RPC signing proxy (Foundry/Hardhat) all work end-to-end. Rolling-window value caps and EIP-712 domain allowlists landed in the policy engine, but have not been through a release yet. Until v0.1.0 ships — with the supply-chain attestations promised for it — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
+**Status:** pre-alpha. The MCP server, CLI, unlock flow, ward hooks, policy engine (static checks), out-of-band confirmation via ntfy, Solana signing, and the JSON-RPC signing proxy (Foundry/Hardhat) all work end-to-end. Rolling-window value caps and EIP-712 domain allowlists shipped in 0.0.13; 0.0.14 adds a transaction preview — every EVM transaction is decoded to English and dry-run with `eth_simulateV1` before it is signed, with `require_simulation` / `sign_on_revert` policy gates. Until v0.1.0 ships — with the supply-chain attestations promised for it — **do not use this with real funds yet.** Build plan lives in the [tracking issue](https://github.com/cdrn/sigil/issues/9).
 
 ## What it is
 
